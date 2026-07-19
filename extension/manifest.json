@@ -1,0 +1,63 @@
+{
+  "manifest_version": 3,
+  "name": "AlphaCode Product Extractor",
+  "version": "3.2.0",
+  "description": "SZWEGO extractor with Groq bilingual copy, resilient pending products, full multi-image Sooqify payloads, data management, and diagnostics.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "*://*.szwego.com/*",
+    "http://127.0.0.1:5000/*",
+    "https://admin.sooqifyonline.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.szwego.com/*"
+      ],
+      "js": [
+        "page_bridge.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "*://*.szwego.com/*"
+      ],
+      "js": [
+        "config.js",
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://admin.sooqifyonline.com/admin/item/*"
+      ],
+      "js": [
+        "config.js",
+        "admin_autofill.js"
+      ],
+      "css": [
+        "admin_autofill.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

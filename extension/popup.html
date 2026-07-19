@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlphaCode Extractor</title>
+<style>
+:root {
+    --ink: #07022A;
+    --surface: #FFFFFD;
+    --mint: #C5FFE7;
+    --cyan: #53F5FF;
+    --page: #f3f6fb;
+    --border: rgba(7, 2, 42, .13);
+    --muted: #6b6880;
+    --danger: #b42336;
+    --warning: #b66a00;
+    --shadow: 0 18px 42px rgba(7, 2, 42, .13);
+}
+* { box-sizing: border-box; }
+body {
+    width: 500px;
+    min-height: 650px;
+    max-height: 730px;
+    overflow: hidden;
+    margin: 0;
+    font-family: "Segoe UI", Tahoma, sans-serif;
+    color: var(--ink);
+    background: var(--page);
+}
+button, input, select, textarea { font: inherit; }
+.app-shell { min-height: 650px; display: flex; flex-direction: column; }
+.hero {
+    padding: 18px;
+    color: var(--surface);
+    background:
+        radial-gradient(circle at 10% 10%, rgba(83,245,255,.24), transparent 34%),
+        linear-gradient(135deg, var(--ink), #171052);
+}
+.hero-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.brand-block h1 { margin: 0; font-size: 19px; }
+.brand-block p { margin: 5px 0 0; color: var(--cyan); font-size: 10px; font-weight: 800; }
+.profile-chip { padding: 7px 11px; border-radius: 999px; border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.08); font-size: 10px; }
+.status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 13px; }
+.status-card { padding: 9px 10px; border-radius: 12px; background: rgba(255,255,255,.09); font-size: 10px; line-height: 1.45; }
+.status-dot { display: inline-block; width: 8px; height: 8px; margin-left: 5px; border-radius: 50%; background: #aaa6be; }
+.status-dot.ok { background: var(--mint); box-shadow: 0 0 0 3px rgba(197,255,231,.13); }
+.status-dot.bad { background: #ff8493; }
+.tabs { display: grid; grid-template-columns: repeat(5, 1fr); background: var(--surface); border-bottom: 1px solid var(--border); }
+.tab-button { border: 0; background: transparent; color: var(--muted); padding: 11px 4px; font-size: 10px; font-weight: 850; cursor: pointer; border-bottom: 3px solid transparent; }
+.tab-button.active { color: var(--ink); border-bottom-color: var(--cyan); background: linear-gradient(to top, rgba(83,245,255,.14), transparent); }
+.content { flex: 1; overflow: auto; padding: 12px 13px 82px; }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+.section { margin-bottom: 10px; padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 6px 18px rgba(7,2,42,.04); }
+.section-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-size: 12px; font-weight: 900; }
+.section-title span { color: var(--muted); font-size: 9px; font-weight: 650; }
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.form-group { margin-bottom: 8px; }
+.form-group label { display: block; margin-bottom: 4px; color: #48445e; font-size: 10px; font-weight: 760; }
+input, select, textarea { width: 100%; padding: 8px 9px; border: 1px solid var(--border); border-radius: 10px; background: #fff; color: var(--ink); font-size: 11px; outline: none; }
+input:focus, select:focus, textarea:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(83,245,255,.16); }
+textarea { min-height: 70px; resize: vertical; direction: ltr; }
+.switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 0; border-top: 1px dashed var(--border); }
+.switch-row:first-of-type { border-top: 0; }
+.switch-copy strong { display: block; font-size: 11px; }
+.switch-copy small { display: block; margin-top: 2px; color: var(--muted); font-size: 9px; line-height: 1.4; }
+.switch { position: relative; width: 42px; height: 23px; flex: 0 0 42px; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider { position: absolute; inset: 0; border-radius: 999px; background: #d4d2dd; cursor: pointer; transition: .2s; }
+.slider::before { content: ""; position: absolute; width: 17px; height: 17px; right: 3px; top: 3px; border-radius: 50%; background: #fff; transition: .2s; box-shadow: 0 2px 6px rgba(0,0,0,.18); }
+.switch input:checked + .slider { background: var(--ink); }
+.switch input:checked + .slider::before { transform: translateX(-19px); background: var(--cyan); }
+.identity-card { padding: 12px; border-radius: 14px; background: linear-gradient(135deg, var(--mint), rgba(83,245,255,.28)); border: 1px solid rgba(7,2,42,.08); margin-bottom: 10px; }
+.identity-card.target { background: linear-gradient(135deg, rgba(7,2,42,.96), #171052); color: var(--surface); }
+.identity-card strong { display: block; font-size: 14px; }
+.identity-card small { display: block; margin-top: 3px; color: #55516a; }
+.identity-card.target small { color: var(--cyan); }
+.hint { color: var(--muted); font-size: 9px; line-height: 1.55; }
+.btn { border: 0; border-radius: 11px; padding: 10px 12px; cursor: pointer; font-size: 11px; font-weight: 850; }
+.btn-primary { background: var(--ink); color: var(--surface); }
+.btn-accent { background: var(--cyan); color: var(--ink); }
+.btn-secondary { background: var(--mint); color: var(--ink); }
+.btn-ghost { background: transparent; color: var(--ink); border: 1px solid var(--border); }
+.btn-danger { background: #ffe2e5; color: var(--danger); border: 1px solid rgba(180,35,54,.18); }
+.btn-warning { background: #fff1d7; color: var(--warning); border: 1px solid rgba(182,106,0,.16); }
+.btn-full { width: 100%; }
+.button-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.result-box { display: none; margin-top: 9px; padding: 10px; border-radius: 11px; font-size: 10px; line-height: 1.65; white-space: pre-wrap; }
+.result-box.success { display: block; background: var(--mint); }
+.result-box.error { display: block; background: #ffe2e5; color: var(--danger); }
+.result-box.warning { display: block; background: #fff1d7; color: #754300; }
+.stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.stat-card { padding: 10px; border-radius: 12px; background: #f7f8fc; border: 1px solid var(--border); text-align: center; }
+.stat-card strong { display: block; font-size: 17px; }
+.stat-card span { color: var(--muted); font-size: 9px; }
+.danger-zone { border-color: rgba(180,35,54,.2); background: linear-gradient(180deg, #fff, #fff9fa); }
+.log-box { direction: ltr; text-align: left; min-height: 210px; max-height: 280px; overflow: auto; background: #0d0a29; color: #dffcff; padding: 10px; border-radius: 11px; font: 9px/1.55 Consolas, monospace; white-space: pre-wrap; }
+.footer-actions { position: fixed; bottom: 0; left: 0; right: 0; display: grid; grid-template-columns: 1.4fr 1fr; gap: 8px; padding: 10px 13px; background: rgba(255,255,253,.95); border-top: 1px solid var(--border); backdrop-filter: blur(14px); }
+#status { position: fixed; left: 14px; right: 14px; bottom: 66px; display: none; padding: 9px 11px; border-radius: 10px; font-size: 10px; z-index: 10; box-shadow: var(--shadow); }
+#status.success { display: block; background: var(--mint); }
+#status.error { display: block; background: #ffe2e5; color: var(--danger); }
+</style>
+</head>
+<body>
+<div class="app-shell">
+<header class="hero">
+    <div class="hero-top">
+        <div class="brand-block"><h1>AlphaCode Extractor 3.2</h1><p>SZWEGO → Python → Sooqify</p></div>
+        <div id="profileChip" class="profile-chip">Sooqify Online</div>
+    </div>
+    <div class="status-grid">
+        <div class="status-card"><i id="serverDot" class="status-dot"></i><span id="serverText">فحص الخادم...</span></div>
+        <div id="aiText" class="status-card">Groq: غير معروف</div>
+    </div>
+</header>
+
+<nav class="tabs">
+    <button class="tab-button active" data-tab="settings">الإعدادات</button>
+    <button class="tab-button" data-tab="stores">المتاجر</button>
+    <button class="tab-button" data-tab="search">البحث</button>
+    <button class="tab-button" data-tab="data">البيانات</button>
+    <button class="tab-button" data-tab="diagnostics">التشخيص</button>
+</nav>
+
+<main class="content">
+<section id="tab-settings" class="tab-panel active">
+    <div class="section">
+        <div class="section-title">التشغيل الآلي <span>اختياري</span></div>
+        <div class="switch-row"><div class="switch-copy"><strong>إضافة المنتج تلقائياً</strong><small>تعبئة النموذج ثم الضغط على زر الإضافة الأصلي.</small></div><label class="switch"><input type="checkbox" id="AutoAddProduct"><span class="slider"></span></label></div>
+        <div class="row">
+            <div class="form-group"><label>مهلة الإرسال بالثواني</label><input type="number" min="0" max="30" id="AutoSubmitDelaySeconds"></div>
+            <div class="form-group"><label>موضع لوحة المتجر</label><select id="AdminPanelPosition"><option value="middle-left">وسط اليسار</option><option value="middle-right">وسط اليمين</option><option value="bottom-left">أسفل اليسار</option><option value="bottom-right">أسفل اليمين</option><option value="center">منتصف الشاشة</option></select></div>
+        </div>
+        <button id="resetPanelPositionBtn" class="btn btn-ghost btn-full" type="button">مسح الموضع المسحوب يدوياً</button>
+    </div>
+
+    <div class="section">
+        <div class="section-title">الأسعار والتصنيف</div>
+        <div class="row"><div class="form-group"><label>Category ID</label><input type="number" id="CategoryId"></div><div class="form-group"><label>SubCategory ID</label><input type="number" id="SubCategoryId"></div></div>
+        <div class="row"><div class="form-group"><label>Unit ID</label><input type="number" id="UnitId"></div><div class="form-group"><label>المخزون لكل مقاس</label><input type="number" id="Stock"></div></div>
+        <div class="row"><div class="form-group"><label>سعر صرف اليوان</label><input type="number" id="ExchangeRate" step="0.01"></div><div class="form-group"><label>الرسوم المضافة باليوان</label><input type="number" id="AddedFeeYuan" step="0.01"></div></div>
+        <div class="row"><div class="form-group"><label>الخصم</label><input type="number" id="Discount"></div><div class="form-group"><label>نوع الخصم</label><select id="DiscountType"><option value="percent">percent</option><option value="amount">amount</option></select></div></div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">الصور والذكاء الاصطناعي</div>
+        <div class="row"><div class="form-group"><label>أقصى بُعد</label><input type="number" id="ImageMaxDimension"></div><div class="form-group"><label>جودة JPG %</label><input type="number" id="ImageQuality"></div></div>
+        <div class="row"><div class="form-group"><label>أقصى عدد صور</label><input type="number" id="MaxImages"></div><div class="form-group"><label>الصيغة</label><select id="ImageFormat"><option value="jpeg">JPEG / JPG</option><option value="png">PNG</option></select></div></div>
+        <div class="switch-row"><div class="switch-copy"><strong>ضغط الصور من المصدر</strong><small>يقلل استهلاك الإنترنت قبل التنزيل.</small></div><label class="switch"><input type="checkbox" id="OptimizeImageAtSource"><span class="slider"></span></label></div>
+        <div class="switch-row"><div class="switch-copy"><strong>اشتراط نجاح كل الصور</strong><small>إلغاء الحفظ إذا فشلت أي صورة.</small></div><label class="switch"><input type="checkbox" id="RequireAllImages"><span class="slider"></span></label></div>
+        <div class="switch-row"><div class="switch-copy"><strong>توليد المحتوى تلقائياً</strong><small>إنشاء الاسم والوصف بالعربية والإنجليزية.</small></div><label class="switch"><input type="checkbox" id="AIAutoGenerate"><span class="slider"></span></label></div>
+        <div class="form-group"><label>نموذج Groq</label><input type="text" id="AIModel" dir="ltr"></div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">خيارات المنتج</div>
+        <div class="row"><div class="form-group"><label>Store ID</label><input type="number" id="StoreId"></div><div class="form-group"><label>Module ID</label><input type="number" id="ModuleId"></div></div>
+        <div class="row"><div class="form-group"><label>وقت البداية</label><input type="text" id="AvailableTimeStarts" dir="ltr"></div><div class="form-group"><label>وقت النهاية</label><input type="text" id="AvailableTimeEnds" dir="ltr"></div></div>
+        <div class="row"><div class="form-group"><label>أقصى كمية للسلة</label><input type="text" id="MaximumCartQuantity"></div><div class="form-group"><label>اللغة الافتراضية</label><select id="DefaultLanguage"><option value="en">English</option><option value="ar">العربية</option></select></div></div>
+        <div class="row"><div class="form-group"><label>Status</label><input type="text" id="Status"></div><div class="form-group"><label>Veg</label><input type="text" id="Veg"></div></div>
+        <div class="form-group"><label>Recommended</label><input type="text" id="Recommended"></div>
+    </div>
+</section>
+
+<section id="tab-stores" class="tab-panel">
+    <div class="identity-card target"><strong id="storeCardName">Sooqify Online</strong><small>المتجر المستهدف الذي ستُرفع إليه المنتجات</small></div>
+    <div class="identity-card"><strong id="supplierCardName">BRANDKINGDOM</strong><small>متجر المورد على SZWEGO</small></div>
+
+    <div class="section">
+        <div class="section-title">المتجر المستهدف <span>Sooqify</span></div>
+        <div class="form-group"><label>اسم ملف المتجر المستهدف</label><input type="text" id="StoreProfileName"></div>
+        <div class="form-group"><label>نطاق لوحة التحكم</label><input type="text" id="StoreDomain" dir="ltr"></div>
+        <div class="form-group"><label>رابط إضافة منتج</label><input type="text" id="SooqifyAddUrl" dir="ltr"></div>
+        <button id="openStoreBtnInline" class="btn btn-accent btn-full" type="button">فتح صفحة إضافة المنتج</button>
+    </div>
+
+    <div class="section">
+        <div class="section-title">متجر المورد <span>SZWEGO</span></div>
+        <div class="form-group"><label>اسم متجر المورد</label><input type="text" id="SupplierStoreName"></div>
+        <div class="form-group"><label>ID متجر المورد — اختياري</label><input type="text" id="SupplierStoreId" dir="ltr"></div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">البراند والمقاسات</div>
+        <div class="row"><div class="form-group"><label>البراند الافتراضي</label><input type="text" id="BrandName" dir="ltr"></div><div class="form-group"><label>Brand ID</label><input type="number" id="BrandId"></div></div>
+        <div class="form-group"><label>خريطة البراندات JSON</label><textarea id="BrandMapJson"></textarea></div>
+        <div class="row"><div class="form-group"><label>Size Attribute ID</label><input type="number" id="SizeAttributeId"></div><div class="form-group"><label>Choice No</label><input type="number" id="SizeChoiceNo"></div></div>
+        <div class="form-group"><label>عنوان الخاصية</label><input type="text" id="SizeTitle"></div>
+    </div>
+</section>
+
+<section id="tab-search" class="tab-panel">
+    <div class="section">
+        <div class="section-title">البحث في الأرشيف <span>بالـ ID المحلي</span></div>
+        <div class="form-group"><label>Product ID</label><input type="number" id="ArchiveProductId"></div>
+        <div class="button-row"><button id="searchArchiveBtn" class="btn btn-primary" type="button">بحث</button><button id="prepareArchiveBtn" class="btn btn-secondary" type="button">تجهيز وفتح</button></div>
+        <div id="searchResult" class="result-box"></div>
+    </div>
+</section>
+
+<section id="tab-data" class="tab-panel">
+    <div class="section">
+        <div class="section-title">إحصاءات البيانات <span>JSON + Excel + صور</span></div>
+        <div class="stats-grid"><div class="stat-card"><strong id="statsProducts">—</strong><span>منتجات</span></div><div class="stat-card"><strong id="statsImages">—</strong><span>صور</span></div><div class="stat-card"><strong id="statsLastId">—</strong><span>آخر ID</span></div></div>
+        <button id="refreshStatsBtn" class="btn btn-ghost btn-full" style="margin-top:8px" type="button">تحديث الإحصائيات</button>
+    </div>
+
+    <div class="section">
+        <div class="section-title">حذف منتج واحد</div>
+        <div class="form-group"><label>ID المنتج</label><input type="number" id="DeleteProductId"></div>
+        <div class="switch-row"><div class="switch-copy"><strong>حذف مجلد الصور</strong><small>سيُحذف السجل من JSON وصفه من Excel دائماً.</small></div><label class="switch"><input type="checkbox" id="DeleteProductImages"><span class="slider"></span></label></div>
+        <button id="deleteProductBtn" class="btn btn-warning btn-full" type="button">حذف المنتج المحدد</button>
+        <div id="deleteResult" class="result-box"></div>
+    </div>
+
+    <div class="section danger-zone">
+        <div class="section-title">مسح جميع البيانات <span>إجراء لا يمكن التراجع عنه</span></div>
+        <div class="switch-row"><div class="switch-copy"><strong>حذف كل مجلدات الصور</strong><small>يمسح صور جميع المنتجات المسجلة.</small></div><label class="switch"><input type="checkbox" id="ClearDeleteImages"><span class="slider"></span></label></div>
+        <div class="switch-row"><div class="switch-copy"><strong>مسح Cache الذكاء الاصطناعي</strong><small>يجبر Groq على توليد محتوى جديد لاحقاً.</small></div><label class="switch"><input type="checkbox" id="ClearAiCache"><span class="slider"></span></label></div>
+        <button id="clearAllBtn" class="btn btn-danger btn-full" type="button">مسح جميع السجلات</button>
+        <div id="clearResult" class="result-box"></div>
+    </div>
+</section>
+
+<section id="tab-diagnostics" class="tab-panel">
+    <div class="section">
+        <div class="section-title">السجل الخارجي <span id="logPath"></span></div>
+        <div class="button-row"><button id="refreshLogsBtn" class="btn btn-primary" type="button">تحديث</button><button id="downloadLogsBtn" class="btn btn-secondary" type="button">تنزيل السجل</button></div>
+        <pre id="logBox" class="log-box">اضغط تحديث لعرض السجل.</pre>
+    </div>
+</section>
+</main>
+
+<div class="footer-actions"><button id="saveBtn" class="btn btn-primary">حفظ الإعدادات وتطبيقها</button><button id="openStoreBtn" class="btn btn-accent">فتح المتجر</button></div>
+<div id="status"></div>
+</div>
+<script src="config.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>

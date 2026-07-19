@@ -1,0 +1,267 @@
+/* =========================================================
+   AlphaCode Extractor - Page UI
+   ========================================================= */
+
+.alphacode-extract-btn {
+    color: #fff !important;
+    border: none !important;
+    padding: 6px 12px !important;
+    font-size: 12px !important;
+    font-weight: 700 !important;
+    border-radius: 5px !important;
+    cursor: pointer !important;
+    margin-right: 8px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15) !important;
+    font-family: "Segoe UI", system-ui, sans-serif !important;
+    transition: background 0.25s, opacity 0.25s !important;
+}
+
+.alphacode-extract-btn:disabled { opacity: 0.65 !important; cursor: wait !important; }
+.alphacode-btn-red { background-color: #dc3545 !important; }
+.alphacode-btn-red:hover { background-color: #c82333 !important; }
+.alphacode-btn-green { background-color: #28a745 !important; }
+.alphacode-btn-green:hover { background-color: #218838 !important; }
+
+.alphacode-generated-action-bar {
+    margin-top: 10px;
+    padding: 8px 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-top: 1px dashed #e5e7eb;
+}
+
+.alphacode-highlight-card {
+    border: 3px solid #28a745 !important;
+    box-shadow: 0 0 15px rgba(40, 167, 69, 0.5) !important;
+    transition: all 0.5s ease;
+}
+
+#alphacode-modal-overlay {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.72);
+    z-index: 2147483646;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+    direction: rtl;
+    text-align: right;
+}
+
+.alphacode-modal-box {
+    background: #fff;
+    width: min(570px, calc(100vw - 30px));
+    max-height: 92vh;
+    overflow-y: auto;
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
+    color: #2d3748;
+    box-sizing: border-box;
+}
+
+.alphacode-modal-title {
+    font-size: 18px;
+    font-weight: 700;
+    border-bottom: 2px solid #28a745;
+    padding-bottom: 10px;
+    margin-bottom: 15px;
+    color: #222;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.alphacode-close-btn {
+    background: none;
+    border: none;
+    font-size: 24px;
+    cursor: pointer;
+    color: #7a7a7a;
+    line-height: 1;
+}
+
+.alphacode-field { margin-bottom: 12px; }
+.alphacode-field label {
+    display: block;
+    font-size: 12px;
+    font-weight: 700;
+    margin-bottom: 5px;
+    color: #4a5568;
+}
+
+.alphacode-field input,
+.alphacode-field textarea {
+    width: 100%;
+    padding: 9px 10px;
+    border: 1px solid #cbd5e0;
+    border-radius: 6px;
+    font-size: 14px;
+    box-sizing: border-box;
+    font-family: inherit;
+    color: #1f2937;
+    background: #fff;
+}
+
+.alphacode-field input:focus,
+.alphacode-field textarea:focus {
+    outline: none;
+    border-color: #28a745;
+    box-shadow: 0 0 0 3px rgba(40, 167, 69, 0.12);
+}
+
+.alphacode-field textarea { height: 95px; resize: vertical; line-height: 1.5; }
+.alphacode-ltr-field { text-align: left; direction: ltr; }
+.alphacode-ltr-field label { text-align: right; direction: rtl; }
+
+.alphacode-price-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+.alphacode-price-row .alphacode-field { min-width: 0; }
+.alphacode-price-row input:disabled { background: #f1f5f9; color: #475569; }
+
+.alphacode-readonly-group {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    padding: 11px;
+    border-radius: 7px;
+    margin-bottom: 15px;
+}
+
+.alphacode-readonly-item {
+    font-size: 13px;
+    margin-bottom: 7px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+}
+
+.alphacode-readonly-item:last-child { margin-bottom: 0; }
+.alphacode-readonly-item strong { color: #1d4ed8; text-align: left; }
+.alphacode-code-row > div { display: flex; align-items: center; gap: 6px; }
+.alphacode-success-text { color: #16a34a !important; font-size: 14px; }
+.alphacode-image-count { color: #db2777 !important; }
+
+.alphacode-copy-btn {
+    background: #0891b2;
+    color: #fff;
+    border: none;
+    padding: 3px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11px;
+}
+
+.alphacode-ai-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #f5f3ff;
+    border: 1px solid #ddd6fe;
+    padding: 9px;
+    border-radius: 7px;
+    margin-bottom: 13px;
+}
+
+.alphacode-ai-btn {
+    flex: 0 0 auto;
+    border: none;
+    border-radius: 6px;
+    background: #7c3aed;
+    color: #fff;
+    padding: 8px 11px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.alphacode-ai-btn:hover { background: #6d28d9; }
+.alphacode-ai-btn:disabled { opacity: 0.6; cursor: wait; }
+.alphacode-ai-status { font-size: 11px; line-height: 1.35; color: #6b7280; word-break: break-word; }
+.alphacode-ai-working { color: #7c3aed; }
+.alphacode-ai-success { color: #15803d; }
+.alphacode-ai-error { color: #b91c1c; }
+
+.alphacode-actions { display: flex; gap: 10px; margin-top: 15px; }
+.alphacode-btn-submit,
+.alphacode-btn-cancel,
+.alphacode-btn-scroll {
+    color: #fff;
+    border: none;
+    padding: 11px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.alphacode-btn-submit { flex: 2; background: #28a745; font-weight: 700; font-size: 14px; }
+.alphacode-btn-submit:disabled { opacity: 0.65; cursor: wait; }
+.alphacode-btn-cancel { flex: 1; background: #6b7280; }
+.alphacode-btn-scroll { background: #2563eb; width: 100%; margin-top: 10px; font-weight: 700; }
+
+.alphacode-already-box {
+    background: #dcfce7;
+    color: #166534;
+    padding: 15px;
+    border-radius: 8px;
+    text-align: center;
+    border: 1px solid #bbf7d0;
+    margin-bottom: 15px;
+    line-height: 1.7;
+}
+
+.alphacode-loading-box,
+.alphacode-error-box {
+    padding: 25px 15px;
+    text-align: center;
+    border-radius: 7px;
+}
+
+.alphacode-loading-box { color: #475569; background: #f8fafc; }
+.alphacode-error-box { color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca; }
+
+.alphacode-spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid #cbd5e1;
+    border-top-color: #28a745;
+    border-radius: 50%;
+    margin-left: 8px;
+    vertical-align: middle;
+    animation: alphacode-spin 0.8s linear infinite;
+}
+
+@keyframes alphacode-spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 600px) {
+    .alphacode-modal-box { padding: 15px; }
+    .alphacode-price-row { grid-template-columns: 1fr; gap: 0; }
+    .alphacode-ai-toolbar { align-items: stretch; flex-direction: column; }
+    .alphacode-readonly-item { align-items: flex-start; }
+}
+
+
+/* Arabic: تخطيط الحقول الثنائية والمقاسات. English: Bilingual copy and size-field layout. */
+.alphacode-language-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.alphacode-inline-grid { display: grid; grid-template-columns: 1.4fr .6fr; gap: 10px; }
+.alphacode-wide-field { grid-column: 1 / -1; }
+.alphacode-note { margin: 6px 0 12px; padding: 8px 10px; border: 1px solid #bee3f8; background: #ebf8ff; color: #2a4365; border-radius: 6px; font-size: 11px; }
+@media (max-width: 760px) { .alphacode-language-grid, .alphacode-inline-grid { grid-template-columns: 1fr; } .alphacode-wide-field { grid-column: auto; } }
+
+/* Arabic: تنسيق أزرار إعادة فتح المنتجات المجهزة ورسائل الخطأ داخل النافذة. */
+/* English: Style prepared-product actions and inline modal errors. */
+.alphacode-duplicate-actions { align-items: stretch; }
+.alphacode-duplicate-actions > button { flex: 1; }
+.alphacode-inline-error { display: inline-block; margin-top: 8px; color: #b42336; font-weight: 800; }

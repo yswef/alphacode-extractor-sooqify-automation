@@ -146,7 +146,8 @@ textarea { min-height: 70px; resize: vertical; direction: ltr; }
     <div class="section">
         <div class="section-title">الصور والذكاء الاصطناعي</div>
         <div class="row"><div class="form-group"><label>أقصى بُعد</label><input type="number" id="ImageMaxDimension"></div><div class="form-group"><label>جودة JPG %</label><input type="number" id="ImageQuality"></div></div>
-        <div class="row"><div class="form-group"><label>أقصى عدد صور</label><input type="number" id="MaxImages"></div><div class="form-group"><label>الصيغة</label><select id="ImageFormat"><option value="jpeg">JPEG / JPG</option><option value="png">PNG</option></select></div></div>
+        <div class="row"><div class="form-group"><label>أقصى عدد صور للتنزيل</label><input type="number" id="MaxImages"></div><div class="form-group"><label>أقصى صور للمتجر</label><input type="number" min="1" max="5" id="StoreImageLimit"></div></div>
+        <div class="form-group"><label>الصيغة</label><select id="ImageFormat"><option value="jpeg">JPEG / JPG</option><option value="png">PNG</option></select></div>
         <div class="switch-row"><div class="switch-copy"><strong>ضغط الصور من المصدر</strong><small>يقلل استهلاك الإنترنت قبل التنزيل.</small></div><label class="switch"><input type="checkbox" id="OptimizeImageAtSource"><span class="slider"></span></label></div>
         <div class="switch-row"><div class="switch-copy"><strong>اشتراط نجاح كل الصور</strong><small>إلغاء الحفظ إذا فشلت أي صورة.</small></div><label class="switch"><input type="checkbox" id="RequireAllImages"><span class="slider"></span></label></div>
         <div class="switch-row"><div class="switch-copy"><strong>توليد المحتوى تلقائياً</strong><small>إنشاء الاسم والوصف بالعربية والإنجليزية.</small></div><label class="switch"><input type="checkbox" id="AIAutoGenerate"><span class="slider"></span></label></div>

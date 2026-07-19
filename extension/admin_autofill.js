@@ -129,6 +129,143 @@ function setControlValue(selector, value) {
     return setElementValue(document.querySelector(selector), value);
 }
 
+
+// Arabic: انتظار شرط في الواجهة الديناميكية مع مهلة محددة.
+// English: Wait for a condition in the dynamic admin interface with a timeout.
+async function waitForCondition(check, timeoutMs = 10000, intervalMs = 200) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+        const result = check();
+        if (result) return result;
+        await sleep(intervalMs);
+    }
+    return null;
+}
+
+// Arabic: العثور على عنصر بالاسم مع دعم الأسماء التي تنتهي بأقواس المصفوفات.
+// English: Find a control by its exact submitted name, including array-style names.
+function getNamedControl(name) {
+    return document.getElementsByName(name)[0] || null;
+}
+
+// Arabic: فتح Select2 لتحفيز تحميل الخيارات البعيدة عند الحاجة.
+// English: Open Select2 to trigger remote option loading when needed.
+function nudgeDynamicSelect(element) {
+    if (!element) return;
+    try {
+        const container = element.nextElementSibling?.classList?.contains('select2')
+            ? element.nextElementSibling
+            : element.parentElement?.querySelector('.select2-selection');
+        (container?.querySelector?.('.select2-selection') || container)?.dispatchEvent(
+            new MouseEvent('mousedown', { bubbles: true, cancelable: true })
+        );
+    } catch (_) {}
+    try { element.focus(); element.click(); } catch (_) {}
+}
+
+// Arabic: تعيين قيمة select ديناميكي مع انتظار الخيار ودعم Select2.
+// English: Set a dynamic select value, waiting for options and supporting Select2.
+async function setDynamicSelectValue(name, value, label = '') {
+    const wanted = String(value ?? '');
+    if (!wanted) return false;
+    const element = await waitForCondition(() => getNamedControl(name), 8000);
+    if (!element) return false;
+
+    if (element.tagName === 'SELECT') {
+        nudgeDynamicSelect(element);
+        let option = await waitForCondition(
+            () => Array.from(element.options || []).find(item => String(item.value) === wanted),
+            8000,
+            250,
+        );
+        if (!option) {
+            option = new Option(label || `ID ${wanted}`, wanted, true, true);
+            option.dataset.alphacodeGenerated = '1';
+            element.add(option);
+        }
+        element.value = wanted;
+        option.selected = true;
+        if (window.jQuery) {
+            try { window.jQuery(element).val(wanted).trigger('change.select2').trigger('change'); } catch (_) {}
+        }
+        dispatchControlEvents(element);
+        await sleep(500);
+        return String(element.value) === wanted || Array.from(element.selectedOptions || []).some(item => String(item.value) === wanted);
+    }
+
+    return setElementValue(element, wanted);
+}
+
+// Arabic: ملء حقل المقاسات مع دعم Select2 وTagify وBootstrap Tagsinput.
+// English: Populate a size-option control with Select2, Tagify, or Bootstrap Tagsinput support.
+async function populateChoiceOptionsControl(element, sizes) {
+    if (!element) return false;
+    const values = sizes.map(String);
+
+    if (element.tagName === 'SELECT') {
+        values.forEach(value => {
+            let option = Array.from(element.options || []).find(item => String(item.value) === value);
+            if (!option) {
+                option = new Option(value, value, true, true);
+                option.dataset.alphacodeGenerated = '1';
+                element.add(option);
+            }
+            option.selected = true;
+        });
+        element.multiple = true;
+        if (window.jQuery) {
+            try { window.jQuery(element).val(values).trigger('change.select2').trigger('change'); } catch (_) {}
+        }
+        dispatchControlEvents(element);
+        await sleep(700);
+        return true;
+    }
+
+    if (element._tagify?.removeAllTags && element._tagify?.addTags) {
+        element._tagify.removeAllTags();
+        element._tagify.addTags(values);
+        await sleep(700);
+        return true;
+    }
+    if (element.tomselect) {
+        element.tomselect.clear(true);
+        values.forEach(value => {
+            element.tomselect.addOption({ value, text: value });
+            element.tomselect.addItem(value, true);
+        });
+        await sleep(700);
+        return true;
+    }
+    if (element.selectize) {
+        element.selectize.clear(true);
+        values.forEach(value => {
+            element.selectize.addOption({ value, text: value });
+            element.selectize.addItem(value, true);
+        });
+        await sleep(700);
+        return true;
+    }
+    if (window.jQuery) {
+        try {
+            const jq = window.jQuery(element);
+            if (typeof jq.tagsinput === 'function') {
+                jq.tagsinput('removeAll');
+                values.forEach(value => jq.tagsinput('add', value));
+                await sleep(700);
+                return true;
+            }
+        } catch (_) {}
+    }
+
+    element.value = values.join(',');
+    dispatchControlEvents(element);
+    element.focus();
+    element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+    element.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }));
+    await sleep(700);
+    return true;
+}
+
 // Arabic: العثور على نموذج المنتج الحقيقي بواسطة name[].
 // English: Locate the real product form through its name[] controls.
 function findProductForm() {
@@ -227,7 +364,8 @@ function getFormDataFileNames(form, fieldName) {
 async function fillImageInputs(form, product, setStatus) {
     form.querySelectorAll('input[type="file"][data-alphacode-generated="1"]').forEach(input => input.remove());
 
-    const imageInfoList = Array.isArray(product.image_files) ? product.image_files : [];
+    const storeImageLimit = Math.max(1, Math.min(Number(adminConfig.StoreImageLimit || 5), 5));
+    const imageInfoList = Array.isArray(product.image_files) ? product.image_files.slice(0, storeImageLimit) : [];
     const imageFiles = [];
     for (let index = 0; index < imageInfoList.length; index += 1) {
         setStatus(`جلب الصورة ${index + 1} من ${imageInfoList.length}...`, 'working');
@@ -317,50 +455,123 @@ function appendHiddenInput(form, name, value) {
     return input;
 }
 
-// Arabic: تعبئة المقاسات بالسعر والمخزون نفسيهما لكل مقاس.
-// English: Fill size variants with identical price and stock for every size.
-function fillSizeVariants(form, product) {
-    form.querySelectorAll('[data-alphacode-generated="1"]:not([type="file"])').forEach(element => element.remove());
+// Arabic: تعبئة المقاسات فعلياً في واجهة المتجر مع سعر ومخزون متساويين.
+// English: Populate the store's real variant UI with equal price and stock per size.
+async function fillSizeVariants(form, product) {
+    form.querySelectorAll('input[type="hidden"][data-alphacode-generated="1"]').forEach(element => element.remove());
     const sizes = Array.from(new Set((product.sizes || []).map(value => String(value).trim()).filter(Boolean)));
     const settings = product.settings || {};
+    const stockPerSize = Number(settings.Stock || adminConfig.Stock || 100);
 
     if (!sizes.length) {
-        setControlValue('[name="current_stock"]', settings.Stock || adminConfig.Stock || 0);
-        return;
+        setControlValue('[name="current_stock"]', stockPerSize);
+        return { sizes: 0, stockPerSize, totalStock: stockPerSize };
     }
 
-    setControlValue('[name="current_stock"]', '');
-    const attributeId = settings.SizeAttributeId || adminConfig.SizeAttributeId || 1;
-    const choiceNo = settings.SizeChoiceNo || adminConfig.SizeChoiceNo || 1;
+    const totalStock = stockPerSize * sizes.length;
+    setControlValue('[name="current_stock"]', totalStock);
+    const attributeId = String(settings.SizeAttributeId || adminConfig.SizeAttributeId || 1);
+    const choiceNo = String(settings.SizeChoiceNo || adminConfig.SizeChoiceNo || 1);
     const choiceTitle = settings.SizeTitle || adminConfig.SizeTitle || 'الحجم';
-    appendHiddenInput(form, 'attribute_id[]', attributeId);
-    appendHiddenInput(form, 'choice_no[]', choiceNo);
-    appendHiddenInput(form, 'choice[]', choiceTitle);
+
+    // Arabic: اختيار خاصية الحجم من الحقل الحقيقي حتى تظهر واجهة الاختلافات.
+    // English: Select the real size attribute so the store renders its variant controls.
+    const attributeSelected = await setDynamicSelectValue('attribute_id[]', attributeId, choiceTitle);
+    await sleep(1000);
+
+    let choiceControl = await waitForCondition(
+        () => getNamedControl(`choice_options_${choiceNo}[]`),
+        8000,
+        250,
+    );
+    if (choiceControl) await populateChoiceOptionsControl(choiceControl, sizes);
+    await sleep(1200);
+
+    // Arabic: ضمان وجود القيم في FormData حتى لو لم ينشئ مكوّن الواجهة كل الحقول.
+    // English: Guarantee FormData values even if the UI component omits some controls.
+    const formDataAfterUi = new FormData(form);
+    if (!formDataAfterUi.getAll('attribute_id[]').map(String).includes(attributeId)) {
+        appendHiddenInput(form, 'attribute_id[]', attributeId);
+    }
+    if (!formDataAfterUi.getAll('choice_no[]').map(String).includes(choiceNo)) {
+        appendHiddenInput(form, 'choice_no[]', choiceNo);
+    }
+    if (!formDataAfterUi.getAll('choice[]').map(String).includes(choiceTitle)) {
+        appendHiddenInput(form, 'choice[]', choiceTitle);
+    }
+
+    const choiceName = `choice_options_${choiceNo}[]`;
+    const submittedChoices = new Set(new FormData(form).getAll(choiceName).map(String));
+    sizes.forEach(size => {
+        if (!submittedChoices.has(size)) appendHiddenInput(form, choiceName, size);
+    });
 
     sizes.forEach(size => {
-        appendHiddenInput(form, `choice_options_${choiceNo}[]`, size);
-        appendHiddenInput(form, `price_${size}`, product.price);
-        appendHiddenInput(form, `stock_${size}`, settings.Stock || adminConfig.Stock || 100);
+        const priceName = `price_${size}`;
+        const stockName = `stock_${size}`;
+        const priceControl = document.getElementsByName(priceName)[0];
+        const stockControl = document.getElementsByName(stockName)[0];
+        if (priceControl) setElementValue(priceControl, product.price);
+        else appendHiddenInput(form, priceName, product.price);
+        if (stockControl) setElementValue(stockControl, stockPerSize);
+        else appendHiddenInput(form, stockName, stockPerSize);
     });
+
+    setControlValue('[name="current_stock"]', totalStock);
+
+    await logClientEvent('INFO', 'admin_variants_ready', 'Size variants were prepared.', {
+        product_id: product.local_id,
+        attribute_id: attributeId,
+        attribute_ui_selected: attributeSelected,
+        choice_control_found: Boolean(choiceControl),
+        sizes,
+        stock_per_size: stockPerSize,
+        total_stock: totalStock,
+    });
+    return { sizes: sizes.length, stockPerSize, totalStock, attributeSelected, choiceControlFound: Boolean(choiceControl) };
 }
 
-// Arabic: تعبئة حقول Sooqify الأساسية المؤكدة.
-// English: Fill the confirmed core Sooqify product fields.
-function fillCoreFields(product) {
+// Arabic: تعبئة حقول Sooqify الديناميكية بالترتيب الصحيح: متجر ثم فئة ثم فئة فرعية.
+// English: Fill Sooqify dynamic fields in dependency order: store, category, then subcategory.
+async function fillCoreFields(product) {
     const settings = product.settings || {};
-    setControlValue('[name="store_id"]', settings.StoreId || adminConfig.StoreId);
-    setControlValue('[name="category_id"]', settings.CategoryId || adminConfig.CategoryId);
-    setControlValue('[name="sub_category_id"]', settings.SubCategoryId || adminConfig.SubCategoryId);
-    setControlValue('[name="brand_id"]', product.brand_id || adminConfig.BrandId);
-    setControlValue('[name="unit"]', settings.UnitId || adminConfig.UnitId);
+    const storeId = settings.StoreId || adminConfig.StoreId;
+    const categoryId = settings.CategoryId || adminConfig.CategoryId;
+    const subCategoryId = settings.SubCategoryId || adminConfig.SubCategoryId;
+    const brandId = product.brand_id || adminConfig.BrandId;
+    const unitId = settings.UnitId || adminConfig.UnitId;
+
+    const results = {};
+    results.store = await setDynamicSelectValue('store_id', storeId, `Store ${storeId}`);
+    await sleep(800);
+    results.category = await setDynamicSelectValue('category_id', categoryId, `Category ${categoryId}`);
+    await sleep(1000);
+    results.subCategory = await setDynamicSelectValue('sub_category_id', subCategoryId, `SubCategory ${subCategoryId}`);
+    results.brand = await setDynamicSelectValue('brand_id', brandId, product.brand_name || `Brand ${brandId}`);
+    results.unit = await setDynamicSelectValue('unit', unitId, `Unit ${unitId}`);
+
     setControlValue('[name="veg"]', String(settings.Veg === 'yes' ? 1 : (settings.Veg ?? 0)));
     setControlValue('[name="maximum_cart_quantity"]', settings.MaximumCartQuantity || '');
     setControlValue('[name="available_time_starts"]', settings.AvailableTimeStarts || '');
     setControlValue('[name="available_time_ends"]', settings.AvailableTimeEnds || '');
     setControlValue('[name="price"]', product.price);
-    setControlValue('[name="discount_type"]', settings.DiscountType || 'percent');
+    await setDynamicSelectValue('discount_type', settings.DiscountType || 'percent', settings.DiscountType || 'percent');
     setControlValue('[name="discount"]', settings.Discount ?? 0);
     setControlValue('[name="tags"]', '');
+
+    await logClientEvent('INFO', 'admin_core_fields_ready', 'Core dynamic fields were prepared.', {
+        product_id: product.local_id,
+        wanted: { storeId, categoryId, subCategoryId, brandId, unitId },
+        results,
+        actual: {
+            store_id: getNamedControl('store_id')?.value || '',
+            category_id: getNamedControl('category_id')?.value || '',
+            sub_category_id: getNamedControl('sub_category_id')?.value || '',
+            brand_id: getNamedControl('brand_id')?.value || '',
+            unit: getNamedControl('unit')?.value || '',
+        },
+    });
+    return results;
 }
 
 // Arabic: جلب آخر منتج مجهز من التخزين أو من Flask كحل بديل.
@@ -471,8 +682,10 @@ async function autofillLatestProduct(setStatus, options = {}) {
 
     setStatus('تعبئة الأسماء والأوصاف...', 'working');
     fillTranslations(form, product);
-    fillCoreFields(product);
-    fillSizeVariants(form, product);
+    setStatus('تعبئة الفئات والبراند والوحدة...', 'working');
+    const coreResult = await fillCoreFields(product);
+    setStatus('تعبئة المخزون وخصائص المقاسات...', 'working');
+    const variantResult = await fillSizeVariants(form, product);
     const imageResult = await fillImageInputs(form, product, setStatus);
 
     form.dataset.alphacodeProductId = String(product.local_id || '');
@@ -483,12 +696,14 @@ async function autofillLatestProduct(setStatus, options = {}) {
     });
 
     setStatus(
-        `تم تجهيز المنتج ${product.local_id}: صورة رئيسية + ${imageResult.galleryAssigned} صور معرض.`,
+        `تم تجهيز المنتج ${product.local_id}: ${imageResult.total} صور، ${variantResult.sizes} مقاس، مخزون إجمالي ${variantResult.totalStock}.`,
         'success',
     );
     await logClientEvent('INFO', 'admin_autofill_completed', 'Completed Sooqify product autofill.', {
         product_id: product.local_id,
         images: imageResult,
+        core_fields: coreResult,
+        variants: variantResult,
         sizes: product.sizes?.length || 0,
     });
 
@@ -734,7 +949,7 @@ async function initializeAdminAutofill() {
     });
     observer.observe(document.documentElement, { childList: true, subtree: true });
     await logClientEvent('INFO', 'admin_adapter_ready', 'Sooqify admin adapter initialized.', {
-        version: '3.2.0',
+        version: '3.3.0',
         target_store: adminConfig.StoreProfileName,
         supplier_store: adminConfig.SupplierStoreName,
     });

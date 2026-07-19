@@ -49,6 +49,7 @@
         OptimizeImageAtSource: true,
         RequireAllImages: true,
         MaxImages: 30,
+        StoreImageLimit: 5,
 
         AIAutoGenerate: true,
         AIModel: 'openai/gpt-oss-20b',

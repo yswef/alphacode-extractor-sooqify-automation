@@ -346,8 +346,21 @@ function buildFallbackEnglishName(sourceText, styleCode) {
         const model = sourceText.match(/\b(?:Air\s+Jordan|Jordan|AJ)\s*(\d+)(?:\s+(Low|Mid|High))?/i);
         if (model) text = `Air Jordan ${model[1]}${model[2] ? ` ${model[2]}` : ''} ${text}`;
     }
-    if (!text || containsCjk(text)) text = canonicalBrandName(extractorConfig.BrandName) + ' Footwear';
-    text = text.slice(0, 125).trim();
+    if (isValidCode(styleCode)) {
+        const escapedStyleCode = styleCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        text = text.replace(new RegExp(`\\s*[-–—|]?\\s*${escapedStyleCode}`, 'ig'), ' ').trim();
+    }
+    if (!text || containsCjk(text)) text = canonicalBrandName(extractorConfig.BrandName) + ' Lifestyle Sneakers';
+    if (!/\b(?:shoe|shoes|sneaker|sneakers|trainer|trainers|footwear|low-top|mid-top|high-top)\b/i.test(text)) {
+        if (/\bLow\b/i.test(text)) text += ' Lifestyle Sneakers';
+        else if (/\bMid\b/i.test(text)) text += ' Mid-Top Sneakers';
+        else if (/\bHigh\b/i.test(text)) text += ' High-Top Sneakers';
+        else text += ' Lifestyle Sneakers';
+    }
+    text = text.replace(/\bLow\s+Low-Top\b/i, 'Low-Top')
+        .replace(/\bMid\s+Mid-Top\b/i, 'Mid-Top')
+        .replace(/\bHigh\s+High-Top\b/i, 'High-Top');
+    text = text.slice(0, 145).trim();
     if (isValidCode(styleCode) && !text.toUpperCase().includes(styleCode.toUpperCase())) text += ` - ${styleCode}`;
     return text;
 }
@@ -373,8 +386,13 @@ function buildFallbackEnglishDescription(sourceText, styleCode) {
 // Arabic: إنشاء اسم عربي احتياطي مع إبقاء الموديل والكود واضحين.
 // English: Build an Arabic fallback name while preserving model and style code.
 function buildFallbackArabicName(sourceText, styleCode) {
-    const englishName = buildFallbackEnglishName(sourceText, styleCode);
-    return `حذاء ${englishName}`.replace(/\s+/g, ' ').trim().slice(0, 180);
+    const englishName = buildFallbackEnglishName(sourceText, styleCode)
+        .replace(/Air\s+Jordan/gi, 'إير جوردن')
+        .replace(/Low-Top Sneakers/gi, 'سنيكرز منخفض')
+        .replace(/Mid-Top Sneakers/gi, 'سنيكرز متوسط الارتفاع')
+        .replace(/High-Top Sneakers/gi, 'سنيكرز مرتفع')
+        .replace(/Lifestyle Sneakers/gi, 'سنيكرز كاجوال');
+    return `حذاء ${englishName}`.replace(/\s+/g, ' ').trim().slice(0, 190);
 }
 
 // Arabic: إنشاء وصف عربي احتياطي بسيط وقابل للتعديل.
@@ -723,6 +741,91 @@ async function openExtractionModal(productBox, buttonElement) {
     }
 }
 
+
+// Arabic: إنشاء محدد صور يسمح باختيار صور المتجر وتحديد الصورة الرئيسية.
+// English: Build a per-product image picker for store selection and main-image choice.
+function initializeStoreImageSelector(modalBox, images, configuredLimit) {
+    const grid = modalBox.querySelector('#alphacodeImageSelector');
+    const counter = modalBox.querySelector('#alphacodeSelectedImageCounter');
+    const limit = Math.max(1, Math.min(Number(configuredLimit || 5), 5));
+    const selected = new Set(images.slice(0, limit).map((_, index) => index));
+    let mainIndex = 0;
+
+    // Arabic: تحديث البطاقات والعداد بعد كل اختيار.
+    // English: Refresh image cards and selection counter after every change.
+    function refresh() {
+        grid.querySelectorAll('.alphacode-image-choice').forEach(card => {
+            const index = Number(card.dataset.index);
+            const checkbox = card.querySelector('.alphacode-image-check');
+            const radio = card.querySelector('.alphacode-image-main');
+            checkbox.checked = selected.has(index);
+            radio.checked = index === mainIndex;
+            radio.disabled = !selected.has(index);
+            card.classList.toggle('selected', selected.has(index));
+            card.classList.toggle('main-image', index === mainIndex);
+        });
+        counter.textContent = `${selected.size} / ${limit} صور مختارة — الصورة الرئيسية رقم ${mainIndex + 1}`;
+    }
+
+    // Arabic: ضمان أن الصورة الرئيسية مختارة دائماً وعدم تجاوز حد المتجر.
+    // English: Keep the main image selected and enforce the store image limit.
+    function selectImage(index, shouldSelect) {
+        if (shouldSelect) {
+            if (!selected.has(index) && selected.size >= limit) {
+                const removable = Array.from(selected).reverse().find(value => value !== mainIndex);
+                if (removable === undefined) {
+                    alert(`المتجر يقبل ${limit} صور فقط. اختر صورة أخرى بعد إلغاء إحدى الصور.`);
+                    return false;
+                }
+                selected.delete(removable);
+            }
+            selected.add(index);
+        } else {
+            if (index === mainIndex) {
+                alert('لا يمكن إلغاء الصورة الرئيسية. اختر صورة رئيسية أخرى أولاً.');
+                return false;
+            }
+            selected.delete(index);
+        }
+        refresh();
+        return true;
+    }
+
+    images.forEach((url, index) => {
+        const card = document.createElement('div');
+        card.className = 'alphacode-image-choice';
+        card.dataset.index = String(index);
+        card.innerHTML = `
+            <img loading="lazy" alt="Product image ${index + 1}">
+            <div class="alphacode-image-choice-footer">
+                <label><input class="alphacode-image-check" type="checkbox"> رفع</label>
+                <label><input class="alphacode-image-main" type="radio" name="alphacode-main-image"> رئيسية</label>
+                <strong>#${index + 1}</strong>
+            </div>`;
+        card.querySelector('img').src = url;
+        card.querySelector('.alphacode-image-check').addEventListener('change', event => {
+            if (!selectImage(index, event.target.checked)) event.target.checked = selected.has(index);
+        });
+        card.querySelector('.alphacode-image-main').addEventListener('change', event => {
+            if (!event.target.checked) return;
+            if (!selected.has(index)) selectImage(index, true);
+            mainIndex = index;
+            refresh();
+        });
+        grid.appendChild(card);
+    });
+
+    refresh();
+    return {
+        getSelectedIndexes() {
+            const ordered = Array.from(selected).sort((a, b) => a - b);
+            return [mainIndex, ...ordered.filter(index => index !== mainIndex)].slice(0, limit);
+        },
+        getMainIndex() { return mainIndex; },
+        getLimit() { return limit; },
+    };
+}
+
 // Arabic: بناء نافذة مراجعة ثنائية اللغة تشمل البراند والمقاسات قبل الحفظ.
 // English: Render the bilingual review modal with brand and size controls.
 function renderNewProductForm(context) {
@@ -761,6 +864,13 @@ function renderNewProductForm(context) {
             <div class="alphacode-field alphacode-wide-field"><label>المقاسات — افصل بينها بفاصلة ويمكن تعديلها:</label><input type="text" id="modSizes" dir="ltr"></div>
         </div>
         <div class="alphacode-note">كل مقاس سيحصل على السعر نفسه وكمية المخزون نفسها (${Number(extractorConfig.Stock || 0)}).</div>
+        <section class="alphacode-image-selector-section">
+            <div class="alphacode-image-selector-heading">
+                <div><strong>اختيار صور المتجر</strong><small>سيتم تنزيل كل الصور محلياً، ويمكن رفع ${Math.min(Number(extractorConfig.StoreImageLimit || 5), 5)} صور فقط إلى المتجر.</small></div>
+                <span id="alphacodeSelectedImageCounter"></span>
+            </div>
+            <div id="alphacodeImageSelector" class="alphacode-image-selector-grid"></div>
+        </section>
         <div class="alphacode-price-row">
             <div class="alphacode-field"><label>السعر الأساسي (يوان):</label><input type="number" id="modPrice"></div>
             <div class="alphacode-field"><label>بعد إضافة ${addedFee} يوان:</label><input type="number" id="modPriceFee" disabled></div>
@@ -791,6 +901,11 @@ function renderNewProductForm(context) {
     fields.brandName.value = fallbackBrand; fields.brandId.value = resolveBrandId(fallbackBrand);
     fields.sizes.value = sizes.join(', '); fields.price.value = originalPrice;
     fields.fee.value = priceAfterFee; fields.sar.textContent = `${priceSAR} ريال`;
+    const imageSelection = initializeStoreImageSelector(
+        modalBox,
+        images,
+        extractorConfig.StoreImageLimit || 5
+    );
 
     fields.brandName.addEventListener('input', () => { fields.brandId.value = resolveBrandId(fields.brandName.value); });
     fields.price.addEventListener('input', () => {
@@ -809,7 +924,7 @@ function renderNewProductForm(context) {
     modalBox.querySelector('#generateAiBtn').onclick = runAiGeneration;
     if (extractorConfig.AIAutoGenerate) runAiGeneration();
     modalBox.querySelector('#confirmExtractBtn').onclick = () => submitProduct({
-        overlay, modalBox, buttonElement, sourceText, searchCode, styleCode, images, fields
+        overlay, modalBox, buttonElement, sourceText, searchCode, styleCode, images, fields, imageSelection
     });
 }
 
@@ -852,7 +967,7 @@ async function generateProductCopy(context) {
 // Arabic: إرسال المنتج إلى Flask ثم حفظ حزمة التعبئة في تخزين الإضافة.
 // English: Save through Flask, then persist the Sooqify autofill package in extension storage.
 async function submitProduct(context) {
-    const { overlay, modalBox, buttonElement, searchCode, styleCode, images, fields } = context;
+    const { overlay, modalBox, buttonElement, searchCode, styleCode, images, fields, imageSelection } = context;
     const submitButton = modalBox.querySelector('#confirmExtractBtn');
     submitButton.textContent = `⏳ تنزيل ${images.length} صور وحفظ المنتج...`;
     submitButton.disabled = true;
@@ -867,6 +982,9 @@ async function submitProduct(context) {
         BrandName: canonicalBrandName(fields.brandName.value), BrandId: Number(fields.brandId.value || 0),
         Sizes: sizes, OriginalPrice: originalPrice, PriceAfterFee: finalFeePrice, PriceSAR: finalSar,
         SearchCode: searchCode || 'NONE', StyleCode: styleCode, Images: images,
+        SelectedImageIndexes: imageSelection.getSelectedIndexes(),
+        MainImageIndex: imageSelection.getMainIndex(),
+        StoreImageLimit: imageSelection.getLimit(),
         SourceUrl: window.location.href, SupplierStoreName: extractorConfig.SupplierStoreName || '',
         SupplierStoreId: resolveSupplierStoreId(), Settings: extractorConfig
     };

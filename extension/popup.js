@@ -1,5 +1,5 @@
 // =========================================================
-// AlphaCode Extractor - Popup Controller 3.2
+// AlphaCode Extractor - Popup Controller 3.3
 // Arabic: يدير الإعدادات والمتاجر والبحث وحذف البيانات والتشخيص.
 // English: Controls settings, store profiles, search, data deletion, and diagnostics.
 // =========================================================
@@ -11,7 +11,7 @@ const DEFAULTS = globalThis.ALPHACODE_DEFAULT_CONFIG || {};
 const NUMBER_FIELDS = new Set([
     'CategoryId', 'SubCategoryId', 'UnitId', 'Stock', 'ExchangeRate', 'AddedFeeYuan',
     'Discount', 'StoreId', 'ModuleId', 'BrandId', 'SizeAttributeId', 'SizeChoiceNo',
-    'ImageMaxDimension', 'ImageQuality', 'MaxImages', 'AutoSubmitDelaySeconds'
+    'ImageMaxDimension', 'ImageQuality', 'MaxImages', 'StoreImageLimit', 'AutoSubmitDelaySeconds'
 ]);
 const BOOLEAN_FIELDS = new Set([
     'OptimizeImageAtSource', 'RequireAllImages', 'AIAutoGenerate', 'AutoAddProduct'

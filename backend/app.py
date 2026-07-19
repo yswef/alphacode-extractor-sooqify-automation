@@ -36,7 +36,7 @@ LOG_PATH = os.path.join(LOG_DIR, "alphacode.log")
 # English: Groq Chat Completions is OpenAI-compatible and offers a limited free tier.
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_AI_MODEL = "openai/gpt-oss-20b"
-AI_PROMPT_VERSION = "3.2-bilingual-canonical-brand"
+AI_PROMPT_VERSION = "3.3-rich-name-image-selection"
 
 # Arabic: القفل يمنع تعارض طلبين أثناء تحديث الصور وExcel والأرشيف.
 # English: The lock prevents concurrent requests from corrupting images, Excel, or archive data.
@@ -503,27 +503,79 @@ def canonicalize_brand_name(value):
 
 
 def enforce_product_name_rules(name, source_text, style_code):
-    """Arabic: فرض الاسم القياسي Air Jordan ووضع Style Code مرة واحدة. English: Enforce canonical Air Jordan naming and a single trailing Style Code."""
+    """Arabic: تحسين اسم المنتج وفرض البراند والنوع ورمز الموديل. English: Enrich the product title and enforce brand, footwear type, and style code."""
     final_name = re.sub(r"\s+", " ", normalize_text(name)).strip(" -–—|")
     source = normalize_text(source_text)
     exact_style_code = normalize_text(style_code).upper()
     is_air_jordan = bool(re.search(r"\b(?:AIR\s+JORDAN|JORDAN\s*\d+|AJ\s*\d+)\b", source, re.I))
+
     if is_air_jordan:
         final_name = re.sub(r"^(?:NIKE\s+)?JORDAN(?=\s*\d)", "Air Jordan", final_name, flags=re.I)
         final_name = re.sub(r"^AJ\s*(\d+)", r"Air Jordan \1", final_name, flags=re.I)
-        final_name = re.sub(r"^AIR\s+JORDAN\b", "Air Jordan", final_name, flags=re.I)
         final_name = re.sub(r"^AIR\s+AIR\s+JORDAN\b", "Air Jordan", final_name, flags=re.I)
-        if not re.match(r"^Air Jordan\b", final_name, flags=re.I):
-            model_match = re.search(r"\b(?:Air\s+Jordan|Jordan|AJ)\s*(\d+)(?:\s+(Low|Mid|High))?", source, re.I)
-            if model_match:
-                prefix = f"Air Jordan {model_match.group(1)}"
-                if model_match.group(2):
-                    prefix += f" {model_match.group(2).title()}"
-                final_name = f"{prefix} {final_name}".strip()
+        final_name = re.sub(r"^AIR\s+JORDAN\b", "Air Jordan", final_name, flags=re.I)
+
+        model_match = re.search(r"\b(?:Air\s+Jordan|Jordan|AJ)\s*(\d+)(?:\s+(Low|Mid|High))?", source, re.I)
+        if model_match and not re.match(r"^Air Jordan\b", final_name, flags=re.I):
+            prefix = f"Air Jordan {model_match.group(1)}"
+            if model_match.group(2):
+                prefix += f" {model_match.group(2).title()}"
+            final_name = f"{prefix} {final_name}".strip()
+
+    footwear_words = r"(?:shoe|shoes|sneaker|sneakers|trainer|trainers|footwear|low-top|mid-top|high-top)"
+    if not re.search(rf"\b{footwear_words}\b", final_name, re.I):
+        if re.search(r"\bLow\b", final_name, re.I):
+            final_name += " Lifestyle Sneakers"
+        elif re.search(r"\bMid\b", final_name, re.I):
+            final_name += " Mid-Top Sneakers"
+        elif re.search(r"\bHigh\b", final_name, re.I):
+            final_name += " High-Top Sneakers"
+        else:
+            final_name += " Lifestyle Sneakers"
+
+    final_name = re.sub(r"\bLow\s+Low-Top\b", "Low-Top", final_name, flags=re.I)
+    final_name = re.sub(r"\bMid\s+Mid-Top\b", "Mid-Top", final_name, flags=re.I)
+    final_name = re.sub(r"\bHigh\s+High-Top\b", "High-Top", final_name, flags=re.I)
+
+    if exact_style_code:
+        final_name = re.sub(rf"\s*[-–—|]?\s*{re.escape(exact_style_code)}\b", "", final_name, flags=re.I).strip(" -–—|")
+    final_name = re.sub(r"\bLow\s+Low-Top\b", "Low-Top", final_name, flags=re.I)
+    final_name = re.sub(r"\bMid\s+Mid-Top\b", "Mid-Top", final_name, flags=re.I)
+    final_name = re.sub(r"\bHigh\s+High-Top\b", "High-Top", final_name, flags=re.I)
+    if exact_style_code:
+        final_name = f"{final_name} - {exact_style_code}"
+    return re.sub(r"\s+", " ", final_name).strip()[:170]
+
+
+def enforce_arabic_product_name(name, source_text, style_code):
+    """Arabic: تنظيف الاسم العربي ومنع الصياغة المختلطة الضعيفة. English: Clean the Arabic title and prevent weak mixed-language wording."""
+    final_name = re.sub(r"\s+", " ", normalize_text(name)).strip(" -–—|")
+    exact_style_code = normalize_text(style_code).upper()
+    source = normalize_text(source_text)
+    is_air_jordan = bool(re.search(r"\b(?:AIR\s+JORDAN|JORDAN\s*\d+|AJ\s*\d+)\b", source, re.I))
+
+    final_name = re.sub(r"Air\s+Jordan\s+Footwear", "إير جوردن", final_name, flags=re.I)
+    final_name = re.sub(r"Air\s+Jordan", "إير جوردن", final_name, flags=re.I)
+    final_name = re.sub(r"\bFootwear\b", "حذاء", final_name, flags=re.I)
+    final_name = re.sub(r"\bLow(?:-Top)?(?:\s+Sneakers)?\b", "لو منخفض", final_name, flags=re.I)
+    final_name = re.sub(r"\bMid(?:-Top)?(?:\s+Sneakers)?\b", "ميد متوسط الارتفاع", final_name, flags=re.I)
+    final_name = re.sub(r"\bHigh(?:-Top)?(?:\s+Sneakers)?\b", "هاي مرتفع", final_name, flags=re.I)
+    final_name = re.sub(r"\bLifestyle Sneakers\b", "سنيكرز كاجوال", final_name, flags=re.I)
+    if is_air_jordan and "إير جوردن" not in final_name:
+        model_match = re.search(r"\b(?:Air\s+Jordan|Jordan|AJ)\s*(\d+)(?:\s+(Low|Mid|High))?", source, re.I)
+        prefix = "حذاء إير جوردن"
+        if model_match:
+            prefix += f" {model_match.group(1)}"
+            silhouette = {"low": "لو", "mid": "ميد", "high": "هاي"}.get((model_match.group(2) or "").lower())
+            if silhouette:
+                prefix += f" {silhouette}"
+        final_name = f"{prefix} {final_name}".strip()
+    if not final_name.startswith("حذاء"):
+        final_name = f"حذاء {final_name}".strip()
     if exact_style_code:
         final_name = re.sub(rf"\s*[-–—|]?\s*{re.escape(exact_style_code)}\b", "", final_name, flags=re.I).strip(" -–—|")
         final_name = f"{final_name} - {exact_style_code}"
-    return re.sub(r"\s+", " ", final_name).strip()[:150]
+    return re.sub(r"\s+", " ", final_name).strip()[:190]
 
 
 def ai_cache_key(style_code, source_text, model):
@@ -539,7 +591,8 @@ def ai_cache_key(style_code, source_text, model):
 
 def build_pending_product(product_id, archive_item):
     """Arabic: تجهيز حزمة تعبئة لوحة Sooqify. English: Build the package consumed by the Sooqify form autofill script."""
-    image_names = archive_item.get("images") or []
+    all_image_names = archive_item.get("images") or []
+    store_image_names = archive_item.get("store_images") or all_image_names[:5]
     return {
         "local_id": product_id,
         "name_en": archive_item.get("name_en") or archive_item.get("name"),
@@ -560,8 +613,16 @@ def build_pending_product(product_id, archive_item):
                 "name": image_name,
                 "url": f"http://127.0.0.1:5000/api/product-images/{product_id}/{image_name}",
             }
-            for image_name in image_names
+            for image_name in store_image_names
         ],
+        "all_image_files": [
+            {
+                "name": image_name,
+                "url": f"http://127.0.0.1:5000/api/product-images/{product_id}/{image_name}",
+            }
+            for image_name in all_image_names
+        ],
+        "store_main_image": archive_item.get("store_main_image") or (store_image_names[0] if store_image_names else ""),
         "created_at": archive_item.get("created_at"),
         "workflow_status": archive_item.get("workflow_status") or "prepared",
         "store_submission_status": archive_item.get("store_submission_status") or "not_submitted",
@@ -694,7 +755,7 @@ def health_check():
     return jsonify({
         "success": True,
         "service": "AlphaCode Extractor",
-        "version": "3.2.0",
+        "version": "3.3.0",
         "ai_provider": "Groq",
         "ai_configured": bool(os.getenv("GROQ_API_KEY")),
         "default_ai_model": os.getenv("GROQ_MODEL", DEFAULT_AI_MODEL),
@@ -940,10 +1001,13 @@ def generate_ai_copy():
         "Use the supplied product text and your reliable product knowledge, but never invent unsupported facts. "
         "If the source mentions Air Jordan, Jordan followed by a model number, or AJ followed by a model number, "
         "the canonical brand must be exactly 'Air Jordan'. Never write 'Jordan' alone or 'Nike Jordan'. "
-        "The English product name should use: canonical brand, model, silhouette/edition, verified colorway or key design, "
-        "and the exact style code once at the end. Avoid weak names such as Sports Shoe, Sneakers Product, or Jordan 1 Low. "
+        "The English product name must use: canonical brand, model, silhouette/edition, translated verified colorway or nickname when present, "
+        "a clear footwear type such as Low-Top Sneakers, and the exact style code once at the end. "
+        "Translate relevant Chinese color and material terms. The title must contain at least one useful descriptor beyond brand/model/code. "
+        "Avoid weak names such as Sports Shoe, Sneakers Product, Jordan 1 Low, or Air Jordan 1 Low followed only by a code. "
         "Write a polished 2-3 sentence English description using only verified colors, materials, silhouette, design details, and sizes. "
-        "Create a natural Arabic commercial name and description carrying the same verified facts, while keeping brand/model/style code recognizable. "
+        "Create a natural Arabic commercial name beginning with حذاء and use إير جوردن instead of mixed wording such as Air Jordan Footwear. "
+        "The Arabic name and description must carry the same verified colorway, silhouette, design, and size facts. "
         "Do not claim authentic, genuine, original, official, replica, or a quality grade. "
         "Do not include prices, supplier names, Search Code, shipping claims, emojis, or Chinese text. "
         "Return valid JSON only with exactly: name_en, description_en, name_ar, description_ar, brand_name."
@@ -986,7 +1050,7 @@ def generate_ai_copy():
         generated = json.loads(json_match.group(0))
         name_en = enforce_product_name_rules(generated.get("name_en"), source_text, style_code)
         description_en = re.sub(r"\s+", " ", normalize_text(generated.get("description_en")))[:1600]
-        name_ar = re.sub(r"\s+", " ", normalize_text(generated.get("name_ar")))[:180]
+        name_ar = enforce_arabic_product_name(generated.get("name_ar"), source_text, style_code)
         description_ar = re.sub(r"\s+", " ", normalize_text(generated.get("description_ar")))[:1800]
         brand_name = canonicalize_brand_name(generated.get("brand_name") or configured_brand)
         if len(name_en) < 5 or len(description_en) < 20 or len(name_ar) < 3 or len(description_ar) < 15:
@@ -1049,6 +1113,27 @@ def extract_product():
     if not images:
         return jsonify({"success": False, "error": "No product images were received."}), 400
 
+    # Arabic: ترتيب الصور المختارة للمتجر مع وضع الصورة الرئيسية أولاً.
+    # English: Normalize store-selected images and place the main image first.
+    store_image_limit = max(1, min(safe_int(data.get("StoreImageLimit"), 5), 5))
+    selected_indexes = []
+    for value in data.get("SelectedImageIndexes") if isinstance(data.get("SelectedImageIndexes"), list) else []:
+        index = safe_int(value, -1)
+        if 0 <= index < len(images) and index not in selected_indexes:
+            selected_indexes.append(index)
+    main_image_index = safe_int(data.get("MainImageIndex"), selected_indexes[0] if selected_indexes else 0)
+    if not 0 <= main_image_index < len(images):
+        main_image_index = 0
+    if main_image_index in selected_indexes:
+        selected_indexes.remove(main_image_index)
+    selected_indexes.insert(0, main_image_index)
+    for index in range(len(images)):
+        if len(selected_indexes) >= store_image_limit:
+            break
+        if index not in selected_indexes:
+            selected_indexes.append(index)
+    selected_indexes = selected_indexes[:store_image_limit]
+
     with SAVE_LOCK:
         archive = load_archive()
         existing = find_existing_product(archive, search_code, style_code)
@@ -1078,7 +1163,7 @@ def extract_product():
 
         output_format = normalize_image_format(settings["ImageFormat"])
         extension = "png" if output_format == "png" else "jpg"
-        local_images, failed_images = [], []
+        local_images, downloaded_image_records, failed_images = [], [], []
         total_download_bytes = 0
         session = requests.Session()
         session.headers.update(HEADERS)
@@ -1094,6 +1179,7 @@ def extract_product():
                     downloaded_bytes, _ = download_single_image(session, image_url, image_path, settings, index)
                     total_download_bytes += downloaded_bytes
                     local_images.append(image_name)
+                    downloaded_image_records.append({"source_index": index - 1, "name": image_name})
                 except Exception as exc:
                     failed_images.append({"index": index, "url": image_url, "error": str(exc)})
                     logger.error("Image %s could not be downloaded: %s", index, exc)
@@ -1102,6 +1188,18 @@ def extract_product():
             if not local_images:
                 raise RuntimeError("No image could be downloaded. Nothing was saved.")
 
+            downloaded_by_index = {item["source_index"]: item["name"] for item in downloaded_image_records}
+            store_images = [downloaded_by_index[index] for index in selected_indexes if index in downloaded_by_index]
+            if not store_images:
+                store_images = local_images[:store_image_limit]
+            store_main_image = downloaded_by_index.get(main_image_index) or store_images[0]
+            store_images = [store_main_image] + [name for name in store_images if name != store_main_image]
+            store_images = store_images[:store_image_limit]
+            logger.info(
+                "Store image selection prepared. id=%s selected=%s main=%s all_downloaded=%s",
+                next_id, store_images, store_main_image, len(local_images),
+            )
+
             variations, choice_options, attributes, total_stock = build_size_variant_fields(
                 sizes, data.get("PriceSAR"), settings["Stock"], settings
             )
@@ -1109,7 +1207,7 @@ def extract_product():
                 "Id": next_id,
                 "Name": name_en,
                 "Description": description_en,
-                "Image": local_images[0],
+                "Image": store_main_image,
                 "CategoryId": settings["CategoryId"],
                 "SubCategoryId": settings["SubCategoryId"],
                 "UnitId": settings["UnitId"],
@@ -1167,6 +1265,9 @@ def extract_product():
                 "store_submission_status": "not_submitted",
                 "folder": final_folder_name,
                 "images": local_images,
+                "store_images": store_images,
+                "store_main_image": store_main_image,
+                "selected_image_indexes": selected_indexes,
                 "source_url": normalize_text(data.get("SourceUrl")),
                 "supplier_store_name": supplier_store_name,
                 "supplier_store_id": supplier_store_id,
@@ -1194,6 +1295,8 @@ def extract_product():
                 "downloaded_images": len(local_images),
                 "failed_images": failed_images,
                 "image_names": local_images,
+                "store_image_names": store_images,
+                "store_main_image": store_main_image,
                 "transferred_bytes": total_download_bytes,
                 "pending_product": pending_product,
             })

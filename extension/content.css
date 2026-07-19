@@ -57,7 +57,7 @@
 
 .alphacode-modal-box {
     background: #fff;
-    width: min(570px, calc(100vw - 30px));
+    width: min(760px, calc(100vw - 30px));
     max-height: 92vh;
     overflow-y: auto;
     border-radius: 12px;
@@ -265,3 +265,78 @@
 .alphacode-duplicate-actions { align-items: stretch; }
 .alphacode-duplicate-actions > button { flex: 1; }
 .alphacode-inline-error { display: inline-block; margin-top: 8px; color: #b42336; font-weight: 800; }
+
+/* Arabic: محدد صور المتجر مع اختيار الصورة الرئيسية وحد أقصى قابل للضبط. */
+/* English: Store-image selector with main-image choice and configurable limit. */
+.alphacode-image-selector-section {
+    margin: 12px 0 14px;
+    padding: 10px;
+    border: 1px solid #cbd5e1;
+    border-radius: 9px;
+    background: #f8fafc;
+}
+.alphacode-image-selector-heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 9px;
+}
+.alphacode-image-selector-heading strong { display: block; color: #07022a; font-size: 13px; }
+.alphacode-image-selector-heading small { display: block; color: #64748b; font-size: 10px; margin-top: 2px; }
+#alphacodeSelectedImageCounter {
+    flex: 0 0 auto;
+    background: #07022a;
+    color: #c5ffe7;
+    padding: 5px 8px;
+    border-radius: 999px;
+    font-size: 10px;
+    white-space: nowrap;
+}
+.alphacode-image-selector-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    max-height: 260px;
+    overflow-y: auto;
+    padding: 2px;
+}
+.alphacode-image-choice {
+    position: relative;
+    border: 2px solid transparent;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #fff;
+    box-shadow: 0 1px 4px rgba(7, 2, 42, .12);
+    transition: border-color .15s, transform .15s, box-shadow .15s;
+}
+.alphacode-image-choice.selected { border-color: #53f5ff; }
+.alphacode-image-choice.main-image {
+    border-color: #07022a;
+    box-shadow: 0 0 0 2px #c5ffe7, 0 4px 12px rgba(7, 2, 42, .22);
+    transform: translateY(-1px);
+}
+.alphacode-image-choice img {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+    display: block;
+    background: #fff;
+}
+.alphacode-image-choice-footer {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    align-items: center;
+    gap: 3px;
+    padding: 5px;
+    background: #fff;
+    font-size: 9px;
+    color: #334155;
+}
+.alphacode-image-choice-footer label { display: flex; align-items: center; gap: 2px; cursor: pointer; }
+.alphacode-image-choice-footer input { accent-color: #07022a; }
+.alphacode-image-choice-footer strong { color: #07022a; }
+@media (max-width: 600px) {
+    .alphacode-image-selector-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .alphacode-image-selector-heading { flex-direction: column; }
+}

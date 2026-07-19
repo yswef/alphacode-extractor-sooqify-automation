@@ -592,7 +592,7 @@ def ai_cache_key(style_code, source_text, model):
 def build_pending_product(product_id, archive_item):
     """Arabic: تجهيز حزمة تعبئة لوحة Sooqify. English: Build the package consumed by the Sooqify form autofill script."""
     all_image_names = archive_item.get("images") or []
-    store_image_names = archive_item.get("store_images") or all_image_names[:5]
+    store_image_names = archive_item.get("store_images") or all_image_names[:6]
     return {
         "local_id": product_id,
         "name_en": archive_item.get("name_en") or archive_item.get("name"),
@@ -1170,7 +1170,7 @@ def extract_product():
 
     # Arabic: ترتيب الصور المختارة للمتجر مع وضع الصورة الرئيسية أولاً.
     # English: Normalize store-selected images and place the main image first.
-    store_image_limit = max(1, min(safe_int(data.get("StoreImageLimit"), 5), 5))
+    store_image_limit = max(1, min(safe_int(data.get("StoreImageLimit"), 6), 6))
     selected_indexes = []
     for value in data.get("SelectedImageIndexes") if isinstance(data.get("SelectedImageIndexes"), list) else []:
         index = safe_int(value, -1)

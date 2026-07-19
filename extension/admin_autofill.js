@@ -288,7 +288,7 @@ async function setDynamicSelectValue(name, value, label = '') {
         }
 
         dispatchControlEvents(element);
-        await sleep(200);
+        await sleep(150);
 
         return String(element.value) === wanted
             || Array.from(element.selectedOptions || []).some(item => (
@@ -348,7 +348,7 @@ async function populateChoiceOptionsControl(element, sizes, form = null) {
         }
 
         dispatchControlEvents(element);
-        await sleep(900);
+        await sleep(150);
         return true;
     }
 
@@ -357,7 +357,7 @@ async function populateChoiceOptionsControl(element, sizes, form = null) {
     if (element._tagify?.removeAllTags && element._tagify?.addTags) {
         element._tagify.removeAllTags();
         element._tagify.addTags(values);
-        await sleep(900);
+        await sleep(150);
         return true;
     }
 
@@ -371,7 +371,7 @@ async function populateChoiceOptionsControl(element, sizes, form = null) {
             element.tomselect.addItem(value, true);
         });
 
-        await sleep(900);
+        await sleep(120);
         return true;
     }
 
@@ -385,7 +385,7 @@ async function populateChoiceOptionsControl(element, sizes, form = null) {
             element.selectize.addItem(value, true);
         });
 
-        await sleep(900);
+        await sleep(120);
         return true;
     }
 
@@ -403,7 +403,7 @@ async function populateChoiceOptionsControl(element, sizes, form = null) {
                     await sleep(80);
                 }
 
-                await sleep(900);
+                await sleep(120);
                 return true;
             }
         } catch (_) {}
@@ -525,7 +525,7 @@ async function populateChoiceOptionsControl(element, sizes, form = null) {
     }
 
     visibleInput.dispatchEvent(new Event('blur', { bubbles: true }));
-    await sleep(1200);
+    await sleep(350);
     return true;
 }
 
@@ -1543,7 +1543,7 @@ async function fillCoreFields(product) {
         `Store ${storeId}`,
     );
 
-    await sleep(800);
+    await sleep(200);
 
     results.category = await setDynamicSelectValue(
         'category_id',
@@ -1551,14 +1551,39 @@ async function fillCoreFields(product) {
         `${categoryId}`,
     );
 
-    await sleep(1000);
+    // العربية: انتظار جاهزية الفئة الفرعية بدلاً من الانتظار الثابت.
+// English: Wait for the subcategory control to become ready instead of using a fixed delay.
+await waitForCondition(
+    () => {
+        const control = getNamedControl(
+            'sub_category_id',
+        );
 
-    results.subCategory = await setDynamicSelectValue(
-        'sub_category_id',
-        subCategoryId,
-        `${subCategoryId}`,
-    );
+        if (
+            !control
+            || control.disabled
+        ) {
+            return null;
+        }
 
+        if (
+            control.tagName === 'SELECT'
+            && control.options.length < 2
+        ) {
+            return null;
+        }
+
+        return control;
+    },
+    5000,
+    100,
+);
+
+results.subCategory = await setDynamicSelectValue(
+    'sub_category_id',
+    subCategoryId,
+    `${subCategoryId}`,
+);
     results.brand = await setDynamicSelectValue(
         'brand_id',
         brandId,

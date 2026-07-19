@@ -20,7 +20,7 @@ const DEFAULT_CONFIG = globalThis.ALPHACODE_DEFAULT_CONFIG || {
     AvailableTimeStarts: '00:00:00', AvailableTimeEnds: '23:59:59', MaximumCartQuantity: '',
     StoreId: 3, ModuleId: 2, Status: 'active', Veg: 'no', Recommended: 'yes',
     BrandName: 'Air Jordan', BrandId: 6, BrandMapJson: '{"Air Jordan":6}',
-    SizeAttributeId: 8, SizeChoiceNo: 8, SizeTitle: 'الحجم', DefaultLanguage: 'en',
+    SizeAttributeId: 1, SizeChoiceNo: 1, SizeactualChoiceNo: 1, SizeTitle: 'الحجم', DefaultLanguage: 'en',
     SooqifyAddUrl: 'https://admin.sooqifyonline.com/admin/item/add-new',
     StoreProfileName: 'Sooqify Online', StoreDomain: 'admin.sooqifyonline.com',
     SupplierStoreName: 'BRANDKINGDOM', SupplierStoreId: '',
@@ -113,7 +113,18 @@ async function logExtractorEvent(level, event, message, details = {}) {
 // English: Load saved configuration or defaults after an extension reload.
 async function loadConfiguration() {
     const result = await safeStorageGet(['extractorConfig']);
-    extractorConfig = { ...DEFAULT_CONFIG, ...(result.extractorConfig || {}) };
+    const storedConfig = result.extractorConfig || {};
+    extractorConfig = { ...DEFAULT_CONFIG, ...storedConfig };
+    extractorConfig.SizeChoiceNo = Number(
+        storedConfig.SizeChoiceNo
+        ?? storedConfig.SizeactualChoiceNo
+        ?? DEFAULT_CONFIG.SizeChoiceNo
+        ?? DEFAULT_CONFIG.SizeactualChoiceNo
+        ?? 1
+    );
+    extractorConfig.SizeactualChoiceNo = extractorConfig.SizeChoiceNo;
+    extractorConfig.SizeAttributeId = Number(extractorConfig.SizeAttributeId || 1);
+    extractorConfig.SizeTitle = String(extractorConfig.SizeTitle || 'الحجم').trim() || 'الحجم';
     if (extractorConfig.StoreProfileName === 'BRANDKINGDOM') {
         extractorConfig.StoreProfileName = 'Sooqify Online';
     }
@@ -747,7 +758,7 @@ async function openExtractionModal(productBox, buttonElement) {
 function initializeStoreImageSelector(modalBox, images, configuredLimit) {
     const grid = modalBox.querySelector('#alphacodeImageSelector');
     const counter = modalBox.querySelector('#alphacodeSelectedImageCounter');
-    const limit = Math.max(1, Math.min(Number(configuredLimit || 5), 5));
+    const limit = Math.max(1, Math.min(Number(configuredLimit || 6), 6));
     const selected = new Set(images.slice(0, limit).map((_, index) => index));
     let mainIndex = 0;
 

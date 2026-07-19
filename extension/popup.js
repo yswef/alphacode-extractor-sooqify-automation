@@ -10,7 +10,7 @@ const API_BASE = 'http://127.0.0.1:5000';
 const DEFAULTS = globalThis.ALPHACODE_DEFAULT_CONFIG || {};
 const NUMBER_FIELDS = new Set([
     'CategoryId', 'SubCategoryId', 'UnitId', 'Stock', 'ExchangeRate', 'AddedFeeYuan',
-    'Discount', 'StoreId', 'ModuleId', 'BrandId', 'SizeAttributeId', 'SizeChoiceNo',
+    'Discount', 'StoreId', 'ModuleId', 'BrandId', 'SizeAttributeId', 'SizeactualChoiceNo',
     'ImageMaxDimension', 'ImageQuality', 'MaxImages', 'StoreImageLimit', 'AutoSubmitDelaySeconds'
 ]);
 const BOOLEAN_FIELDS = new Set([

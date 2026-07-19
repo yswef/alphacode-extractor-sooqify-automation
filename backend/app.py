@@ -36,7 +36,7 @@ LOG_PATH = os.path.join(LOG_DIR, "alphacode.log")
 # English: Groq Chat Completions is OpenAI-compatible and offers a limited free tier.
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_AI_MODEL = "openai/gpt-oss-20b"
-AI_PROMPT_VERSION = "3.3-rich-name-image-selection"
+AI_PROMPT_VERSION = "3.4-strict-groq-json"
 
 # Arabic: القفل يمنع تعارض طلبين أثناء تحديث الصور وExcel والأرشيف.
 # English: The lock prevents concurrent requests from corrupting images, Excel, or archive data.
@@ -289,7 +289,7 @@ def extract_settings(data):
         "BrandId": safe_int(settings.get("BrandId"), 6),
         "BrandName": normalize_text(settings.get("BrandName")) or "Air Jordan",
         "SizeAttributeId": max(1, safe_int(settings.get("SizeAttributeId"), 1)),
-        "SizeChoiceNo": max(1, safe_int(settings.get("SizeChoiceNo"), 1)),
+        "SizeChoiceNo": max(1, safe_int(settings.get("SizeChoiceNo", settings.get("SizeactualChoiceNo")), 1)),
         "SizeTitle": normalize_text(settings.get("SizeTitle")) or "الحجم",
         "DefaultLanguage": normalize_text(settings.get("DefaultLanguage")).lower() or "en",
         "SupplierStoreName": normalize_text(settings.get("SupplierStoreName")),
@@ -1020,14 +1020,64 @@ def generate_ai_copy():
         f"Configured brand hint: {configured_brand or 'Not provided'}\n"
         "Produce complete bilingual store copy and canonical brand identification."
     )
+    # Arabic: إجبار Groq على إعادة بنية JSON مطابقة تماماً.
+    # English: Force Groq to return an exact schema-compliant JSON object.
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": instructions},
-            {"role": "user", "content": user_input},
+            {
+                "role": "system",
+                "content": instructions,
+            },
+            {
+                "role": "user",
+                "content": user_input,
+            },
         ],
         "temperature": 0.0,
-        "max_completion_tokens": 1000,
+        "max_completion_tokens": 1800,
+
+        # Arabic: إخفاء reasoning حتى لا يختلط مع JSON النهائي.
+        # English: Hide reasoning so it cannot pollute the final JSON.
+        "reasoning_format": "hidden",
+
+        # Arabic: GPT-OSS 20B يدعم Structured Outputs الصارمة.
+        # English: GPT-OSS 20B supports strict Structured Outputs.
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "product_copy",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "name_en": {
+                            "type": "string",
+                        },
+                        "description_en": {
+                            "type": "string",
+                        },
+                        "name_ar": {
+                            "type": "string",
+                        },
+                        "description_ar": {
+                            "type": "string",
+                        },
+                        "brand_name": {
+                            "type": "string",
+                        },
+                    },
+                    "required": [
+                        "name_en",
+                        "description_en",
+                        "name_ar",
+                        "description_ar",
+                        "brand_name",
+                    ],
+                    "additionalProperties": False,
+                },
+            },
+        },
     }
     response = None
     try:
@@ -1042,12 +1092,17 @@ def generate_ai_copy():
         raw_text = response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
         if not raw_text:
             raise ValueError("Groq returned an empty response.")
-        clean_text = raw_text.strip()
-        clean_text = re.sub(r"^```(?:json)?\s*|\s*```$", "", clean_text, flags=re.I)
-        json_match = re.search(r"\{.*\}", clean_text, flags=re.S)
-        if not json_match:
-            raise ValueError("Groq did not return a valid JSON object.")
-        generated = json.loads(json_match.group(0))
+        try:
+            generated = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            logger.error(
+                "Invalid Groq JSON response: %r",
+                raw_text[:2000],
+            )
+
+            raise ValueError(
+                f"Groq returned invalid JSON: {exc}"
+            ) from exc
         name_en = enforce_product_name_rules(generated.get("name_en"), source_text, style_code)
         description_en = re.sub(r"\s+", " ", normalize_text(generated.get("description_en")))[:1600]
         name_ar = enforce_arabic_product_name(generated.get("name_ar"), source_text, style_code)
@@ -1242,6 +1297,7 @@ def extract_product():
                 "Veg": settings["Veg"],
                 "SizeAttributeId": settings["SizeAttributeId"],
                 "SizeChoiceNo": settings["SizeChoiceNo"],
+                "SizeactualChoiceNo": settings["SizeChoiceNo"],
                 "SizeTitle": settings["SizeTitle"],
                 "DefaultLanguage": settings["DefaultLanguage"],
             }

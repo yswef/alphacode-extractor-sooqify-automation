@@ -20,8 +20,6 @@
 
         Discount: 0,
         DiscountType: 'percent',
-        AvailableTimeStarts: '00:00:00',
-        AvailableTimeEnds: '23:59:59',
         MaximumCartQuantity: '',
         StoreId: 3,
         ModuleId: 2,
@@ -32,8 +30,9 @@
         BrandName: 'Air Jordan',
         BrandId: 6,
         BrandMapJson: '{"Air Jordan":6}',
-        SizeAttributeId: 8,
-        SizeChoiceNo: 8,
+        SizeAttributeId: 1,
+        SizeChoiceNo: 1,
+        SizeactualChoiceNo: 1, // Legacy compatibility / توافق مع الإصدارات السابقة
         SizeTitle: 'الحجم',
         DefaultLanguage: 'en',
         SooqifyAddUrl: 'https://admin.sooqifyonline.com/admin/item/add-new',

@@ -32,8 +32,8 @@
         BrandName: 'Air Jordan',
         BrandId: 6,
         BrandMapJson: '{"Air Jordan":6}',
-        SizeAttributeId: 1,
-        SizeChoiceNo: 1,
+        SizeAttributeId: 8,
+        SizeChoiceNo: 8,
         SizeTitle: 'الحجم',
         DefaultLanguage: 'en',
         SooqifyAddUrl: 'https://admin.sooqifyonline.com/admin/item/add-new',
@@ -49,15 +49,15 @@
         OptimizeImageAtSource: true,
         RequireAllImages: true,
         MaxImages: 30,
-        StoreImageLimit: 5,
+        StoreImageLimit: 6,
 
         AIAutoGenerate: true,
         AIModel: 'openai/gpt-oss-20b',
 
-        // Arabic: التشغيل الآلي اختياري ويظل معطلاً حتى يفعله المستخدم.
+        // Arabic: التشغيل الآلي اختياري ويظل معطلاً حتى يفعله المستخدم
         // English: Full automation is optional and stays disabled until explicitly enabled.
         AutoAddProduct: false,
-        AutoSubmitDelaySeconds: 3,
+        AutoSubmitDelaySeconds: 5,
 
         // Arabic: موضع اللوحة العائمة، ويمكن سحبها يدوياً أيضاً.
         // English: Floating-panel placement; the panel is also draggable.

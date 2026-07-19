@@ -20,11 +20,11 @@ const DEFAULT_CONFIG = globalThis.ALPHACODE_DEFAULT_CONFIG || {
     AvailableTimeStarts: '00:00:00', AvailableTimeEnds: '23:59:59', MaximumCartQuantity: '',
     StoreId: 3, ModuleId: 2, Status: 'active', Veg: 'no', Recommended: 'yes',
     BrandName: 'Air Jordan', BrandId: 6, BrandMapJson: '{"Air Jordan":6}',
-    SizeAttributeId: 1, SizeChoiceNo: 1, SizeTitle: 'الحجم', DefaultLanguage: 'en',
+    SizeAttributeId: 8, SizeChoiceNo: 8, SizeTitle: 'الحجم', DefaultLanguage: 'en',
     SooqifyAddUrl: 'https://admin.sooqifyonline.com/admin/item/add-new',
     StoreProfileName: 'Sooqify Online', StoreDomain: 'admin.sooqifyonline.com',
     SupplierStoreName: 'BRANDKINGDOM', SupplierStoreId: '',
-    ImageMaxDimension: 1200, ImageQuality: 75, ImageFormat: 'jpeg',
+    ImageMaxDimension: 1200, ImageQuality: 60, ImageFormat: 'jpeg',
     OptimizeImageAtSource: true, RequireAllImages: true, MaxImages: 30,
     AIAutoGenerate: true, AIModel: 'openai/gpt-oss-20b',
     AutoAddProduct: false, AutoSubmitDelaySeconds: 3, AdminPanelPosition: 'middle-left'
@@ -866,7 +866,7 @@ function renderNewProductForm(context) {
         <div class="alphacode-note">كل مقاس سيحصل على السعر نفسه وكمية المخزون نفسها (${Number(extractorConfig.Stock || 0)}).</div>
         <section class="alphacode-image-selector-section">
             <div class="alphacode-image-selector-heading">
-                <div><strong>اختيار صور المتجر</strong><small>سيتم تنزيل كل الصور محلياً، ويمكن رفع ${Math.min(Number(extractorConfig.StoreImageLimit || 5), 5)} صور فقط إلى المتجر.</small></div>
+                <div><strong>اختيار صور المتجر</strong><small>سيتم تنزيل كل الصور محلياً، ويمكن رفع ${Math.min(Number(extractorConfig.StoreImageLimit || 6), 6)} صور فقط إلى المتجر.</small></div>
                 <span id="alphacodeSelectedImageCounter"></span>
             </div>
             <div id="alphacodeImageSelector" class="alphacode-image-selector-grid"></div>
@@ -904,7 +904,7 @@ function renderNewProductForm(context) {
     const imageSelection = initializeStoreImageSelector(
         modalBox,
         images,
-        extractorConfig.StoreImageLimit || 5
+        extractorConfig.StoreImageLimit || 6
     );
 
     fields.brandName.addEventListener('input', () => { fields.brandId.value = resolveBrandId(fields.brandName.value); });

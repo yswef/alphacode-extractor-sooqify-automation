@@ -8,6 +8,7 @@
 
 const ADMIN_DEFAULTS = globalThis.ALPHACODE_DEFAULT_CONFIG || {};
 const LOCAL_API_BASE = 'http://127.0.0.1:5000';
+const AUTO_FLOW_STORAGE_KEY = 'alphacodeAutoFlow';
 let adminConfig = { ...ADMIN_DEFAULTS };
 let adminPanelObserverTimer = null;
 let automaticRunStarted = false;
@@ -2475,66 +2476,76 @@ async function injectAdminPanel() {
 
 // Arabic: تشغيل الإضافة التلقائية مرة واحدة عند جاهزية نموذج المنتج.
 // English: Run full automatic add once when the product form is ready.
-async function runAutomaticAddIfEnabled() {
-    if (
-        automaticRunStarted
-        || !findProductForm()
-    ) {
-        return;
+
+// Arabic: تحديث مسار الإضافة التلقائية والرجوع إلى صفحة المورد في التبويب نفسه.
+// English: Update the automatic flow and return to the supplier page in the same tab.
+async function returnToAutomaticFlowSource(status, product, errorMessage = '') {
+    const stored = await safeStorageGet([AUTO_FLOW_STORAGE_KEY]);
+    const flow = stored[AUTO_FLOW_STORAGE_KEY];
+
+    if (!flow || Number(flow.productId) !== Number(product?.local_id)) {
+        return false;
     }
+
+    const updatedFlow = {
+        ...flow,
+        status,
+        error: String(errorMessage || ''),
+        storeUrl: window.location.href,
+        completedAt: new Date().toISOString(),
+    };
+
+    await safeStorageSet({
+        [AUTO_FLOW_STORAGE_KEY]: updatedFlow,
+    });
+
+    if (!flow.sourceUrl) return false;
+
+    await sleep(350);
+    window.location.replace(flow.sourceUrl);
+    return true;
+}
+
+async function runAutomaticAddIfEnabled() {
+    if (automaticRunStarted || !findProductForm()) return;
 
     await loadAdminConfiguration();
-
-    if (!adminConfig.AutoAddProduct) {
-        return;
-    }
+    if (!adminConfig.AutoAddProduct) return;
 
     const product = await getLatestPreparedProduct();
-
     const stored = await safeStorageGet([
         'lastAutoSubmitProductId',
+        AUTO_FLOW_STORAGE_KEY,
     ]);
 
+    const activeFlow = stored[AUTO_FLOW_STORAGE_KEY];
+    const flowTargetsProduct = Number(activeFlow?.productId) === Number(product.local_id);
+
+    // Arabic: السماح بإعادة محاولة المنتج نفسه عندما بدأ المستخدم مساراً تلقائياً جديداً.
+    // English: Allow the same product to retry when a new automatic flow explicitly targets it.
     if (
-        stored.lastAutoSubmitProductId
-        === product.local_id
+        stored.lastAutoSubmitProductId === product.local_id
+        && !flowTargetsProduct
     ) {
         return;
     }
 
     automaticRunStarted = true;
-
-    const status = document.querySelector(
-        '#alphacode-admin-status',
-    );
-
+    const status = document.querySelector('#alphacode-admin-status');
     const setStatus = (message, type = '') => {
         if (!status) return;
-
         status.textContent = message;
         status.className = type;
     };
 
     try {
-        await autofillLatestProduct(
-            setStatus,
-            {
-                submitAfterFill: true,
-            },
-        );
+        await autofillLatestProduct(setStatus, { submitAfterFill: true });
     } catch (error) {
-        setStatus(
-            error.message,
-            'error',
-        );
+        setStatus(error.message, 'error');
 
-        await updateWorkflowStatus(
-            product.local_id,
-            'submit_failed',
-            {
-                error: error.message,
-            },
-        );
+        await updateWorkflowStatus(product.local_id, 'submit_failed', {
+            error: error.message,
+        });
 
         await logClientEvent(
             'ERROR',
@@ -2545,6 +2556,8 @@ async function runAutomaticAddIfEnabled() {
                 stack: error.stack || '',
             },
         );
+
+        await returnToAutomaticFlowSource('failed', product, error.message);
     }
 }
 
@@ -2552,40 +2565,32 @@ async function runAutomaticAddIfEnabled() {
 // English: Confirm post-submit navigation and mark the archived product as submitted.
 async function confirmSubmissionAfterNavigation() {
     const productId = Number(
-        sessionStorage.getItem(
-            'alphacodeSubmitProductId',
-        ),
+        sessionStorage.getItem('alphacodeSubmitProductId'),
     );
 
-    if (!productId || findProductForm()) {
-        return;
-    }
+    if (!productId || findProductForm()) return;
 
-    await updateWorkflowStatus(
-        productId,
-        'submitted',
-        {
-            redirected_to: window.location.href,
-        },
-    );
+    await updateWorkflowStatus(productId, 'submitted', {
+        redirected_to: window.location.href,
+    });
 
-    sessionStorage.removeItem(
-        'alphacodeSubmitProductId',
-    );
+    sessionStorage.removeItem('alphacodeSubmitProductId');
 
     const stored = await safeStorageGet([
         'pendingSooqifyProduct',
+        AUTO_FLOW_STORAGE_KEY,
     ]);
 
+    const product = stored.pendingSooqifyProduct || {
+        local_id: productId,
+    };
+
     if (
-        stored.pendingSooqifyProduct?.local_id
-            === productId
+        stored.pendingSooqifyProduct?.local_id === productId
         && isExtensionContextAvailable()
     ) {
         try {
-            await chrome.storage.local.remove(
-                'pendingSooqifyProduct',
-            );
+            await chrome.storage.local.remove('pendingSooqifyProduct');
         } catch (_) {}
     }
 
@@ -2598,6 +2603,8 @@ async function confirmSubmissionAfterNavigation() {
             page: window.location.href,
         },
     );
+
+    await returnToAutomaticFlowSource('submitted', product);
 }
 
 // Arabic: تسجيل أخطاء JavaScript غير المعالجة في السجل الخارجي.

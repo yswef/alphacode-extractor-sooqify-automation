@@ -5,6 +5,7 @@
 'use strict';
 
 const API_BASE_URL = 'http://127.0.0.1:5000';
+const AUTO_FLOW_STORAGE_KEY = 'alphacodeAutoFlow';
 const PRODUCT_CARD_SELECTOR = [
     '[class*="normal_item_timeline_common_item"]',
     '[class*="goods-item"]',
@@ -33,6 +34,33 @@ const DEFAULT_CONFIG = globalThis.ALPHACODE_DEFAULT_CONFIG || {
 let extractorConfig = { ...DEFAULT_CONFIG };
 let lastAddedSearchCodeGlobal = null;
 let observerTimer = null;
+
+// Arabic: انتظار خفيف واختبار شرط لواجهات التحميل الديناميكي.
+// English: Lightweight delay and condition polling for dynamic interfaces.
+function sleep(milliseconds) {
+    return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+async function waitForCondition(check, timeoutMs = 10000, intervalMs = 200) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+        const result = check();
+        if (result) return result;
+        await sleep(intervalMs);
+    }
+    return null;
+}
+
+// Arabic: منع إدخال نص المورد كـ HTML داخل النافذة.
+// English: Prevent supplier text from being interpreted as HTML in the modal.
+function escapeHtml(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
 
 // Arabic: التحقق من صلاحية سياق الإضافة بعد تحديثها من chrome://extensions.
 // English: Check whether the extension context is valid after an extension reload.
@@ -75,6 +103,18 @@ async function safeStorageSet(values) {
     if (!isExtensionContextAvailable()) return false;
     try {
         await chrome.storage.local.set(values);
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+// Arabic: حذف مفاتيح مؤقتة من تخزين الإضافة بأمان.
+// English: Safely remove temporary keys from extension storage.
+async function safeStorageRemove(keys) {
+    if (!isExtensionContextAvailable()) return false;
+    try {
+        await chrome.storage.local.remove(keys);
         return true;
     } catch (_) {
         return false;
@@ -208,6 +248,59 @@ function extractSourceDescription(productBox) {
     clone.querySelectorAll('details, .alphacode-extract-btn, [class*="handle_bar"]').forEach(node => node.remove());
     return normalizeText(clone.innerText || clone.textContent);
 }
+
+// Arabic: استخراج الاسم الأصلي الظاهر في بطاقة المورد دون إعادة صياغته.
+// English: Extract the supplier's original visible product name without rewriting it.
+function extractOriginalProductName(productBox) {
+    const selectors = [
+        '[class*="word-break"][class*="ellipsis"]',
+        '.goods-title',
+        '[class*="goods-title"]',
+        '.detail-text',
+        '[class*="title"]',
+        '[title]'
+    ];
+
+    for (const selector of selectors) {
+        const elements = Array.from(productBox.querySelectorAll(selector));
+        for (const element of elements) {
+            const value = normalizeText(
+                element.getAttribute?.('title')
+                || element.innerText
+                || element.textContent
+            );
+            if (!value || value.length < 3) continue;
+            const firstLine = normalizeText(value.split(/\r?\n/)[0]);
+            if (firstLine) return firstLine;
+        }
+    }
+
+    return extractSourceDescription(productBox);
+}
+
+// Arabic: نسخ النص مع حل احتياطي للصفحات التي تمنع Clipboard API.
+// English: Copy text with a fallback for pages that block the Clipboard API.
+async function copyTextToClipboard(value) {
+    const text = String(value || '').trim();
+    if (!text) return false;
+
+    try {
+        await navigator.clipboard.writeText(text);
+        return true;
+    } catch (_) {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand('copy');
+        textarea.remove();
+        return copied;
+    }
+}
+
 
 // Arabic: الأولوية لصيغ Item No وStyle Code والحقول الصينية فقط، دون كلمة Code العامة.
 // English: Prioritize explicit Item No/Style Code labels and never use a generic Code token.
@@ -666,6 +759,7 @@ function createModalShell() {
 async function openExtractionModal(productBox, buttonElement) {
     const { overlay, modalBox } = createModalShell();
     const sourceText = extractSourceDescription(productBox);
+    const originalProductName = extractOriginalProductName(productBox);
     const searchCode = extractSearchCode(productBox);
     const styleCode = extractStyleCode(sourceText);
     const originalPrice = extractOriginalPrice(sourceText);
@@ -708,6 +802,16 @@ async function openExtractionModal(productBox, buttonElement) {
                         pendingSooqifyProduct: pendingData.pending_product,
                         lastAlphaCodeProductId: archiveData.id
                     });
+                    if (extractorConfig.AutoAddProduct) {
+                        await startSameTabAutomaticFlow({
+                            productId: archiveData.id,
+                            searchCode,
+                            styleCode,
+                            originalProductName,
+                        });
+                        return;
+                    }
+
                     const opened = await openStorePageSafely(extractorConfig.SooqifyAddUrl);
                     if (!opened) throw new Error('تعذر فتح صفحة المتجر. افتحها يدوياً من لوحة الإضافة.');
                     overlay.remove();
@@ -729,6 +833,7 @@ async function openExtractionModal(productBox, buttonElement) {
             modalBox,
             buttonElement,
             sourceText,
+            originalProductName,
             searchCode,
             styleCode,
             originalPrice,
@@ -882,7 +987,18 @@ function initializeStoreImageSelector(modalBox, images, configuredLimit) {
 // Arabic: بناء نافذة مراجعة ثنائية اللغة تشمل البراند والمقاسات قبل الحفظ.
 // English: Render the bilingual review modal with brand and size controls.
 function renderNewProductForm(context) {
-    const { overlay, modalBox, buttonElement, sourceText, searchCode, styleCode, originalPrice, images } = context;
+    const {
+        overlay,
+        modalBox,
+        buttonElement,
+        sourceText,
+        originalProductName,
+        searchCode,
+        styleCode,
+        originalPrice,
+        images,
+    } = context;
+
     const addedFee = Number(extractorConfig.AddedFeeYuan || 0);
     const exchangeRate = Number(extractorConfig.ExchangeRate || 0);
     const priceAfterFee = originalPrice + addedFee;
@@ -893,12 +1009,15 @@ function renderNewProductForm(context) {
     const fallbackNameAR = buildFallbackArabicName(sourceText, styleCode);
     const fallbackDescriptionAR = buildFallbackArabicDescription(sourceText, styleCode);
     const fallbackBrand = canonicalBrandName(sourceText);
+    const originalNameDisplay = escapeHtml(normalizeText(originalProductName) || 'غير موجود');
+    const originalNameTitle = escapeHtml(normalizeText(originalProductName));
 
     const contentArea = modalBox.querySelector('#modal-content-area');
     contentArea.className = '';
     contentArea.innerHTML = `
         <div class="alphacode-ai-toolbar">
             <button class="alphacode-ai-btn" id="generateAiBtn" type="button">✨ إنشاء المحتوى العربي والإنجليزي</button>
+            <button class="alphacode-copy-btn" id="copyOriginalNameBtn" type="button" title="نسخ الاسم الأصلي من موقع المورد">📋 نسخ الاسم الأصلي</button>
             <span id="aiStatus" class="alphacode-ai-status">جاهز</span>
         </div>
         <div class="alphacode-language-grid">
@@ -929,6 +1048,7 @@ function renderNewProductForm(context) {
             <div class="alphacode-field"><label>بعد إضافة ${addedFee} يوان:</label><input type="number" id="modPriceFee" disabled></div>
         </div>
         <div class="alphacode-readonly-group">
+            <div class="alphacode-readonly-item"><span>الاسم الأصلي:</span><strong title="${originalNameTitle}">${originalNameDisplay}</strong></div>
             <div class="alphacode-readonly-item"><span>السعر بعد المصارفة:</span><strong id="displaySAR" class="alphacode-success-text"></strong></div>
             <div class="alphacode-readonly-item"><span>Category / SubCategory:</span><strong>${extractorConfig.CategoryId} / ${extractorConfig.SubCategoryId}</strong></div>
             <div class="alphacode-readonly-item"><span>صور المعرض الكامل:</span><strong class="alphacode-image-count">${images.length} صور</strong></div>
@@ -943,151 +1063,301 @@ function renderNewProductForm(context) {
         </div>`;
 
     const fields = {
-        nameEN: modalBox.querySelector('#modNameEN'), descEN: modalBox.querySelector('#modDescEN'),
-        nameAR: modalBox.querySelector('#modNameAR'), descAR: modalBox.querySelector('#modDescAR'),
-        brandName: modalBox.querySelector('#modBrandName'), brandId: modalBox.querySelector('#modBrandId'),
-        sizes: modalBox.querySelector('#modSizes'), price: modalBox.querySelector('#modPrice'),
-        fee: modalBox.querySelector('#modPriceFee'), sar: modalBox.querySelector('#displaySAR')
+        nameEN: modalBox.querySelector('#modNameEN'),
+        descEN: modalBox.querySelector('#modDescEN'),
+        nameAR: modalBox.querySelector('#modNameAR'),
+        descAR: modalBox.querySelector('#modDescAR'),
+        brandName: modalBox.querySelector('#modBrandName'),
+        brandId: modalBox.querySelector('#modBrandId'),
+        sizes: modalBox.querySelector('#modSizes'),
+        price: modalBox.querySelector('#modPrice'),
+        fee: modalBox.querySelector('#modPriceFee'),
+        sar: modalBox.querySelector('#displaySAR'),
     };
-    fields.nameEN.value = fallbackNameEN; fields.descEN.value = fallbackDescriptionEN;
-    fields.nameAR.value = fallbackNameAR; fields.descAR.value = fallbackDescriptionAR;
-    fields.brandName.value = fallbackBrand; fields.brandId.value = resolveBrandId(fallbackBrand);
-    fields.sizes.value = sizes.join(', '); fields.price.value = originalPrice;
-    fields.fee.value = priceAfterFee; fields.sar.textContent = `${priceSAR} ريال`;
+
+    fields.nameEN.value = fallbackNameEN;
+    fields.descEN.value = fallbackDescriptionEN;
+    fields.nameAR.value = fallbackNameAR;
+    fields.descAR.value = fallbackDescriptionAR;
+    fields.brandName.value = fallbackBrand;
+    fields.brandId.value = resolveBrandId(fallbackBrand);
+    fields.sizes.value = sizes.join(', ');
+    fields.price.value = originalPrice;
+    fields.fee.value = priceAfterFee;
+    fields.sar.textContent = `${priceSAR} ريال`;
+
     const imageSelection = initializeStoreImageSelector(
         modalBox,
         images,
-        extractorConfig.StoreImageLimit || 6
+        extractorConfig.StoreImageLimit || 6,
     );
 
-    fields.brandName.addEventListener('input', () => { fields.brandId.value = resolveBrandId(fields.brandName.value); });
+    fields.brandName.addEventListener('input', () => {
+        fields.brandId.value = resolveBrandId(fields.brandName.value);
+    });
+
     fields.price.addEventListener('input', () => {
         const base = parseFloat(fields.price.value) || 0;
         const afterFee = base + addedFee;
         fields.fee.value = afterFee;
         fields.sar.textContent = `${Math.round(afterFee * exchangeRate)} ريال`;
     });
-    modalBox.querySelector('#copyStyleBtn').onclick = async event => {
-        await navigator.clipboard.writeText(styleCode);
-        event.currentTarget.textContent = '✔ تم النسخ';
+
+    modalBox.querySelector('#copyOriginalNameBtn').onclick = async event => {
+        const copied = await copyTextToClipboard(originalProductName || sourceText);
+        event.currentTarget.textContent = copied ? '✔ تم نسخ الاسم الأصلي' : 'تعذر النسخ';
+        setTimeout(() => {
+            if (event.currentTarget?.isConnected) {
+                event.currentTarget.textContent = '📋 نسخ الاسم الأصلي';
+            }
+        }, 1800);
     };
+
+    modalBox.querySelector('#copyStyleBtn').onclick = async event => {
+        const copied = await copyTextToClipboard(styleCode);
+        event.currentTarget.textContent = copied ? '✔ تم النسخ' : 'تعذر النسخ';
+    };
+
     modalBox.querySelector('#cancelBtn').onclick = () => overlay.remove();
 
-    const runAiGeneration = () => generateProductCopy({ modalBox, sourceText, searchCode, styleCode, fields });
+    const runAiGeneration = () => generateProductCopy({
+        modalBox,
+        sourceText,
+        originalProductName,
+        searchCode,
+        styleCode,
+        fields,
+    });
+
     modalBox.querySelector('#generateAiBtn').onclick = runAiGeneration;
     if (extractorConfig.AIAutoGenerate) runAiGeneration();
+
     modalBox.querySelector('#confirmExtractBtn').onclick = () => submitProduct({
-        overlay, modalBox, buttonElement, sourceText, searchCode, styleCode, images, fields, imageSelection
+        overlay,
+        modalBox,
+        buttonElement,
+        sourceText,
+        originalProductName,
+        searchCode,
+        styleCode,
+        images,
+        fields,
+        imageSelection,
     });
 }
 
 // Arabic: طلب محتوى عربي وإنجليزي من Groq مع الاحتفاظ بالقيم المحلية عند الخطأ.
 // English: Request bilingual Groq copy while retaining local editable values on failure.
 async function generateProductCopy(context) {
-    const { modalBox, sourceText, searchCode, styleCode, fields } = context;
+    const {
+        modalBox,
+        sourceText,
+        originalProductName,
+        searchCode,
+        styleCode,
+        fields,
+    } = context;
+
     const aiButton = modalBox.querySelector('#generateAiBtn');
     const aiStatus = modalBox.querySelector('#aiStatus');
     aiButton.disabled = true;
-    aiButton.textContent = '⏳ جاري إنشاء المحتوى...';
+    aiButton.textContent = '⏳ بحث رسمي وإنشاء المحتوى...';
     aiStatus.className = 'alphacode-ai-status alphacode-ai-working';
-    aiStatus.textContent = 'جارٍ الاتصال بـ Groq';
+    aiStatus.textContent = 'جارٍ البحث في المتجر الرسمي للشركة';
+
     try {
-        const sizes = uniqueSizes(fields.sizes.value.split(/[,،\s]+/).filter(Boolean));
+        const sizes = uniqueSizes(
+            fields.sizes.value.split(/[,،\s]+/).filter(Boolean),
+        );
+
         const response = await fetch(`${API_BASE_URL}/api/ai/generate`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            method: 'POST',
+            cache: 'no-store',
+            headers: {
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-store',
+            },
             body: JSON.stringify({
-                SourceText: sourceText, SearchCode: searchCode || 'NONE', StyleCode: styleCode,
-                Sizes: sizes, BrandName: fields.brandName.value, AIModel: extractorConfig.AIModel
-            })
+                SourceText: sourceText,
+                OriginalProductName: originalProductName || '',
+                SearchCode: searchCode || 'NONE',
+                StyleCode: styleCode,
+                Sizes: sizes,
+                BrandName: fields.brandName.value,
+                AIModel: extractorConfig.AIModel,
+                RegenerateNonce: `${Date.now()}_${Math.random()}`,
+                UseCache: false,
+            }),
         });
+
         const data = await response.json();
-        if (!response.ok || !data.success) throw new Error(data.error || `AI request failed (${response.status})`);
-        fields.nameEN.value = data.name_en; fields.descEN.value = data.description_en;
-        fields.nameAR.value = data.name_ar; fields.descAR.value = data.description_ar;
+        if (!response.ok || !data.success) {
+            throw new Error(data.error || `AI request failed (${response.status})`);
+        }
+
+        fields.nameEN.value = data.name_en;
+        fields.descEN.value = data.description_en;
+        fields.nameAR.value = data.name_ar;
+        fields.descAR.value = data.description_ar;
         fields.brandName.value = canonicalBrandName(data.brand_name);
         fields.brandId.value = resolveBrandId(fields.brandName.value);
+
         aiStatus.className = 'alphacode-ai-status alphacode-ai-success';
-        aiStatus.textContent = data.cached ? 'تم استخدام نتيجة محفوظة' : 'تم إنشاء المحتوى الثنائي';
+        aiStatus.textContent = `تم إنشاء نتيجة جديدة من ${data.official_domain || 'المتجر الرسمي'}`;
     } catch (error) {
         aiStatus.className = 'alphacode-ai-status alphacode-ai-error';
-        aiStatus.textContent = `${error.message} — تم الاحتفاظ بالتنسيق المحلي القابل للتعديل.`;
+        aiStatus.textContent = `${error.message} — تم الاحتفاظ بالنص الحالي القابل للتعديل.`;
     } finally {
         aiButton.disabled = false;
-        aiButton.textContent = '✨ إعادة إنشاء المحتوى';
+        aiButton.textContent = '✨ بحث رسمي وإعادة إنشاء المحتوى';
     }
 }
 
 // Arabic: إرسال المنتج إلى Flask ثم حفظ حزمة التعبئة في تخزين الإضافة.
 // English: Save through Flask, then persist the Sooqify autofill package in extension storage.
+
+// Arabic: بدء الإضافة التلقائية في التبويب نفسه مع حفظ رابط الرجوع والمنتج.
+// English: Start automatic submission in the same tab while preserving return context.
+async function startSameTabAutomaticFlow({
+    productId,
+    searchCode,
+    styleCode,
+    originalProductName,
+}) {
+    const flow = {
+        productId: Number(productId),
+        searchCode: String(searchCode || ''),
+        styleCode: String(styleCode || ''),
+        originalProductName: String(originalProductName || ''),
+        sourceUrl: window.location.href,
+        sourceScrollY: Math.max(0, window.scrollY || 0),
+        status: 'opening_store',
+        startedAt: new Date().toISOString(),
+    };
+
+    const stored = await safeStorageSet({
+        [AUTO_FLOW_STORAGE_KEY]: flow,
+    });
+
+    if (!stored) {
+        throw new Error('تعذر حفظ حالة الإضافة التلقائية قبل الانتقال إلى المتجر.');
+    }
+
+    window.location.assign(extractorConfig.SooqifyAddUrl);
+}
+
 async function submitProduct(context) {
-    const { overlay, modalBox, buttonElement, searchCode, styleCode, images, fields, imageSelection } = context;
+    const {
+        overlay,
+        modalBox,
+        buttonElement,
+        searchCode,
+        styleCode,
+        originalProductName,
+        images,
+        fields,
+        imageSelection,
+    } = context;
+
     const submitButton = modalBox.querySelector('#confirmExtractBtn');
     submitButton.textContent = `⏳ تنزيل ${images.length} صور وحفظ المنتج...`;
     submitButton.disabled = true;
+
     const originalPrice = parseFloat(fields.price.value) || 0;
     const finalFeePrice = originalPrice + Number(extractorConfig.AddedFeeYuan || 0);
     const finalSar = Math.round(finalFeePrice * Number(extractorConfig.ExchangeRate || 0));
     const sizes = uniqueSizes(fields.sizes.value.split(/[,،\s]+/).filter(Boolean));
+
     const payload = {
-        Name: fields.nameEN.value.trim(), Description: fields.descEN.value.trim(),
-        NameEN: fields.nameEN.value.trim(), DescriptionEN: fields.descEN.value.trim(),
-        NameAR: fields.nameAR.value.trim(), DescriptionAR: fields.descAR.value.trim(),
-        BrandName: canonicalBrandName(fields.brandName.value), BrandId: Number(fields.brandId.value || 0),
-        Sizes: sizes, OriginalPrice: originalPrice, PriceAfterFee: finalFeePrice, PriceSAR: finalSar,
-        SearchCode: searchCode || 'NONE', StyleCode: styleCode, Images: images,
+        Name: fields.nameEN.value.trim(),
+        Description: fields.descEN.value.trim(),
+        NameEN: fields.nameEN.value.trim(),
+        DescriptionEN: fields.descEN.value.trim(),
+        NameAR: fields.nameAR.value.trim(),
+        DescriptionAR: fields.descAR.value.trim(),
+        BrandName: canonicalBrandName(fields.brandName.value),
+        BrandId: Number(fields.brandId.value || 0),
+        Sizes: sizes,
+        OriginalPrice: originalPrice,
+        PriceAfterFee: finalFeePrice,
+        PriceSAR: finalSar,
+        SearchCode: searchCode || 'NONE',
+        StyleCode: styleCode,
+        Images: images,
         SelectedImageIndexes: imageSelection.getSelectedIndexes(),
         MainImageIndex: imageSelection.getMainIndex(),
         StoreImageLimit: imageSelection.getLimit(),
-        SourceUrl: window.location.href, SupplierStoreName: extractorConfig.SupplierStoreName || '',
-        SupplierStoreId: resolveSupplierStoreId(), Settings: extractorConfig
+        SourceUrl: window.location.href,
+        SupplierStoreName: extractorConfig.SupplierStoreName || '',
+        SupplierStoreId: resolveSupplierStoreId(),
+        Settings: extractorConfig,
     };
 
     try {
         const response = await fetch(`${API_BASE_URL}/api/extract`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
         });
+
         const result = await response.json();
         if (response.status === 409 && result.exists) {
             updateButtonAsAdded(buttonElement, result.id, result.workflow_status || 'prepared');
             throw new Error(`المنتج مجهز مسبقاً في ID رقم ${result.id}. استخدم زر فتح المنتج المجهز.`);
         }
-        if (!response.ok || !result.success) throw new Error(result.error || `Save request failed (${response.status})`);
+        if (!response.ok || !result.success) {
+            throw new Error(result.error || `Save request failed (${response.status})`);
+        }
 
         const stored = await safeStorageSet({
             pendingSooqifyProduct: result.pending_product,
-            lastAlphaCodeProductId: result.id
-        });
-        await logExtractorEvent('INFO', 'product_saved_for_store', 'Product saved and prepared for Sooqify.', {
-            product_id: result.id,
-            downloaded_images: result.downloaded_images,
-            requested_images: result.requested_images,
-            pending_saved_to_extension: stored,
-            automatic_add: Boolean(extractorConfig.AutoAddProduct)
+            lastAlphaCodeProductId: result.id,
         });
 
-        overlay.remove();
+        await logExtractorEvent(
+            'INFO',
+            'product_saved_for_store',
+            'Product saved and prepared for Sooqify.',
+            {
+                product_id: result.id,
+                downloaded_images: result.downloaded_images,
+                requested_images: result.requested_images,
+                pending_saved_to_extension: stored,
+                automatic_add: Boolean(extractorConfig.AutoAddProduct),
+            },
+        );
+
         updateButtonAsAdded(buttonElement, result.id, 'prepared');
         lastAddedSearchCodeGlobal = searchCode;
 
         if (extractorConfig.AutoAddProduct) {
-            const opened = await openStorePageSafely(extractorConfig.SooqifyAddUrl);
-            if (!opened) {
-                await logExtractorEvent('WARNING', 'store_page_open_failed', 'The product was saved but the store page could not be opened.', { product_id: result.id });
-            }
-        } else {
-            const openStore = confirm(
-                `تم تجهيز المنتج رقم ${result.id} وحفظ ${result.downloaded_images} صور.\n` +
-                'اضغط موافق لفتح صفحة إضافة المنتج في Sooqify.'
-            );
-            if (openStore) await openStorePageSafely(extractorConfig.SooqifyAddUrl);
+            submitButton.textContent = 'يتم الانتقال إلى المتجر في التبويب نفسه...';
+            await startSameTabAutomaticFlow({
+                productId: result.id,
+                searchCode,
+                styleCode,
+                originalProductName,
+            });
+            return;
+        }
+
+        overlay.remove();
+        const openStore = confirm(
+            `تم تجهيز المنتج رقم ${result.id} وحفظ ${result.downloaded_images} صور.\n`
+            + 'اضغط موافق لفتح صفحة إضافة المنتج في Sooqify.',
+        );
+
+        if (openStore) {
+            await openStorePageSafely(extractorConfig.SooqifyAddUrl);
         }
     } catch (error) {
         await logExtractorEvent('ERROR', 'product_save_failed', error.message, {
             search_code: searchCode,
             style_code: styleCode,
             image_count: images.length,
-            stack: error.stack || ''
+            stack: error.stack || '',
         });
+
         const contextInvalidated = /Extension context invalidated/i.test(String(error.message || error));
         if (!contextInvalidated) alert(`❌ حدث خطأ: ${error.message}`);
         submitButton.textContent = '🚀 حفظ وتجهيز للوحة المتجر';
@@ -1097,33 +1367,161 @@ async function submitProduct(context) {
 
 // Arabic: دالة scrollToLastProduct جزء من تدفق الاستخراج ويمكن تخصيصها عند نقل الأداة.
 // English: scrollToLastProduct is part of the extraction flow and can be adapted for another store.
-function scrollToLastProduct(targetSearchCode) {
-    if (!targetSearchCode) {
+async function scrollToLastProduct(targetSearchCode, options = {}) {
+    const wantedCode = String(targetSearchCode || '').trim();
+    if (!wantedCode) {
         alert('لم يتم العثور على رمز لآخر منتج مضاف في الأرشيف!');
-        return;
+        return false;
     }
 
-    const cards = document.querySelectorAll(PRODUCT_CARD_SELECTOR);
-    let foundCard = null;
-    for (const card of cards) {
-        if (extractSearchCode(card) === String(targetSearchCode)) {
-            foundCard = card;
-            break;
+    const findCard = () => {
+        const cards = Array.from(document.querySelectorAll(PRODUCT_CARD_SELECTOR));
+        const card = cards.find(item => String(extractSearchCode(item) || '') === wantedCode) || null;
+        return { card, cards };
+    };
+
+    const findLoadMoreButton = () => Array.from(
+        document.querySelectorAll('button, a, [role="button"]'),
+    ).find(element => {
+        if (!element || !element.offsetParent) return false;
+        const text = normalizeText(element.textContent).toLowerCase();
+        return /load more|more|تحميل المزيد|عرض المزيد|المزيد|加载更多|更多/.test(text);
+    }) || null;
+
+    let stagnantRounds = 0;
+    const maximumRounds = Number(options.maximumRounds || 80);
+
+    for (let round = 0; round < maximumRounds; round += 1) {
+        const { card, cards } = findCard();
+        if (card) {
+            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            card.classList.add('alphacode-highlight-card');
+            setTimeout(() => card.classList.remove('alphacode-highlight-card'), 5000);
+            return true;
         }
+
+        const oldHeight = Math.max(
+            document.documentElement.scrollHeight,
+            document.body.scrollHeight,
+        );
+        const oldCount = cards.length;
+        const loadMoreButton = findLoadMoreButton();
+
+        if (loadMoreButton) {
+            loadMoreButton.click();
+        } else {
+            window.scrollTo({ top: oldHeight, behavior: 'smooth' });
+        }
+
+        const loaded = await waitForCondition(() => {
+            const newHeight = Math.max(
+                document.documentElement.scrollHeight,
+                document.body.scrollHeight,
+            );
+            const newCount = document.querySelectorAll(PRODUCT_CARD_SELECTOR).length;
+            return newHeight > oldHeight || newCount > oldCount ? true : null;
+        }, 4500, 180);
+
+        if (loaded) {
+            stagnantRounds = 0;
+            await sleep(250);
+            continue;
+        }
+
+        stagnantRounds += 1;
+        window.scrollBy({ top: Math.max(window.innerHeight * 0.85, 600), behavior: 'smooth' });
+        await sleep(900);
+
+        if (stagnantRounds >= 5) break;
     }
 
-    if (foundCard) {
-        foundCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        foundCard.classList.add('alphacode-highlight-card');
-        setTimeout(() => foundCard.classList.remove('alphacode-highlight-card'), 4000);
-    } else {
-        alert(
-            `آخر منتج يحمل Search Code رقم (${targetSearchCode}) غير ظاهر في الصفحة الحالية. ` +
-            'مرر الصفحة لتحميل المزيد من المنتجات ثم حاول مجدداً.'
-        );
-    }
+    alert(`تم تمرير الصفحة وتحميل المنتجات المتاحة، لكن لم يتم العثور على Search Code رقم (${wantedCode}).`);
+    return false;
 }
 
+
+
+// Arabic: عرض نتيجة الإضافة التلقائية بعد الرجوع من Sooqify إلى صفحة المورد.
+// English: Show the automatic-submission result after returning from Sooqify.
+async function resumeAutomaticFlowResult() {
+    const stored = await safeStorageGet([AUTO_FLOW_STORAGE_KEY]);
+    const flow = stored[AUTO_FLOW_STORAGE_KEY];
+
+    if (!flow || !['submitted', 'failed'].includes(flow.status)) return false;
+    if (flow.sourceUrl) {
+        try {
+            const source = new URL(flow.sourceUrl);
+            const current = new URL(window.location.href);
+            if (source.origin !== current.origin || source.pathname !== current.pathname) return false;
+        } catch (_) {}
+    }
+
+    if (Number.isFinite(Number(flow.sourceScrollY))) {
+        window.scrollTo(0, Number(flow.sourceScrollY));
+    }
+
+    const { overlay, modalBox } = createModalShell();
+    const contentArea = modalBox.querySelector('#modal-content-area');
+    const submitted = flow.status === 'submitted';
+
+    contentArea.className = '';
+    contentArea.innerHTML = `
+        <div class="alphacode-already-box" id="alphacode-auto-result-box">
+            <strong>${submitted ? '✅ تم إضافة المنتج إلى المتجر' : '⚠️ تعذر إكمال الإضافة التلقائية'}</strong><br>
+            ID المحلي: <b>${flow.productId || '-'}</b><br>
+            Style Code: <b>${flow.styleCode || '-'}</b><br>
+            <span id="alphacode-auto-result-details">${submitted ? 'تم تأكيد الانتقال بعد إرسال نموذج Sooqify.' : (flow.error || 'راجع حالة المنتج عبر زر التحقق.')}</span>
+        </div>
+        <div class="alphacode-actions">
+            <button class="alphacode-btn-submit" id="alphacode-auto-continue" type="button">استمرار</button>
+            <button class="alphacode-btn-scroll" id="alphacode-auto-verify" type="button">التحقق من الإضافة</button>
+        </div>`;
+
+    const continueButton = modalBox.querySelector('#alphacode-auto-continue');
+    const verifyButton = modalBox.querySelector('#alphacode-auto-verify');
+    const details = modalBox.querySelector('#alphacode-auto-result-details');
+    const closeButton = modalBox.querySelector('.alphacode-close-btn');
+
+    const finish = async () => {
+        await safeStorageRemove([AUTO_FLOW_STORAGE_KEY]);
+        overlay.remove();
+    };
+
+    closeButton.onclick = finish;
+    continueButton.onclick = async () => {
+        const code = flow.searchCode;
+        await finish();
+        if (code) await scrollToLastProduct(code);
+    };
+
+    verifyButton.onclick = async event => {
+        event.currentTarget.disabled = true;
+        event.currentTarget.textContent = 'جارٍ التحقق...';
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/archive/product/${flow.productId}`, {
+                cache: 'no-store',
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error(data.error || 'تعذر قراءة حالة المنتج.');
+            }
+
+            const status = data.product?.workflow_status || data.product?.store_submission_status || 'غير محدد';
+            const verified = status === 'submitted';
+            details.textContent = verified
+                ? 'تم التحقق: المنتج مسجل في الأرشيف بحالة submitted.'
+                : `الحالة الحالية في الأرشيف: ${status}.`;
+            event.currentTarget.textContent = verified ? '✅ تمت الإضافة' : 'إعادة التحقق';
+        } catch (error) {
+            details.textContent = `فشل التحقق: ${error.message}`;
+            event.currentTarget.textContent = 'إعادة التحقق';
+        } finally {
+            event.currentTarget.disabled = false;
+        }
+    };
+
+    return true;
+}
 
 // Arabic: تسجيل أخطاء JavaScript غير المعالجة في سجل Python.
 // English: Record unhandled JavaScript errors in the Python log.
@@ -1147,6 +1545,7 @@ function installExtractorErrorLogging() {
 async function initializeExtractor() {
     installExtractorErrorLogging();
     await loadConfiguration();
+    await resumeAutomaticFlowResult();
     injectExtractionButtons();
 
     const observer = new MutationObserver(() => {

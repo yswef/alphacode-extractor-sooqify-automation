@@ -36,7 +36,8 @@ LOG_PATH = os.path.join(LOG_DIR, "alphacode.log")
 # English: Groq Chat Completions is OpenAI-compatible and offers a limited free tier.
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_AI_MODEL = "openai/gpt-oss-20b"
-AI_PROMPT_VERSION = "3.4-strict-groq-json"
+GROQ_OFFICIAL_SEARCH_MODEL = "groq/compound-mini"
+AI_PROMPT_VERSION = "3.5-official-store-fresh-generation"
 
 # Arabic: القفل يمنع تعارض طلبين أثناء تحديث الصور وExcel والأرشيف.
 # English: The lock prevents concurrent requests from corrupting images, Excel, or archive data.
@@ -288,9 +289,9 @@ def extract_settings(data):
         "Recommended": normalize_text(settings.get("Recommended")) or "yes",
         "BrandId": safe_int(settings.get("BrandId"), 6),
         "BrandName": normalize_text(settings.get("BrandName")) or "Air Jordan",
-        "SizeAttributeId": max(1, safe_int(settings.get("SizeAttributeId"), 1)),
-        "SizeChoiceNo": max(1, safe_int(settings.get("SizeChoiceNo", settings.get("SizeactualChoiceNo")), 1)),
-        "SizeTitle": normalize_text(settings.get("SizeTitle")) or "الحجم",
+        "SizeAttributeId": max(1, safe_int(settings.get("SizeAttributeId"), 8)),
+        "SizeactualChoiceNo": max(1, safe_int(settings.get("SizeactualChoiceNo"), 1)),
+        "SizeTitle": normalize_text(settings.get("SizeTitle")) or "Size",
         "DefaultLanguage": normalize_text(settings.get("DefaultLanguage")).lower() or "en",
         "SupplierStoreName": normalize_text(settings.get("SupplierStoreName")),
         "SupplierStoreId": normalize_text(settings.get("SupplierStoreId")),
@@ -503,80 +504,49 @@ def canonicalize_brand_name(value):
 
 
 def enforce_product_name_rules(name, source_text, style_code):
-    """Arabic: تحسين اسم المنتج وفرض البراند والنوع ورمز الموديل. English: Enrich the product title and enforce brand, footwear type, and style code."""
+    """Arabic: تصحيح البراند والكود فقط دون إضافة عبارات عامة. English: Correct only brand and style code without adding generic filler."""
     final_name = re.sub(r"\s+", " ", normalize_text(name)).strip(" -–—|")
     source = normalize_text(source_text)
     exact_style_code = normalize_text(style_code).upper()
-    is_air_jordan = bool(re.search(r"\b(?:AIR\s+JORDAN|JORDAN\s*\d+|AJ\s*\d+)\b", source, re.I))
+    is_air_jordan = bool(re.search(r"\b(?:AIR\s+JORDAN|JORDAN\s*\d+|AJ\s*\d+)\b", f"{source} {final_name}", re.I))
 
     if is_air_jordan:
         final_name = re.sub(r"^(?:NIKE\s+)?JORDAN(?=\s*\d)", "Air Jordan", final_name, flags=re.I)
         final_name = re.sub(r"^AJ\s*(\d+)", r"Air Jordan \1", final_name, flags=re.I)
-        final_name = re.sub(r"^AIR\s+AIR\s+JORDAN\b", "Air Jordan", final_name, flags=re.I)
         final_name = re.sub(r"^AIR\s+JORDAN\b", "Air Jordan", final_name, flags=re.I)
 
-        model_match = re.search(r"\b(?:Air\s+Jordan|Jordan|AJ)\s*(\d+)(?:\s+(Low|Mid|High))?", source, re.I)
-        if model_match and not re.match(r"^Air Jordan\b", final_name, flags=re.I):
-            prefix = f"Air Jordan {model_match.group(1)}"
-            if model_match.group(2):
-                prefix += f" {model_match.group(2).title()}"
-            final_name = f"{prefix} {final_name}".strip()
-
-    footwear_words = r"(?:shoe|shoes|sneaker|sneakers|trainer|trainers|footwear|low-top|mid-top|high-top)"
-    if not re.search(rf"\b{footwear_words}\b", final_name, re.I):
-        if re.search(r"\bLow\b", final_name, re.I):
-            final_name += " Lifestyle Sneakers"
-        elif re.search(r"\bMid\b", final_name, re.I):
-            final_name += " Mid-Top Sneakers"
-        elif re.search(r"\bHigh\b", final_name, re.I):
-            final_name += " High-Top Sneakers"
-        else:
-            final_name += " Lifestyle Sneakers"
-
-    final_name = re.sub(r"\bLow\s+Low-Top\b", "Low-Top", final_name, flags=re.I)
-    final_name = re.sub(r"\bMid\s+Mid-Top\b", "Mid-Top", final_name, flags=re.I)
-    final_name = re.sub(r"\bHigh\s+High-Top\b", "High-Top", final_name, flags=re.I)
-
     if exact_style_code:
-        final_name = re.sub(rf"\s*[-–—|]?\s*{re.escape(exact_style_code)}\b", "", final_name, flags=re.I).strip(" -–—|")
-    final_name = re.sub(r"\bLow\s+Low-Top\b", "Low-Top", final_name, flags=re.I)
-    final_name = re.sub(r"\bMid\s+Mid-Top\b", "Mid-Top", final_name, flags=re.I)
-    final_name = re.sub(r"\bHigh\s+High-Top\b", "High-Top", final_name, flags=re.I)
-    if exact_style_code:
+        final_name = re.sub(
+            rf"\s*[-–—|]?\s*{re.escape(exact_style_code)}\b",
+            "",
+            final_name,
+            flags=re.I,
+        ).strip(" -–—|")
         final_name = f"{final_name} - {exact_style_code}"
-    return re.sub(r"\s+", " ", final_name).strip()[:170]
 
-
-def enforce_arabic_product_name(name, source_text, style_code):
-    """Arabic: تنظيف الاسم العربي ومنع الصياغة المختلطة الضعيفة. English: Clean the Arabic title and prevent weak mixed-language wording."""
-    final_name = re.sub(r"\s+", " ", normalize_text(name)).strip(" -–—|")
-    exact_style_code = normalize_text(style_code).upper()
-    source = normalize_text(source_text)
-    is_air_jordan = bool(re.search(r"\b(?:AIR\s+JORDAN|JORDAN\s*\d+|AJ\s*\d+)\b", source, re.I))
-
-    final_name = re.sub(r"Air\s+Jordan\s+Footwear", "إير جوردن", final_name, flags=re.I)
-    final_name = re.sub(r"Air\s+Jordan", "إير جوردن", final_name, flags=re.I)
-    final_name = re.sub(r"\bFootwear\b", "حذاء", final_name, flags=re.I)
-    final_name = re.sub(r"\bLow(?:-Top)?(?:\s+Sneakers)?\b", "لو منخفض", final_name, flags=re.I)
-    final_name = re.sub(r"\bMid(?:-Top)?(?:\s+Sneakers)?\b", "ميد متوسط الارتفاع", final_name, flags=re.I)
-    final_name = re.sub(r"\bHigh(?:-Top)?(?:\s+Sneakers)?\b", "هاي مرتفع", final_name, flags=re.I)
-    final_name = re.sub(r"\bLifestyle Sneakers\b", "سنيكرز كاجوال", final_name, flags=re.I)
-    if is_air_jordan and "إير جوردن" not in final_name:
-        model_match = re.search(r"\b(?:Air\s+Jordan|Jordan|AJ)\s*(\d+)(?:\s+(Low|Mid|High))?", source, re.I)
-        prefix = "حذاء إير جوردن"
-        if model_match:
-            prefix += f" {model_match.group(1)}"
-            silhouette = {"low": "لو", "mid": "ميد", "high": "هاي"}.get((model_match.group(2) or "").lower())
-            if silhouette:
-                prefix += f" {silhouette}"
-        final_name = f"{prefix} {final_name}".strip()
-    if not final_name.startswith("حذاء"):
-        final_name = f"حذاء {final_name}".strip()
-    if exact_style_code:
-        final_name = re.sub(rf"\s*[-–—|]?\s*{re.escape(exact_style_code)}\b", "", final_name, flags=re.I).strip(" -–—|")
-        final_name = f"{final_name} - {exact_style_code}"
     return re.sub(r"\s+", " ", final_name).strip()[:190]
 
+def enforce_arabic_product_name(name, source_text, style_code):
+    """Arabic: تصحيح الاسم العربي مع إبقاء صياغة الذكاء الاصطناعي. English: Correct the Arabic title while preserving AI wording."""
+    final_name = re.sub(r"\s+", " ", normalize_text(name)).strip(" -–—|")
+    exact_style_code = normalize_text(style_code).upper()
+    final_name = re.sub(r"\bAir\s+Jordan\b", "إير جوردن", final_name, flags=re.I)
+    final_name = re.sub(r"\bJordan(?=\s*\d)", "إير جوردن", final_name, flags=re.I)
+    final_name = re.sub(r"\bAJ\s*(\d+)", r"إير جوردن \1", final_name, flags=re.I)
+
+    if not final_name.startswith("حذاء"):
+        final_name = f"حذاء {final_name}".strip()
+
+    if exact_style_code:
+        final_name = re.sub(
+            rf"\s*[-–—|]?\s*{re.escape(exact_style_code)}\b",
+            "",
+            final_name,
+            flags=re.I,
+        ).strip(" -–—|")
+        final_name = f"{final_name} - {exact_style_code}"
+
+    return re.sub(r"\s+", " ", final_name).strip()[:210]
 
 def ai_cache_key(style_code, source_text, model):
     """Arabic: إنشاء مفتاح Cache يتغير عند تعديل نسخة التعليمات. English: Build a cache key that changes with prompt version."""
@@ -755,7 +725,7 @@ def health_check():
     return jsonify({
         "success": True,
         "service": "AlphaCode Extractor",
-        "version": "3.3.0",
+        "version": "3.5.0",
         "ai_provider": "Groq",
         "ai_configured": bool(os.getenv("GROQ_API_KEY")),
         "default_ai_model": os.getenv("GROQ_MODEL", DEFAULT_AI_MODEL),
@@ -974,169 +944,227 @@ def serve_product_image(product_id, filename):
     return send_from_directory(folder_path, safe_filename, as_attachment=False)
 
 
+
+def resolve_official_store_domains(brand_name, source_text=""):
+    """Arabic: تحديد نطاق المتجر الرسمي فقط حسب البراند. English: Resolve only the official store domain for the detected brand."""
+    combined = f"{normalize_text(brand_name)} {normalize_text(source_text)}".lower()
+    mappings = [
+        (("air jordan", "jordan ", "aj1", "aj 1", "nike"), ["nike.com"]),
+        (("adidas",), ["adidas.com"]),
+        (("new balance",), ["newbalance.com"]),
+        (("puma",), ["puma.com"]),
+        (("converse",), ["converse.com"]),
+        (("vans",), ["vans.com"]),
+        (("asics",), ["asics.com"]),
+        (("reebok",), ["reebok.com"]),
+        (("under armour",), ["underarmour.com"]),
+    ]
+    for keywords, domains in mappings:
+        if any(keyword in combined for keyword in keywords):
+            return domains
+    return []
+
+
+def extract_first_json_object(raw_text):
+    """Arabic: استخراج أول كائن JSON متوازن من رد Groq. English: Extract the first balanced JSON object from Groq output."""
+    text = normalize_text(raw_text)
+    text = re.sub(r"^```(?:json)?\\s*|\\s*```$", "", text, flags=re.I).strip()
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    start = text.find("{")
+    if start < 0:
+        raise ValueError("Groq did not return a JSON object.")
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        character = text[index]
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\\\" and in_string:
+            escaped = True
+            continue
+        if character == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads(text[start:index + 1])
+
+    raise ValueError("Groq returned an incomplete JSON object.")
+
+
+def read_retry_after_seconds(response):
+    """Arabic: قراءة مدة انتظار Rate Limit دون إعادة الطلب. English: Read the rate-limit wait duration without retrying the request."""
+    retry_after = normalize_text(response.headers.get("Retry-After"))
+    try:
+        return max(0, int(float(retry_after)))
+    except (TypeError, ValueError):
+        pass
+
+    try:
+        message = normalize_text(response.json().get("error", {}).get("message"))
+    except Exception:
+        message = normalize_text(response.text)
+    match = re.search(r"try again in\\s*([0-9.]+)s", message, re.I)
+    return int(float(match.group(1))) + 1 if match else 0
+
+
 @app.route("/api/ai/generate", methods=["POST"])
 def generate_ai_copy():
-    """Arabic: توليد اسم ووصف عربي وإنجليزي عبر Groq. English: Generate bilingual product copy through Groq."""
+    """Arabic: بحث واحد في المتجر الرسمي وإنشاء نتيجة جديدة دون Cache. English: Perform one official-store search and generate fresh copy without cache."""
     data = request.get_json(silent=True) or {}
     source_text = normalize_text(data.get("SourceText"))
+    original_product_name = normalize_text(data.get("OriginalProductName"))
     style_code = normalize_text(data.get("StyleCode"))
     search_code = normalize_text(data.get("SearchCode"))
     sizes = unique_text_values(data.get("Sizes") if isinstance(data.get("Sizes"), list) else [])
     configured_brand = canonicalize_brand_name(data.get("BrandName"))
-    model = normalize_text(data.get("AIModel")) or os.getenv("GROQ_MODEL", DEFAULT_AI_MODEL)
+
     if not source_text:
         return jsonify({"success": False, "error": "SourceText is required."}), 400
+
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         return jsonify({"success": False, "error": "GROQ_API_KEY is not configured on the Python server."}), 503
 
-    cache_key = ai_cache_key(style_code, source_text, model)
-    with AI_CACHE_LOCK:
-        cached = load_json_file(AI_CACHE_PATH, {}).get(cache_key)
-        if isinstance(cached, dict) and cached.get("name_en") and cached.get("description_en"):
-            return jsonify({"success": True, **cached, "cached": True})
+    official_domains = resolve_official_store_domains(configured_brand, source_text)
+    if not official_domains:
+        return jsonify({"success": False, "error": "No official store domain is configured for this brand."}), 400
 
-    instructions = (
-        "You are a senior footwear product researcher and bilingual Arabic-English e-commerce copywriter. "
-        "Use the supplied product text and your reliable product knowledge, but never invent unsupported facts. "
-        "If the source mentions Air Jordan, Jordan followed by a model number, or AJ followed by a model number, "
-        "the canonical brand must be exactly 'Air Jordan'. Never write 'Jordan' alone or 'Nike Jordan'. "
-        "The English product name must use: canonical brand, model, silhouette/edition, translated verified colorway or nickname when present, "
-        "a clear footwear type such as Low-Top Sneakers, and the exact style code once at the end. "
-        "Translate relevant Chinese color and material terms. The title must contain at least one useful descriptor beyond brand/model/code. "
-        "Avoid weak names such as Sports Shoe, Sneakers Product, Jordan 1 Low, or Air Jordan 1 Low followed only by a code. "
-        "Write a polished 2-3 sentence English description using only verified colors, materials, silhouette, design details, and sizes. "
-        "Create a natural Arabic commercial name beginning with حذاء and use إير جوردن instead of mixed wording such as Air Jordan Footwear. "
-        "The Arabic name and description must carry the same verified colorway, silhouette, design, and size facts. "
-        "Do not claim authentic, genuine, original, official, replica, or a quality grade. "
-        "Do not include prices, supplier names, Search Code, shipping claims, emojis, or Chinese text. "
-        "Return valid JSON only with exactly: name_en, description_en, name_ar, description_ar, brand_name."
-    )
-    user_input = (
-        f"Original supplier text:\n{source_text[:8000]}\n\n"
-        f"Exact style code: {style_code or 'Not provided'}\n"
-        f"Internal search code (do not include in names): {search_code or 'Not provided'}\n"
-        f"Available sizes: {', '.join(sizes) if sizes else 'Not provided'}\n"
-        f"Configured brand hint: {configured_brand or 'Not provided'}\n"
-        "Produce complete bilingual store copy and canonical brand identification."
-    )
-    # Arabic: إجبار Groq على إعادة بنية JSON مطابقة تماماً.
-    # English: Force Groq to return an exact schema-compliant JSON object.
+    official_domain = official_domains[0]
+    prompt = f"""
+You are the catalog editor for an Arabic-English footwear store.
+
+Use the web search tool exactly once. Search ONLY the official company store domain: {official_domain}.
+Search the exact style code in quotation marks: "{style_code or 'Not provided'}".
+Do not use retailers, marketplaces, blogs, social media, sneaker databases, or any non-official domain.
+
+SUPPLIER ORIGINAL NAME:
+{original_product_name or 'Not provided'}
+
+SUPPLIER TEXT:
+{source_text[:5000]}
+
+AVAILABLE SIZES:
+{', '.join(sizes) if sizes else 'Not provided'}
+
+INTERNAL SEARCH CODE — NEVER INCLUDE IT:
+{search_code or 'Not provided'}
+
+RULES:
+1. If the official store page exactly matches the style code, use its official model, silhouette, colorway, audience, materials, and visible design facts.
+2. If the code is not found on the official store, use only explicit supplier facts and do not invent missing details.
+3. For Air Jordan, the canonical English brand is Air Jordan and Arabic is إير جوردن.
+4. English title: brand + model + silhouette + verified colorway/edition + specific footwear type + exact style code once at the end.
+5. Arabic title must begin with حذاء, use إير جوردن, and put the exact style code once at the end.
+6. Write 2–3 concise commercial sentences in each language. Mention the available sizes in the final sentence.
+7. Never mention authenticity, quality grade, supplier, price, Search Code, shipping, or unsupported benefits.
+8. English and Arabic must describe exactly the same verified product.
+
+Return one JSON object only, without Markdown or citations in the text, with exactly these keys:
+{{
+  "name_en": "...",
+  "description_en": "...",
+  "name_ar": "...",
+  "description_ar": "...",
+  "brand_name": "..."
+}}
+""".strip()
+
     payload = {
-        "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": instructions,
-            },
-            {
-                "role": "user",
-                "content": user_input,
-            },
-        ],
-        "temperature": 0.0,
-        "max_completion_tokens": 1800,
-
-        # Arabic: إخفاء reasoning حتى لا يختلط مع JSON النهائي.
-        # English: Hide reasoning so it cannot pollute the final JSON.
-        "reasoning_format": "hidden",
-
-        # Arabic: GPT-OSS 20B يدعم Structured Outputs الصارمة.
-        # English: GPT-OSS 20B supports strict Structured Outputs.
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "product_copy",
-                "strict": True,
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "name_en": {
-                            "type": "string",
-                        },
-                        "description_en": {
-                            "type": "string",
-                        },
-                        "name_ar": {
-                            "type": "string",
-                        },
-                        "description_ar": {
-                            "type": "string",
-                        },
-                        "brand_name": {
-                            "type": "string",
-                        },
-                    },
-                    "required": [
-                        "name_en",
-                        "description_en",
-                        "name_ar",
-                        "description_ar",
-                        "brand_name",
-                    ],
-                    "additionalProperties": False,
-                },
-            },
-        },
+        "model": GROQ_OFFICIAL_SEARCH_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "compound_custom": {"tools": {"enabled_tools": ["web_search"]}},
+        "search_settings": {"include_domains": official_domains},
+        "citation_options": "disabled",
+        "temperature": 0.2,
+        "max_completion_tokens": 1600,
     }
+
     response = None
     try:
         response = requests.post(
             GROQ_CHAT_URL,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "Groq-Model-Version": "latest",
+                "Cache-Control": "no-store",
+            },
             json=payload,
-            timeout=(20, 90),
+            timeout=(20, 120),
             verify=certifi.where(),
         )
+
+        if response.status_code == 429:
+            retry_after = read_retry_after_seconds(response)
+            try:
+                message = response.json().get("error", {}).get("message", "Groq rate limit reached.")
+            except Exception:
+                message = response.text[:500] or "Groq rate limit reached."
+            return jsonify({
+                "success": False,
+                "error": message,
+                "rate_limited": True,
+                "retry_after_seconds": retry_after,
+            }), 429
+
         response.raise_for_status()
         raw_text = response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
-        if not raw_text:
-            raise ValueError("Groq returned an empty response.")
-        try:
-            generated = json.loads(raw_text)
-        except json.JSONDecodeError as exc:
-            logger.error(
-                "Invalid Groq JSON response: %r",
-                raw_text[:2000],
-            )
+        generated = extract_first_json_object(raw_text)
 
-            raise ValueError(
-                f"Groq returned invalid JSON: {exc}"
-            ) from exc
+        required = ["name_en", "description_en", "name_ar", "description_ar", "brand_name"]
+        missing = [field for field in required if not normalize_text(generated.get(field))]
+        if missing:
+            raise ValueError("Groq response is missing fields: " + ", ".join(missing))
+
         name_en = enforce_product_name_rules(generated.get("name_en"), source_text, style_code)
-        description_en = re.sub(r"\s+", " ", normalize_text(generated.get("description_en")))[:1600]
+        description_en = re.sub(r"\s+", " ", normalize_text(generated.get("description_en")))[:1800]
         name_ar = enforce_arabic_product_name(generated.get("name_ar"), source_text, style_code)
-        description_ar = re.sub(r"\s+", " ", normalize_text(generated.get("description_ar")))[:1800]
+        description_ar = re.sub(r"\s+", " ", normalize_text(generated.get("description_ar")))[:2000]
         brand_name = canonicalize_brand_name(generated.get("brand_name") or configured_brand)
-        if len(name_en) < 5 or len(description_en) < 20 or len(name_ar) < 3 or len(description_ar) < 15:
+
+        if len(name_en) < 8 or len(description_en) < 20 or len(name_ar) < 8 or len(description_ar) < 15:
             raise ValueError("The AI response did not contain complete bilingual product copy.")
-        result = {
+
+        return jsonify({
+            "success": True,
             "name_en": name_en,
             "description_en": description_en,
             "name_ar": name_ar,
             "description_ar": description_ar,
             "brand_name": brand_name,
-            "model": model,
+            "model": GROQ_OFFICIAL_SEARCH_MODEL,
             "style_code": style_code,
+            "official_domain": official_domain,
+            "official_store_only": True,
+            "cached": False,
             "created_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        with AI_CACHE_LOCK:
-            cache = load_json_file(AI_CACHE_PATH, {})
-            cache[cache_key] = result
-            save_json_atomic(AI_CACHE_PATH, cache)
-        return jsonify({"success": True, **result, "cached": False})
+        })
+
     except requests.HTTPError as exc:
-        details = ""
         try:
             details = response.json().get("error", {}).get("message", "")
         except Exception:
             details = response.text[:500] if response is not None else ""
-        logger.error("Groq request failed: %s | %s", exc, details)
+        logger.error("Groq official-store request failed: %s | %s", exc, details)
         return jsonify({"success": False, "error": details or str(exc)}), 502
     except (requests.RequestException, ValueError, KeyError, json.JSONDecodeError) as exc:
-        logger.error("AI copy generation failed: %s", exc)
+        logger.error("Official-store AI copy generation failed: %s", exc)
         return jsonify({"success": False, "error": str(exc)}), 502
-
 
 @app.route("/api/extract", methods=["POST"])
 def extract_product():
@@ -1296,8 +1324,7 @@ def extract_product():
                 "MaximumCartQuantity": settings["MaximumCartQuantity"],
                 "Veg": settings["Veg"],
                 "SizeAttributeId": settings["SizeAttributeId"],
-                "SizeChoiceNo": settings["SizeChoiceNo"],
-                "SizeactualChoiceNo": settings["SizeChoiceNo"],
+                "SizeactualChoiceNo": settings["SizeactualChoiceNo"],
                 "SizeTitle": settings["SizeTitle"],
                 "DefaultLanguage": settings["DefaultLanguage"],
             }

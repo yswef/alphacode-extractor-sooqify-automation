@@ -20,7 +20,7 @@ const DEFAULT_CONFIG = globalThis.ALPHACODE_DEFAULT_CONFIG || {
     AvailableTimeStarts: '00:00:00', AvailableTimeEnds: '23:59:59', MaximumCartQuantity: '',
     StoreId: 3, ModuleId: 2, Status: 'active', Veg: 'no', Recommended: 'yes',
     BrandName: 'Air Jordan', BrandId: 6, BrandMapJson: '{"Air Jordan":6}',
-    SizeAttributeId: 1, SizeChoiceNo: 1, SizeactualChoiceNo: 1, SizeTitle: 'الحجم', DefaultLanguage: 'en',
+    SizeAttributeId: 1, SizeactualChoiceNo: 1, SizeTitle: 'Size', DefaultLanguage: 'en',
     SooqifyAddUrl: 'https://admin.sooqifyonline.com/admin/item/add-new',
     StoreProfileName: 'Sooqify Online', StoreDomain: 'admin.sooqifyonline.com',
     SupplierStoreName: 'BRANDKINGDOM', SupplierStoreId: '',
@@ -113,18 +113,7 @@ async function logExtractorEvent(level, event, message, details = {}) {
 // English: Load saved configuration or defaults after an extension reload.
 async function loadConfiguration() {
     const result = await safeStorageGet(['extractorConfig']);
-    const storedConfig = result.extractorConfig || {};
-    extractorConfig = { ...DEFAULT_CONFIG, ...storedConfig };
-    extractorConfig.SizeChoiceNo = Number(
-        storedConfig.SizeChoiceNo
-        ?? storedConfig.SizeactualChoiceNo
-        ?? DEFAULT_CONFIG.SizeChoiceNo
-        ?? DEFAULT_CONFIG.SizeactualChoiceNo
-        ?? 1
-    );
-    extractorConfig.SizeactualChoiceNo = extractorConfig.SizeChoiceNo;
-    extractorConfig.SizeAttributeId = Number(extractorConfig.SizeAttributeId || 1);
-    extractorConfig.SizeTitle = String(extractorConfig.SizeTitle || 'الحجم').trim() || 'الحجم';
+    extractorConfig = { ...DEFAULT_CONFIG, ...(result.extractorConfig || {}) };
     if (extractorConfig.StoreProfileName === 'BRANDKINGDOM') {
         extractorConfig.StoreProfileName = 'Sooqify Online';
     }
@@ -759,8 +748,61 @@ function initializeStoreImageSelector(modalBox, images, configuredLimit) {
     const grid = modalBox.querySelector('#alphacodeImageSelector');
     const counter = modalBox.querySelector('#alphacodeSelectedImageCounter');
     const limit = Math.max(1, Math.min(Number(configuredLimit || 6), 6));
-    const selected = new Set(images.slice(0, limit).map((_, index) => index));
-    let mainIndex = 0;
+
+    // Arabic: اختيار الصور 1 و2 و3 و4 و6 و10 تلقائياً.
+    // English: Automatically select images 1, 2, 3, 4, 6, and 10.
+    const preferredImageOrder = [
+        0, // الصورة الأولى / First image
+        1, // الصورة الثانية / Second image
+        2, // الصورة الثالثة / Third image
+        3, // الصورة الرابعة / Fourth image
+        5, // الصورة السادسة / Sixth image
+        9, // الصورة العاشرة / Tenth image
+    ];
+
+    // Arabic: تجاهل أي رقم غير موجود مع الالتزام بحد صور المتجر.
+    // English: Ignore unavailable indexes while respecting the store image limit.
+    const validImageOrder = preferredImageOrder
+        .filter(index => (
+            Number.isInteger(index)
+            && index >= 0
+            && index < images.length
+        ))
+        .slice(0, limit);
+
+    // Arabic: إذا كان المنتج أقل من الصور المطلوبة، أكمل من الصور المتاحة دون تكرار.
+    // English: If fewer preferred images exist, fill the remaining slots from available images without duplicates.
+    for (
+        let index = 0;
+        index < images.length && validImageOrder.length < limit;
+        index += 1
+    ) {
+        if (!validImageOrder.includes(index)) {
+            validImageOrder.push(index);
+        }
+    }
+
+    const selected = new Set(validImageOrder);
+
+    // Arabic: الصورة العاشرة هي الرئيسية، وإن لم توجد تُستخدم آخر صورة مختارة.
+    // English: Use the tenth image as main; otherwise use the last selected image.
+    let mainIndex = images.length > 9
+        ? 9
+        : (validImageOrder[validImageOrder.length - 1] ?? 0);
+
+    // Arabic: ضمان بقاء الصورة الرئيسية ضمن الصور الست المختارة.
+    // English: Ensure the main image remains among the six selected images.
+    if (!selected.has(mainIndex)) {
+        const removable = Array.from(selected)
+            .reverse()
+            .find(index => index !== mainIndex);
+
+        if (removable !== undefined && selected.size >= limit) {
+            selected.delete(removable);
+        }
+
+        selected.add(mainIndex);
+    }
 
     // Arabic: تحديث البطاقات والعداد بعد كل اختيار.
     // English: Refresh image cards and selection counter after every change.

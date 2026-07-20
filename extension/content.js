@@ -34,6 +34,7 @@ let extractorConfig = { ...DEFAULT_CONFIG };
 let lastAddedSearchCodeGlobal = null;
 let observerTimer = null;
 let activeAutomaticResultOverlay = null;
+const automaticSubmissionContexts = new Map();
 
 // Arabic: انتظار خفيف واختبار شرط لواجهات التحميل الديناميكي.
 // English: Lightweight delay and condition polling for dynamic interfaces.
@@ -177,6 +178,24 @@ if (isExtensionContextAvailable()) {
 // English: normalizeText is part of the extraction flow and can be adapted for another store.
 function normalizeText(value) {
     return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+// Arabic: تقليص نص المورد قبل إرساله للذكاء الاصطناعي وحذف الروابط والرموز الطويلة غير المفيدة.
+// English: Compact supplier text before AI requests and remove long URLs or opaque tokens.
+function compactAiSourceText(value, maximumLength = 3200) {
+    const normalized = normalizeText(value)
+        .replace(/https?:\/\/\S+/gi, ' ')
+        .replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]+/gi, ' ')
+        .replace(/\b[A-Za-z0-9_-]{180,}\b/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const safeLength = Math.max(
+        300,
+        Math.min(Number(maximumLength) || 3200, 5000),
+    );
+
+    return normalized.slice(0, safeLength);
 }
 
 // Arabic: دالة isValidCode جزء من تدفق الاستخراج ويمكن تخصيصها عند نقل الأداة.
@@ -862,8 +881,8 @@ function initializeStoreImageSelector(modalBox, images, configuredLimit) {
     // English: Automatically select images 1, 2, 3, 4, 6, and 10.
     const preferredImageOrder = [
         0, // الصورة الأولى / First image
-        1, // الصورة الثانية / Second image
-        2, // الصورة الثالثة / Third image
+        5, // الصورة الثانية / Second image
+        6, // الصورة الثالثة / Third image
         3, // الصورة الرابعة / Fourth image
         5, // الصورة السادسة / Sixth image
         9, // الصورة العاشرة / Tenth image
@@ -1221,13 +1240,26 @@ async function generateProductCopy(context) {
                     'Cache-Control': 'no-store',
                 },
                 body: JSON.stringify({
-                    SourceText: sourceText,
-                    OriginalProductName:
+                    // Arabic: البحث الرسمي يحتاج بيانات مختصرة فقط لتجنب خطأ 413.
+                    // English: Official research receives compact data to avoid HTTP 413.
+                    SourceText: compactAiSourceText(
+                        sourceText,
+                        officialResearch ? 1600 : 3600,
+                    ),
+                    OriginalProductName: compactAiSourceText(
                         originalProductName || '',
-                    SearchCode: searchCode || 'NONE',
-                    StyleCode: styleCode,
-                    Sizes: sizes,
-                    BrandName: fields.brandName.value,
+                        320,
+                    ),
+                    SearchCode: String(
+                        searchCode || 'NONE',
+                    ).slice(0, 80),
+                    StyleCode: String(
+                        styleCode || '',
+                    ).slice(0, 80),
+                    Sizes: sizes.slice(0, 40),
+                    BrandName: String(
+                        fields.brandName.value || '',
+                    ).slice(0, 100),
                     AIModel: extractorConfig.AIModel,
                     ResearchOfficial:
                         Boolean(officialResearch),
@@ -1250,9 +1282,18 @@ async function generateProductCopy(context) {
                 );
             }
 
+            if (
+                response.status === 413
+                || data.request_too_large
+            ) {
+                throw new Error(
+                    'بيانات البحث كانت أكبر من الحد المسموح. تم تقليص الطلب في النسخة الجديدة؛ أعد تشغيل خادم Python ثم جرّب مرة أخرى.',
+                );
+            }
+
             throw new Error(
                 data.error
-                || `AI request failed (${response.status})`,
+                || `فشل طلب الذكاء الاصطناعي (${response.status})`,
             );
         }
 
@@ -1272,7 +1313,7 @@ async function generateProductCopy(context) {
         );
 
         aiStatus.textContent = officialResearch
-            ? `تم البحث عن هذا المنتج فقط في ${data.official_domain || 'الموقع الرسمي'} وإعادة إنشاء المحتوى`
+            ? `تم التحقق من هذا المنتج في ${data.official_domain || 'الموقع الرسمي'} وصياغة محتوى عربي تسويقي جديد`
             : 'تم إنشاء المحتوى بالطريقة العادية. اضغط الزر مرة أخرى للبحث الرسمي إذا لم تعجبك النتيجة.';
 
         return true;
@@ -1356,6 +1397,49 @@ async function verifyAutomaticSubmission(
     } finally {
         button.disabled = false;
     }
+}
+
+// Arabic: عرض حالة انتظار بسيطة أثناء تنفيذ الإضافة داخل تبويب Sooqify غير نشط.
+// English: Show a lightweight waiting state while an inactive Sooqify tab performs the submission.
+async function renderAutomaticSubmissionProgress(
+    product,
+    context = {},
+) {
+    if (activeAutomaticResultOverlay?.isConnected) {
+        activeAutomaticResultOverlay.remove();
+    }
+
+    const { overlay, modalBox } = createModalShell();
+    activeAutomaticResultOverlay = overlay;
+
+    const productId = Number(
+        product?.local_id
+        || context.productId
+        || 0,
+    );
+
+    const styleCode = String(
+        context.styleCode
+        || product?.style_code
+        || '',
+    );
+
+    const contentArea = modalBox.querySelector(
+        '#modal-content-area',
+    );
+
+    contentArea.className = '';
+    contentArea.innerHTML = `
+        <div class="alphacode-already-box">
+            <strong>⏳ جارٍ إضافة المنتج إلى Sooqify في الخلفية</strong><br>
+            ID المحلي: <b>${productId || '-'}</b><br>
+            Style Code: <b>${escapeHtml(styleCode || '-')}</b><br>
+            <span>يمكنك البقاء في صفحة المورد. ستظهر النتيجة هنا فور انتهاء الإضافة.</span>
+        </div>`;
+
+    modalBox.querySelector(
+        '.alphacode-close-btn',
+    ).style.display = 'none';
 }
 
 // Arabic: عرض نتيجة الإضافة الخلفية، مع زر استمرار أكبر وزر تحقق أصغر.
@@ -1545,34 +1629,55 @@ async function renderAutomaticSubmissionResult(
     };
 }
 
-// Arabic: إرسال المنتج إلى Sooqify في الخلفية دون فتح تبويب جديد.
-// English: Submit the prepared product to Sooqify in the background without opening a new tab.
+// Arabic: تشغيل الإضافة في تبويب غير نشط مع انتظار النتيجة عبر رسالة لاحقة من Service Worker.
+// English: Run submission in an inactive tab and receive the final result asynchronously from the service worker.
 async function submitPreparedProductInBackground(
     product,
     context = {},
 ) {
-    const result = await safeRuntimeMessage({
-        action: 'SUBMIT_PRODUCT_BACKGROUND',
-        product,
-        addUrl: extractorConfig.SooqifyAddUrl,
-    });
+    const productId = Number(product?.local_id || 0);
 
-    await renderAutomaticSubmissionResult(
-        result?.success
-            ? result
-            : {
-                success: false,
-                productId: product.local_id,
-                error: result?.error
-                    || 'تعذر تنفيذ الإضافة الخلفية.',
-            },
+    automaticSubmissionContexts.set(
+        productId,
         {
             ...context,
             product,
         },
     );
 
-    return Boolean(result?.success);
+    const response = await safeRuntimeMessage({
+        action: 'SUBMIT_PRODUCT_BACKGROUND',
+        product,
+        addUrl: extractorConfig.SooqifyAddUrl,
+        searchCode: context.searchCode || product.search_code || '',
+        styleCode: context.styleCode || product.style_code || '',
+    });
+
+    if (!response?.success) {
+        automaticSubmissionContexts.delete(productId);
+
+        await renderAutomaticSubmissionResult(
+            {
+                success: false,
+                productId,
+                error: response?.error
+                    || 'تعذر تشغيل تبويب الإضافة الخلفية.',
+            },
+            {
+                ...context,
+                product,
+            },
+        );
+
+        return false;
+    }
+
+    await renderAutomaticSubmissionProgress(
+        product,
+        context,
+    );
+
+    return true;
 }
 
 async function submitProduct(context) {
@@ -1779,22 +1884,33 @@ async function scrollToLastProduct(targetSearchCode, options = {}) {
 
 // Arabic: استقبال نتيجة تبويب إعادة المحاولة بعد أن يغلقه Service Worker.
 // English: Receive the temporary retry-tab result after the service worker closes it.
-function installFallbackResultListener() {
+function installSubmissionResultListener() {
     if (!isExtensionContextAvailable()) return;
 
     chrome.runtime.onMessage.addListener(message => {
         if (
             message?.action
-            !== 'ALPHACODE_FALLBACK_RESULT'
+            !== 'ALPHACODE_SUBMISSION_RESULT'
         ) {
             return false;
         }
 
+        const result = message.result || {
+            success: false,
+            error: 'لم تصل نتيجة صالحة من تبويب الإضافة.',
+        };
+
+        const productId = Number(result.productId || 0);
+        const context = (
+            automaticSubmissionContexts.get(productId)
+            || {}
+        );
+
+        automaticSubmissionContexts.delete(productId);
+
         renderAutomaticSubmissionResult(
-            message.result || {
-                success: false,
-                error: 'لم تصل نتيجة صالحة من تبويب إعادة المحاولة.',
-            },
+            result,
+            context,
         );
 
         return false;
@@ -1804,18 +1920,33 @@ function installFallbackResultListener() {
         (changes, areaName) => {
             if (
                 areaName !== 'local'
-                || !changes.alphacodeFallbackResult?.newValue
+                || !changes.alphacodeSubmissionResult?.newValue
             ) {
                 return;
             }
 
             const result = (
-                changes.alphacodeFallbackResult.newValue
+                changes.alphacodeSubmissionResult.newValue
             );
 
-            renderAutomaticSubmissionResult(result);
+            const productId = Number(
+                result.productId || 0,
+            );
+
+            const context = (
+                automaticSubmissionContexts.get(productId)
+                || {}
+            );
+
+            automaticSubmissionContexts.delete(productId);
+
+            renderAutomaticSubmissionResult(
+                result,
+                context,
+            );
+
             safeStorageRemove([
-                'alphacodeFallbackResult',
+                'alphacodeSubmissionResult',
             ]);
         },
     );
@@ -1823,21 +1954,21 @@ function installFallbackResultListener() {
 
 // Arabic: استعادة نتيجة احتياطية حُفظت إذا كانت صفحة المورد غير جاهزة وقت الإرسال.
 // English: Restore a fallback result saved while the supplier page was not ready.
-async function restoreStoredFallbackResult() {
+async function restoreStoredSubmissionResult() {
     const stored = await safeStorageGet([
-        'alphacodeFallbackResult',
+        'alphacodeSubmissionResult',
     ]);
 
-    if (!stored.alphacodeFallbackResult) {
+    if (!stored.alphacodeSubmissionResult) {
         return false;
     }
 
     await renderAutomaticSubmissionResult(
-        stored.alphacodeFallbackResult,
+        stored.alphacodeSubmissionResult,
     );
 
     await safeStorageRemove([
-        'alphacodeFallbackResult',
+        'alphacodeSubmissionResult',
     ]);
 
     return true;
@@ -1864,9 +1995,9 @@ function installExtractorErrorLogging() {
 // English: initializeExtractor is part of the extraction flow and can be adapted for another store.
 async function initializeExtractor() {
     installExtractorErrorLogging();
-    installFallbackResultListener();
+    installSubmissionResultListener();
     await loadConfiguration();
-    await restoreStoredFallbackResult();
+    await restoreStoredSubmissionResult();
     injectExtractionButtons();
 
     const observer = new MutationObserver(() => {

@@ -527,160 +527,17 @@ function extractStoreProductId(finalUrl, html) {
     return htmlMatch ? Number(htmlMatch[1]) : null;
 }
 
-// Arabic: إرسال المنتج مباشرة في الخلفية مع جلسة لوحة المتجر الحالية.
-// English: Submit the product directly in the background using the current admin session.
-async function submitProductInBackground(message) {
-    const product = message.product;
-    const addUrl = message.addUrl || DEFAULT_SOOQIFY_ADD_URL;
-
-    if (!product?.local_id) {
-        throw new Error('بيانات المنتج المجهز غير مكتملة.');
-    }
-
-    await updateWorkflowStatus(
-        product.local_id,
-        'submit_started',
+// Arabic: إضافة المنتج في تبويب غير نشط حتى يستخدم المتجر جلسته وJavaScript الحقيقيين دون مغادرة صفحة المورد.
+// English: Submit through an inactive store tab so the real session and JavaScript are used without leaving the supplier page.
+async function submitProductInBackground(message, sender) {
+    return openFallbackSubmissionTab(
         {
-            mode: 'background_direct',
-            add_url: addUrl,
+            ...message,
+            active: false,
+            mode: 'background_tab',
         },
+        sender,
     );
-
-    try {
-        const pageResponse = await fetch(addUrl, {
-            method: 'GET',
-            credentials: 'include',
-            cache: 'no-store',
-            redirect: 'follow',
-            headers: {
-                Accept: 'text/html,application/xhtml+xml',
-            },
-        });
-
-        const pageHtml = await pageResponse.text();
-
-        if (
-            !pageResponse.ok
-            || /\/login(?:\?|$)/i.test(pageResponse.url)
-            || /name\s*=\s*["']email["']/i.test(pageHtml)
-                && /name\s*=\s*["']password["']/i.test(pageHtml)
-        ) {
-            throw new Error(
-                'جلسة Sooqify غير صالحة أو انتهت. سجّل الدخول ثم استخدم إعادة المحاولة.',
-            );
-        }
-
-        const productForm = extractProductForm(pageHtml);
-        const formAction = new URL(
-            productForm.attributes.action || pageResponse.url,
-            pageResponse.url,
-        ).href;
-
-        const method = normalizeText(
-            productForm.attributes.method || 'POST',
-        ).toUpperCase();
-
-        const prepared = await buildSooqifyFormData(
-            product,
-            pageHtml,
-            productForm.html,
-        );
-
-        const submitResponse = await fetch(formAction, {
-            method,
-            credentials: 'include',
-            cache: 'no-store',
-            redirect: 'follow',
-            headers: {
-                Accept: 'text/html,application/xhtml+xml,application/json',
-            },
-            body: prepared.formData,
-        });
-
-        const responseText = await submitResponse.text();
-        const contentType = normalizeText(
-            submitResponse.headers.get('content-type'),
-        ).toLowerCase();
-
-        let responseJson = null;
-        if (contentType.includes('application/json')) {
-            try {
-                responseJson = JSON.parse(responseText);
-            } catch (_) {}
-        }
-
-        if (!submitResponse.ok) {
-            throw new Error(
-                responseJson?.message
-                || responseJson?.error
-                || extractValidationMessage(responseText)
-                || `رفض Sooqify الطلب (${submitResponse.status}).`,
-            );
-        }
-
-        const finalUrl = submitResponse.url || formAction;
-        const validationMessage = extractValidationMessage(responseText);
-        const stillOnAddPage = /\/admin\/item\/add-new(?:\?|$)/i.test(finalUrl);
-        const jsonSuccess = responseJson && (
-            responseJson.success === true
-            || responseJson.status === true
-        );
-
-        if (
-            (stillOnAddPage && !jsonSuccess)
-            || validationMessage
-        ) {
-            throw new Error(
-                validationMessage
-                || 'أعاد Sooqify صفحة الإضافة دون تأكيد نجاح حفظ المنتج.',
-            );
-        }
-
-        const storeProductId = extractStoreProductId(
-            finalUrl,
-            responseText,
-        );
-
-        await updateWorkflowStatus(
-            product.local_id,
-            'submitted',
-            {
-                mode: 'background_direct',
-                final_url: finalUrl,
-                store_product_id: storeProductId,
-                image_count: prepared.imageCount,
-                size_count: prepared.sizes.length,
-                total_stock: prepared.totalStock,
-            },
-        );
-
-        return {
-            success: true,
-            productId: Number(product.local_id),
-            storeProductId,
-            finalUrl,
-            mode: 'background_direct',
-        };
-
-    } catch (error) {
-        try {
-            await updateWorkflowStatus(
-                product.local_id,
-                'submit_failed',
-                {
-                    mode: 'background_direct',
-                    error: error.message,
-                },
-            );
-        } catch (_) {}
-
-        return {
-            success: false,
-            productId: Number(product.local_id),
-            error: error.message,
-            mode: 'background_direct',
-        };
-    }
 }
 
 // Arabic: فتح رابط في تبويب جديد من service worker لتجنب حظر النوافذ المنبثقة.
@@ -719,19 +576,25 @@ async function writeFallbackJobs(jobs) {
     });
 }
 
-// Arabic: فتح تبويب إعادة المحاولة بالطريقة المرئية القديمة.
-// English: Open a temporary visible retry tab using the legacy UI workflow.
+// Arabic: فتح تبويب آلي؛ يكون مخفياً للمحاولة الأساسية ومرئياً عند إعادة المحاولة.
+// English: Open an automated tab; inactive for the primary attempt and visible for manual retry.
 async function openFallbackSubmissionTab(message, sender) {
     const product = message.product;
 
     if (!product?.local_id) {
-        throw new Error('بيانات المنتج غير متاحة لإعادة المحاولة.');
+        throw new Error('بيانات المنتج غير متاحة للإضافة.');
     }
 
     const sourceTabId = sender.tab?.id;
     if (!Number.isInteger(sourceTabId)) {
         throw new Error('تعذر تحديد تبويب صفحة المورد.');
     }
+
+    const mode = message.mode === 'background_tab'
+        ? 'background_tab'
+        : 'fallback_tab';
+
+    const active = mode === 'fallback_tab';
 
     await chrome.storage.local.set({
         pendingSooqifyProduct: product,
@@ -747,25 +610,72 @@ async function openFallbackSubmissionTab(message, sender) {
         'alphacode_product_id',
         String(product.local_id),
     );
+    addUrl.searchParams.set(
+        'alphacode_mode',
+        mode,
+    );
 
-    const retryTab = await chrome.tabs.create({
-        url: addUrl.href,
-        active: true,
+    // Arabic: إنشاء التبويب على صفحة فارغة أولاً حتى تُحفظ المهمة قبل تحميل Sooqify.
+    // English: Create an about:blank tab first so the job is persisted before Sooqify starts loading.
+    const automatedTab = await chrome.tabs.create({
+        url: 'about:blank',
+        active,
     });
 
     const jobs = await readFallbackJobs();
-    jobs[String(retryTab.id)] = {
+    jobs[String(automatedTab.id)] = {
         sourceTabId,
         productId: Number(product.local_id),
         searchCode: normalizeText(message.searchCode),
         styleCode: normalizeText(message.styleCode),
+        mode,
+        active,
         createdAt: Date.now(),
     };
     await writeFallbackJobs(jobs);
 
+    try {
+        await chrome.tabs.update(
+            automatedTab.id,
+            {
+                url: addUrl.href,
+                active,
+            },
+        );
+    } catch (error) {
+        const failedJobs = await readFallbackJobs();
+        delete failedJobs[String(automatedTab.id)];
+        await writeFallbackJobs(failedJobs);
+        chrome.tabs.remove(automatedTab.id).catch(() => {});
+        throw new Error(
+            `تعذر فتح صفحة Sooqify: ${error.message}`,
+        );
+    }
+
+    try {
+        await forwardClientLog({
+            payload: {
+                level: 'INFO',
+                event: 'automated_store_tab_opened',
+                message: mode === 'background_tab'
+                    ? 'Opened an inactive Sooqify tab for background submission.'
+                    : 'Opened a visible Sooqify tab for fallback submission.',
+                details: {
+                    product_id: product.local_id,
+                    tab_id: automatedTab.id,
+                    mode,
+                    active,
+                },
+                page: sender.tab?.url || '',
+            },
+        });
+    } catch (_) {}
+
     return {
         success: true,
-        tabId: retryTab.id,
+        pending: true,
+        tabId: automatedTab.id,
+        mode,
     };
 }
 
@@ -798,7 +708,7 @@ async function completeFallbackSubmission(message, sender) {
             || job.styleCode,
         ),
         error: normalizeText(message.error),
-        mode: 'fallback_tab',
+        mode: normalizeText(job.mode) || 'fallback_tab',
     };
 
     if (Number.isInteger(job.sourceTabId)) {
@@ -806,13 +716,13 @@ async function completeFallbackSubmission(message, sender) {
             await chrome.tabs.sendMessage(
                 job.sourceTabId,
                 {
-                    action: 'ALPHACODE_FALLBACK_RESULT',
+                    action: 'ALPHACODE_SUBMISSION_RESULT',
                     result,
                 },
             );
         } catch (_) {
             await chrome.storage.local.set({
-                alphacodeFallbackResult: result,
+                alphacodeSubmissionResult: result,
             });
         }
     }
@@ -826,6 +736,54 @@ async function completeFallbackSubmission(message, sender) {
         result,
     };
 }
+
+// Arabic: اكتشاف تحويل التبويب الآلي إلى تسجيل الدخول وإرجاع خطأ واضح بدلاً من الانتظار.
+// English: Detect automated tabs redirected to login and return a clear error instead of hanging.
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+    if (!changeInfo.url && changeInfo.status !== 'complete') return;
+
+    const jobs = await readFallbackJobs();
+    const job = jobs[String(tabId)];
+    if (!job) return;
+
+    const currentUrl = String(
+        changeInfo.url || tab?.url || '',
+    );
+
+    if (!/\/login(?:\?|$)|\/auth\/login(?:\?|$)/i.test(currentUrl)) {
+        return;
+    }
+
+    delete jobs[String(tabId)];
+    await writeFallbackJobs(jobs);
+
+    const result = {
+        success: false,
+        productId: job.productId,
+        searchCode: job.searchCode,
+        styleCode: job.styleCode,
+        error: 'انتهت جلسة Sooqify. سجّل الدخول إلى لوحة المتجر ثم أعد المحاولة.',
+        mode: normalizeText(job.mode) || 'background_tab',
+    };
+
+    if (Number.isInteger(job.sourceTabId)) {
+        try {
+            await chrome.tabs.sendMessage(
+                job.sourceTabId,
+                {
+                    action: 'ALPHACODE_SUBMISSION_RESULT',
+                    result,
+                },
+            );
+        } catch (_) {
+            await chrome.storage.local.set({
+                alphacodeSubmissionResult: result,
+            });
+        }
+    }
+
+    chrome.tabs.remove(tabId).catch(() => {});
+});
 
 // Arabic: تنظيف المهمة إذا أغلق المستخدم تبويب إعادة المحاولة يدوياً.
 // English: Clean up and notify the source if the user manually closes the retry tab.
@@ -844,21 +802,23 @@ chrome.tabs.onRemoved.addListener(async tabId => {
         productId: job.productId,
         searchCode: job.searchCode,
         styleCode: job.styleCode,
-        error: 'تم إغلاق تبويب إعادة المحاولة قبل اكتمال الإضافة.',
-        mode: 'fallback_tab',
+        error: job.mode === 'background_tab'
+            ? 'تم إغلاق تبويب الإضافة الخلفية قبل اكتمال العملية.'
+            : 'تم إغلاق تبويب إعادة المحاولة قبل اكتمال الإضافة.',
+        mode: normalizeText(job.mode) || 'fallback_tab',
     };
 
     try {
         await chrome.tabs.sendMessage(
             job.sourceTabId,
             {
-                action: 'ALPHACODE_FALLBACK_RESULT',
+                action: 'ALPHACODE_SUBMISSION_RESULT',
                 result,
             },
         );
     } catch (_) {
         await chrome.storage.local.set({
-            alphacodeFallbackResult: result,
+            alphacodeSubmissionResult: result,
         });
     }
 });
@@ -887,7 +847,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
             if (message.action === 'SUBMIT_PRODUCT_BACKGROUND') {
                 sendResponse(
-                    await submitProductInBackground(message),
+                    await submitProductInBackground(message, sender),
                 );
                 return;
             }

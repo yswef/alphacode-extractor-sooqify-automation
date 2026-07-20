@@ -35,6 +35,9 @@ function getFallbackRetryContext() {
             const context = {
                 isRetry: true,
                 productId,
+                mode: params.get('alphacode_mode') === 'background_tab'
+                    ? 'background_tab'
+                    : 'fallback_tab',
             };
 
             sessionStorage.setItem(
@@ -57,6 +60,9 @@ function getFallbackRetryContext() {
             return {
                 isRetry: true,
                 productId: Number(stored.productId),
+                mode: stored.mode === 'background_tab'
+                    ? 'background_tab'
+                    : 'fallback_tab',
             };
         }
     } catch (_) {}
@@ -83,6 +89,7 @@ async function reportFallbackSubmissionResult({
         searchCode,
         styleCode,
         error: String(error || ''),
+        mode: context.mode || 'fallback_tab',
     });
 
     return Boolean(response?.success);
@@ -1934,6 +1941,39 @@ async function getLatestPreparedProduct() {
     return data.pending_product;
 }
 
+// Arabic: جلب منتج محدد بالـID لمنع استخدام منتج أحدث بالخطأ في التبويب الآلي.
+// English: Load the exact product ID so an automated tab never uses a newer prepared product by mistake.
+async function getPreparedProductById(productId) {
+    const wantedId = Number(productId || 0);
+
+    if (!wantedId) {
+        return getLatestPreparedProduct();
+    }
+
+    const response = await fetch(
+        `${LOCAL_API_BASE}/api/pending/${wantedId}`,
+        {
+            cache: 'no-store',
+        },
+    );
+
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+        throw new Error(
+            data.error
+            || `تعذر جلب المنتج المجهز رقم ${wantedId}.`,
+        );
+    }
+
+    await safeStorageSet({
+        pendingSooqifyProduct:
+            data.pending_product,
+    });
+
+    return data.pending_product;
+}
+
 // Arabic: تحديث حالة المنتج في الأرشيف المحلي.
 // English: Update the product workflow status in the local archive.
 async function updateWorkflowStatus(
@@ -2610,7 +2650,10 @@ async function runAutomaticAddIfEnabled() {
 
     await loadAdminConfiguration();
 
-    const product = await getLatestPreparedProduct();
+    const product = await getPreparedProductById(
+        fallbackContext.productId,
+    );
+
     if (
         Number(product.local_id)
         !== Number(fallbackContext.productId)
@@ -2641,7 +2684,9 @@ async function runAutomaticAddIfEnabled() {
     };
 
     setStatus(
-        'إعادة المحاولة: تعبئة المنتج وإضافته، وسيُغلق هذا التبويب تلقائياً بعد النتيجة...',
+        fallbackContext.mode === 'background_tab'
+            ? 'تتم إضافة المنتج في الخلفية. سيُغلق هذا التبويب تلقائياً بعد النتيجة...'
+            : 'إعادة المحاولة: تعبئة المنتج وإضافته، وسيُغلق هذا التبويب تلقائياً بعد النتيجة...',
         'working',
     );
 
@@ -2659,14 +2704,16 @@ async function runAutomaticAddIfEnabled() {
             product.local_id,
             'submit_failed',
             {
-                mode: 'fallback_tab',
+                mode: fallbackContext.mode || 'fallback_tab',
                 error: error.message,
             },
         );
 
         await logClientEvent(
             'ERROR',
-            'admin_fallback_retry_failed',
+            fallbackContext.mode === 'background_tab'
+                ? 'admin_background_tab_failed'
+                : 'admin_fallback_retry_failed',
             error.message,
             {
                 product_id: product.local_id,
@@ -2704,7 +2751,7 @@ async function confirmSubmissionAfterNavigation() {
         'submitted',
         {
             mode: fallbackContext?.isRetry
-                ? 'fallback_tab'
+                ? (fallbackContext.mode || 'fallback_tab')
                 : 'admin_visible',
             redirected_to: window.location.href,
         },
@@ -2744,6 +2791,8 @@ async function confirmSubmissionAfterNavigation() {
             fallback_retry: Boolean(
                 fallbackContext?.isRetry,
             ),
+            automated_submission_mode:
+                fallbackContext?.mode || '',
         },
     );
 
@@ -2843,7 +2892,7 @@ async function initializeAdminAutofill() {
         'admin_adapter_ready',
         'Sooqify admin adapter initialized.',
         {
-            version: '3.4.2-fast-fields-product-id-tag',
+            version: '3.4.3-background-tab-submission',
             target_store:
                 adminConfig.StoreProfileName,
             supplier_store:

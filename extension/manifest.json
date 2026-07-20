@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AlphaCode Product Extractor",
-  "version": "3.3.0",
+  "version": "3.5.1",
   "description": "SZWEGO extractor with Groq bilingual copy, selectable five-image Sooqify uploads, dynamic category/brand/variant autofill, data management, and diagnostics.",
   "permissions": [
     "activeTab",

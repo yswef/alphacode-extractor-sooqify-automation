@@ -37,7 +37,7 @@ LOG_PATH = os.path.join(LOG_DIR, "alphacode.log")
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_AI_MODEL = "openai/gpt-oss-20b"
 GROQ_OFFICIAL_SEARCH_MODEL = "groq/compound-mini"
-AI_PROMPT_VERSION = "3.5-official-store-fresh-generation"
+AI_PROMPT_VERSION = "3.6-dual-mode-no-cache"
 
 # Arabic: القفل يمنع تعارض طلبين أثناء تحديث الصور وExcel والأرشيف.
 # English: The lock prevents concurrent requests from corrupting images, Excel, or archive data.
@@ -946,7 +946,7 @@ def serve_product_image(product_id, filename):
 
 
 def resolve_official_store_domains(brand_name, source_text=""):
-    """Arabic: تحديد نطاق المتجر الرسمي فقط حسب البراند. English: Resolve only the official store domain for the detected brand."""
+    """Arabic: تحديد نطاق الموقع الرسمي حسب البراند. English: Resolve the official company domain for the detected brand."""
     combined = f"{normalize_text(brand_name)} {normalize_text(source_text)}".lower()
     mappings = [
         (("air jordan", "jordan ", "aj1", "aj 1", "nike"), ["nike.com"]),
@@ -959,16 +959,19 @@ def resolve_official_store_domains(brand_name, source_text=""):
         (("reebok",), ["reebok.com"]),
         (("under armour",), ["underarmour.com"]),
     ]
+
     for keywords, domains in mappings:
         if any(keyword in combined for keyword in keywords):
             return domains
+
     return []
 
 
 def extract_first_json_object(raw_text):
     """Arabic: استخراج أول كائن JSON متوازن من رد Groq. English: Extract the first balanced JSON object from Groq output."""
     text = normalize_text(raw_text)
-    text = re.sub(r"^```(?:json)?\\s*|\\s*```$", "", text, flags=re.I).strip()
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I).strip()
+
     try:
         parsed = json.loads(text)
         if isinstance(parsed, dict):
@@ -983,19 +986,25 @@ def extract_first_json_object(raw_text):
     depth = 0
     in_string = False
     escaped = False
+
     for index in range(start, len(text)):
         character = text[index]
+
         if escaped:
             escaped = False
             continue
-        if character == "\\\\" and in_string:
+
+        if character == "\\" and in_string:
             escaped = True
             continue
+
         if character == '"':
             in_string = not in_string
             continue
+
         if in_string:
             continue
+
         if character == "{":
             depth += 1
         elif character == "}":
@@ -1009,6 +1018,7 @@ def extract_first_json_object(raw_text):
 def read_retry_after_seconds(response):
     """Arabic: قراءة مدة انتظار Rate Limit دون إعادة الطلب. English: Read the rate-limit wait duration without retrying the request."""
     retry_after = normalize_text(response.headers.get("Retry-After"))
+
     try:
         return max(0, int(float(retry_after)))
     except (TypeError, ValueError):
@@ -1018,37 +1028,95 @@ def read_retry_after_seconds(response):
         message = normalize_text(response.json().get("error", {}).get("message"))
     except Exception:
         message = normalize_text(response.text)
-    match = re.search(r"try again in\\s*([0-9.]+)s", message, re.I)
+
+    match = re.search(r"try again in\s*([0-9.]+)s", message, re.I)
     return int(float(match.group(1))) + 1 if match else 0
 
 
-@app.route("/api/ai/generate", methods=["POST"])
-def generate_ai_copy():
-    """Arabic: بحث واحد في المتجر الرسمي وإنشاء نتيجة جديدة دون Cache. English: Perform one official-store search and generate fresh copy without cache."""
-    data = request.get_json(silent=True) or {}
-    source_text = normalize_text(data.get("SourceText"))
-    original_product_name = normalize_text(data.get("OriginalProductName"))
-    style_code = normalize_text(data.get("StyleCode"))
-    search_code = normalize_text(data.get("SearchCode"))
-    sizes = unique_text_values(data.get("Sizes") if isinstance(data.get("Sizes"), list) else [])
-    configured_brand = canonicalize_brand_name(data.get("BrandName"))
+def validate_generated_copy(generated):
+    """Arabic: التأكد من اكتمال حقول المحتوى قبل اعتمادها. English: Validate the required generated-copy fields."""
+    required = [
+        "name_en",
+        "description_en",
+        "name_ar",
+        "description_ar",
+        "brand_name",
+    ]
 
-    if not source_text:
-        return jsonify({"success": False, "error": "SourceText is required."}), 400
+    missing = [
+        field
+        for field in required
+        if not normalize_text(generated.get(field))
+    ]
 
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        return jsonify({"success": False, "error": "GROQ_API_KEY is not configured on the Python server."}), 503
+    if missing:
+        raise ValueError(
+            "Groq response is missing fields: "
+            + ", ".join(missing)
+        )
 
-    official_domains = resolve_official_store_domains(configured_brand, source_text)
-    if not official_domains:
-        return jsonify({"success": False, "error": "No official store domain is configured for this brand."}), 400
+    return generated
 
+
+def build_normal_ai_payload(
+    model,
+    source_text,
+    original_product_name,
+    style_code,
+    search_code,
+    sizes,
+    configured_brand,
+):
+    """Arabic: بناء طلب التوليد العادي دون بحث ويب. English: Build the normal generation request without web research."""
+    instructions = (
+        "You are a senior footwear e-commerce copywriter fluent in English and Arabic. "
+        "Create accurate bilingual product names and descriptions using only the supplied product text. "
+        "Do not browse the web and do not invent unsupported colors, materials, gender, edition, technology, or benefits. "
+        "If the product is Air Jordan, use the canonical English brand Air Jordan and Arabic brand إير جوردن. "
+        "The English title should include brand, model, silhouette or footwear type, and the exact style code once at the end. "
+        "The Arabic title must begin with حذاء and include the exact style code once at the end. "
+        "Write 2 or 3 concise commercial sentences in each language and mention the supplied sizes in the final sentence. "
+        "Never mention supplier name, Search Code, price, shipping, authenticity, replica, or quality grade. "
+        "Return one JSON object only with exactly: name_en, description_en, name_ar, description_ar, brand_name."
+    )
+
+    user_input = (
+        f"Original supplier name:\n{original_product_name or 'Not provided'}\n\n"
+        f"Supplier product text:\n{source_text[:6000]}\n\n"
+        f"Exact style code: {style_code or 'Not provided'}\n"
+        f"Internal Search Code — never include it: {search_code or 'Not provided'}\n"
+        f"Available sizes: {', '.join(sizes) if sizes else 'Not provided'}\n"
+        f"Configured brand hint: {configured_brand or 'Not provided'}\n"
+        "Generate polished bilingual store copy now."
+    )
+
+    return {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": instructions},
+            {"role": "user", "content": user_input},
+        ],
+        "temperature": 0.15,
+        "max_completion_tokens": 1200,
+    }
+
+
+def build_official_ai_payload(
+    official_domains,
+    source_text,
+    original_product_name,
+    style_code,
+    search_code,
+    sizes,
+):
+    """Arabic: بناء طلب بحث رسمي واحد للمنتج الحالي فقط. English: Build one official-site search request for the current product only."""
     official_domain = official_domains[0]
+
     prompt = f"""
 You are the catalog editor for an Arabic-English footwear store.
 
-Use the web search tool exactly once. Search ONLY the official company store domain: {official_domain}.
+Use the web search tool exactly once for THIS PRODUCT ONLY.
+Search ONLY the official company domain: {official_domain}.
 Search the exact style code in quotation marks: "{style_code or 'Not provided'}".
 Do not use retailers, marketplaces, blogs, social media, sneaker databases, or any non-official domain.
 
@@ -1056,7 +1124,7 @@ SUPPLIER ORIGINAL NAME:
 {original_product_name or 'Not provided'}
 
 SUPPLIER TEXT:
-{source_text[:5000]}
+{source_text[:4500]}
 
 AVAILABLE SIZES:
 {', '.join(sizes) if sizes else 'Not provided'}
@@ -1065,14 +1133,14 @@ INTERNAL SEARCH CODE — NEVER INCLUDE IT:
 {search_code or 'Not provided'}
 
 RULES:
-1. If the official store page exactly matches the style code, use its official model, silhouette, colorway, audience, materials, and visible design facts.
-2. If the code is not found on the official store, use only explicit supplier facts and do not invent missing details.
-3. For Air Jordan, the canonical English brand is Air Jordan and Arabic is إير جوردن.
-4. English title: brand + model + silhouette + verified colorway/edition + specific footwear type + exact style code once at the end.
-5. Arabic title must begin with حذاء, use إير جوردن, and put the exact style code once at the end.
-6. Write 2–3 concise commercial sentences in each language. Mention the available sizes in the final sentence.
+1. Use official facts only when the official page exactly matches the Style Code.
+2. If the Style Code is not found officially, use only explicit supplier facts and omit uncertain details.
+3. For Air Jordan, use Air Jordan in English and إير جوردن in Arabic.
+4. English title: brand + model + silhouette + verified colorway or edition + specific footwear type + exact Style Code once at the end.
+5. Arabic title must begin with حذاء and put the exact Style Code once at the end.
+6. Write 2–3 concise commercial sentences in each language and mention sizes in the final sentence.
 7. Never mention authenticity, quality grade, supplier, price, Search Code, shipping, or unsupported benefits.
-8. English and Arabic must describe exactly the same verified product.
+8. English and Arabic must describe the same verified product.
 
 Return one JSON object only, without Markdown or citations in the text, with exactly these keys:
 {{
@@ -1084,37 +1152,129 @@ Return one JSON object only, without Markdown or citations in the text, with exa
 }}
 """.strip()
 
-    payload = {
+    return {
         "model": GROQ_OFFICIAL_SEARCH_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "compound_custom": {"tools": {"enabled_tools": ["web_search"]}},
-        "search_settings": {"include_domains": official_domains},
+        "compound_custom": {
+            "tools": {
+                "enabled_tools": ["web_search"],
+            },
+        },
+        "search_settings": {
+            "include_domains": official_domains,
+        },
         "citation_options": "disabled",
         "temperature": 0.2,
-        "max_completion_tokens": 1600,
+        "max_completion_tokens": 1400,
     }
 
+
+@app.route("/api/ai/generate", methods=["POST"])
+def generate_ai_copy():
+    """Arabic: توليد عادي أولاً، وبحث رسمي فقط عندما تطلب الواجهة ذلك. English: Generate normally first and use official research only when explicitly requested."""
+    data = request.get_json(silent=True) or {}
+    source_text = normalize_text(data.get("SourceText"))
+    original_product_name = normalize_text(data.get("OriginalProductName"))
+    style_code = normalize_text(data.get("StyleCode"))
+    search_code = normalize_text(data.get("SearchCode"))
+    sizes = unique_text_values(
+        data.get("Sizes")
+        if isinstance(data.get("Sizes"), list)
+        else []
+    )
+    configured_brand = canonicalize_brand_name(data.get("BrandName"))
+    research_official = safe_bool(data.get("ResearchOfficial"), False)
+
+    if not source_text:
+        return jsonify({
+            "success": False,
+            "error": "SourceText is required.",
+        }), 400
+
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        return jsonify({
+            "success": False,
+            "error": "GROQ_API_KEY is not configured on the Python server.",
+        }), 503
+
+    model = (
+        GROQ_OFFICIAL_SEARCH_MODEL
+        if research_official
+        else (
+            normalize_text(data.get("AIModel"))
+            or os.getenv("GROQ_MODEL", DEFAULT_AI_MODEL)
+        )
+    )
+
+    official_domain = ""
+
+    if research_official:
+        official_domains = resolve_official_store_domains(
+            configured_brand,
+            source_text,
+        )
+
+        if not official_domains:
+            return jsonify({
+                "success": False,
+                "error": "No official company domain is configured for this brand.",
+            }), 400
+
+        official_domain = official_domains[0]
+        payload = build_official_ai_payload(
+            official_domains,
+            source_text,
+            original_product_name,
+            style_code,
+            search_code,
+            sizes,
+        )
+    else:
+        payload = build_normal_ai_payload(
+            model,
+            source_text,
+            original_product_name,
+            style_code,
+            search_code,
+            sizes,
+            configured_brand,
+        )
+
     response = None
+
     try:
         response = requests.post(
             GROQ_CHAT_URL,
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
-                "Groq-Model-Version": "latest",
                 "Cache-Control": "no-store",
             },
             json=payload,
-            timeout=(20, 120),
+            timeout=(20, 120 if research_official else 90),
             verify=certifi.where(),
         )
 
+        # Arabic: عدم إعادة المحاولة عند Rate Limit واحترام Retry-After.
+        # English: Do not retry rate limits and respect Retry-After.
         if response.status_code == 429:
             retry_after = read_retry_after_seconds(response)
+
             try:
-                message = response.json().get("error", {}).get("message", "Groq rate limit reached.")
+                message = response.json().get(
+                    "error",
+                    {},
+                ).get(
+                    "message",
+                    "Groq rate limit reached.",
+                )
             except Exception:
-                message = response.text[:500] or "Groq rate limit reached."
+                message = (
+                    response.text[:500]
+                    or "Groq rate limit reached."
+                )
+
             return jsonify({
                 "success": False,
                 "error": message,
@@ -1123,22 +1283,60 @@ Return one JSON object only, without Markdown or citations in the text, with exa
             }), 429
 
         response.raise_for_status()
-        raw_text = response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
-        generated = extract_first_json_object(raw_text)
 
-        required = ["name_en", "description_en", "name_ar", "description_ar", "brand_name"]
-        missing = [field for field in required if not normalize_text(generated.get(field))]
-        if missing:
-            raise ValueError("Groq response is missing fields: " + ", ".join(missing))
+        raw_text = response.json().get(
+            "choices",
+            [{}],
+        )[0].get(
+            "message",
+            {},
+        ).get(
+            "content",
+            "",
+        )
 
-        name_en = enforce_product_name_rules(generated.get("name_en"), source_text, style_code)
-        description_en = re.sub(r"\s+", " ", normalize_text(generated.get("description_en")))[:1800]
-        name_ar = enforce_arabic_product_name(generated.get("name_ar"), source_text, style_code)
-        description_ar = re.sub(r"\s+", " ", normalize_text(generated.get("description_ar")))[:2000]
-        brand_name = canonicalize_brand_name(generated.get("brand_name") or configured_brand)
+        generated = validate_generated_copy(
+            extract_first_json_object(raw_text)
+        )
 
-        if len(name_en) < 8 or len(description_en) < 20 or len(name_ar) < 8 or len(description_ar) < 15:
-            raise ValueError("The AI response did not contain complete bilingual product copy.")
+        name_en = enforce_product_name_rules(
+            generated.get("name_en"),
+            source_text,
+            style_code,
+        )
+
+        description_en = re.sub(
+            r"\s+",
+            " ",
+            normalize_text(generated.get("description_en")),
+        )[:1800]
+
+        name_ar = enforce_arabic_product_name(
+            generated.get("name_ar"),
+            source_text,
+            style_code,
+        )
+
+        description_ar = re.sub(
+            r"\s+",
+            " ",
+            normalize_text(generated.get("description_ar")),
+        )[:2000]
+
+        brand_name = canonicalize_brand_name(
+            generated.get("brand_name")
+            or configured_brand
+        )
+
+        if (
+            len(name_en) < 8
+            or len(description_en) < 20
+            or len(name_ar) < 8
+            or len(description_ar) < 15
+        ):
+            raise ValueError(
+                "The AI response did not contain complete bilingual product copy."
+            )
 
         return jsonify({
             "success": True,
@@ -1147,24 +1345,62 @@ Return one JSON object only, without Markdown or citations in the text, with exa
             "name_ar": name_ar,
             "description_ar": description_ar,
             "brand_name": brand_name,
-            "model": GROQ_OFFICIAL_SEARCH_MODEL,
+            "model": model,
             "style_code": style_code,
+            "generation_mode": (
+                "official_research"
+                if research_official
+                else "normal"
+            ),
             "official_domain": official_domain,
-            "official_store_only": True,
+            "official_store_only": research_official,
             "cached": False,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "created_at": datetime.now().isoformat(
+                timespec="seconds"
+            ),
         })
 
     except requests.HTTPError as exc:
         try:
-            details = response.json().get("error", {}).get("message", "")
+            details = response.json().get(
+                "error",
+                {},
+            ).get("message", "")
         except Exception:
-            details = response.text[:500] if response is not None else ""
-        logger.error("Groq official-store request failed: %s | %s", exc, details)
-        return jsonify({"success": False, "error": details or str(exc)}), 502
-    except (requests.RequestException, ValueError, KeyError, json.JSONDecodeError) as exc:
-        logger.error("Official-store AI copy generation failed: %s", exc)
-        return jsonify({"success": False, "error": str(exc)}), 502
+            details = (
+                response.text[:500]
+                if response is not None
+                else ""
+            )
+
+        logger.error(
+            "Groq AI request failed: %s | %s",
+            exc,
+            details,
+        )
+
+        return jsonify({
+            "success": False,
+            "error": details or str(exc),
+        }), 502
+
+    except (
+        requests.RequestException,
+        ValueError,
+        KeyError,
+        json.JSONDecodeError,
+    ) as exc:
+        logger.error(
+            "AI copy generation failed. official=%s error=%s",
+            research_official,
+            exc,
+        )
+
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+        }), 502
+
 
 @app.route("/api/extract", methods=["POST"])
 def extract_product():

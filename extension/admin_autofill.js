@@ -8,7 +8,8 @@
 
 const ADMIN_DEFAULTS = globalThis.ALPHACODE_DEFAULT_CONFIG || {};
 const LOCAL_API_BASE = 'http://127.0.0.1:5000';
-const AUTO_FLOW_STORAGE_KEY = 'alphacodeAutoFlow';
+const FALLBACK_RETRY_QUERY_KEY = 'alphacode_retry';
+const FALLBACK_RETRY_SESSION_KEY = 'alphacodeFallbackRetryContext';
 let adminConfig = { ...ADMIN_DEFAULTS };
 let adminPanelObserverTimer = null;
 let automaticRunStarted = false;
@@ -17,6 +18,74 @@ let automaticRunStarted = false;
 // English: Pause between dynamic store-interface steps.
 function sleep(milliseconds) {
     return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+
+// Arabic: قراءة سياق إعادة المحاولة من الرابط أو sessionStorage ليستمر بعد تحويل المتجر.
+// English: Read retry context from the URL or sessionStorage so it survives store navigation.
+function getFallbackRetryContext() {
+    try {
+        const params = new URLSearchParams(window.location.search);
+        const isRetry = params.get(FALLBACK_RETRY_QUERY_KEY) === '1';
+        const productId = Number(
+            params.get('alphacode_product_id') || 0,
+        );
+
+        if (isRetry && productId) {
+            const context = {
+                isRetry: true,
+                productId,
+            };
+
+            sessionStorage.setItem(
+                FALLBACK_RETRY_SESSION_KEY,
+                JSON.stringify(context),
+            );
+
+            return context;
+        }
+    } catch (_) {}
+
+    try {
+        const stored = JSON.parse(
+            sessionStorage.getItem(
+                FALLBACK_RETRY_SESSION_KEY,
+            ) || 'null',
+        );
+
+        if (stored?.isRetry && Number(stored.productId)) {
+            return {
+                isRetry: true,
+                productId: Number(stored.productId),
+            };
+        }
+    } catch (_) {}
+
+    return null;
+}
+
+// Arabic: إبلاغ Service Worker بنتيجة تبويب إعادة المحاولة ليغلقه ويحدث صفحة المورد.
+// English: Report the retry-tab result so the service worker can close it and update the supplier page.
+async function reportFallbackSubmissionResult({
+    success,
+    productId,
+    searchCode = '',
+    styleCode = '',
+    error = '',
+}) {
+    const context = getFallbackRetryContext();
+    if (!context?.isRetry) return false;
+
+    const response = await safeRuntimeMessage({
+        action: 'FALLBACK_SUBMISSION_COMPLETE',
+        success: Boolean(success),
+        productId: Number(productId || context.productId),
+        searchCode,
+        styleCode,
+        error: String(error || ''),
+    });
+
+    return Boolean(response?.success);
 }
 
 // Arabic: التأكد من أن سياق الإضافة الحالي ما زال صالحاً بعد Reload.
@@ -2007,6 +2076,21 @@ async function submitStoreProduct(
         );
     }
 
+    // Arabic: إيقاف المحاولة مبكراً إذا كان المتجر ما زال يعتبر حقلاً مطلوباً غير صالح.
+    // English: Stop early when the native store form still contains an invalid required control.
+    if (typeof form.checkValidity === 'function' && !form.checkValidity()) {
+        const invalidControl = form.querySelector(':invalid');
+        const invalidName = String(
+            invalidControl?.getAttribute?.('name')
+            || invalidControl?.id
+            || 'غير محدد',
+        );
+
+        throw new Error(
+            `يوجد حقل مطلوب غير مكتمل في نموذج المتجر: ${invalidName}.`,
+        );
+    }
+
     await logFormPayloadSummary(form, product);
 
     await updateWorkflowStatus(
@@ -2053,6 +2137,44 @@ async function submitStoreProduct(
     );
 
     submitButton.click();
+
+    // Arabic: إذا منع التحقق المحلي الإرسال ولم يحدث انتقال، أبلغ صفحة المورد وأغلق تبويب المحاولة.
+    // English: If local validation blocks navigation, report failure and close the retry tab.
+    if (getFallbackRetryContext()?.isRetry) {
+        setTimeout(async () => {
+            if (
+                !findProductForm()
+                || !sessionStorage.getItem(
+                    'alphacodeSubmitProductId',
+                )
+            ) {
+                return;
+            }
+
+            const errorMessage = (
+                'لم ينتقل Sooqify بعد الضغط على زر الإضافة. راجع الحقول المطلوبة أو رسالة التحقق في النموذج.'
+            );
+
+            try {
+                await updateWorkflowStatus(
+                    product.local_id,
+                    'submit_failed',
+                    {
+                        mode: 'fallback_tab',
+                        error: errorMessage,
+                    },
+                );
+
+                await reportFallbackSubmissionResult({
+                    success: false,
+                    productId: product.local_id,
+                    searchCode: product.search_code || '',
+                    styleCode: product.style_code || '',
+                    error: errorMessage,
+                });
+            } catch (_) {}
+        }, 30000);
+    }
 }
 
 // Arabic: تنفيذ تعبئة المنتج كاملة مع خيار الإرسال التلقائي.
@@ -2474,82 +2596,77 @@ async function injectAdminPanel() {
     };
 }
 
-// Arabic: تشغيل الإضافة التلقائية مرة واحدة عند جاهزية نموذج المنتج.
-// English: Run full automatic add once when the product form is ready.
-
-// Arabic: تحديث مسار الإضافة التلقائية والرجوع إلى صفحة المورد في التبويب نفسه.
-// English: Update the automatic flow and return to the supplier page in the same tab.
-async function returnToAutomaticFlowSource(status, product, errorMessage = '') {
-    const stored = await safeStorageGet([AUTO_FLOW_STORAGE_KEY]);
-    const flow = stored[AUTO_FLOW_STORAGE_KEY];
-
-    if (!flow || Number(flow.productId) !== Number(product?.local_id)) {
-        return false;
-    }
-
-    const updatedFlow = {
-        ...flow,
-        status,
-        error: String(errorMessage || ''),
-        storeUrl: window.location.href,
-        completedAt: new Date().toISOString(),
-    };
-
-    await safeStorageSet({
-        [AUTO_FLOW_STORAGE_KEY]: updatedFlow,
-    });
-
-    if (!flow.sourceUrl) return false;
-
-    await sleep(350);
-    window.location.replace(flow.sourceUrl);
-    return true;
-}
-
+// Arabic: تشغيل الإضافة التلقائية فقط داخل تبويب إعادة المحاولة المؤقت.
+// English: Run automatic submission only inside the temporary retry tab.
 async function runAutomaticAddIfEnabled() {
-    if (automaticRunStarted || !findProductForm()) return;
-
-    await loadAdminConfiguration();
-    if (!adminConfig.AutoAddProduct) return;
-
-    const product = await getLatestPreparedProduct();
-    const stored = await safeStorageGet([
-        'lastAutoSubmitProductId',
-        AUTO_FLOW_STORAGE_KEY,
-    ]);
-
-    const activeFlow = stored[AUTO_FLOW_STORAGE_KEY];
-    const flowTargetsProduct = Number(activeFlow?.productId) === Number(product.local_id);
-
-    // Arabic: السماح بإعادة محاولة المنتج نفسه عندما بدأ المستخدم مساراً تلقائياً جديداً.
-    // English: Allow the same product to retry when a new automatic flow explicitly targets it.
-    if (
-        stored.lastAutoSubmitProductId === product.local_id
-        && !flowTargetsProduct
-    ) {
+    if (automaticRunStarted || !findProductForm()) {
         return;
     }
 
+    const fallbackContext = getFallbackRetryContext();
+    if (!fallbackContext?.isRetry) {
+        return;
+    }
+
+    await loadAdminConfiguration();
+
+    const product = await getLatestPreparedProduct();
+    if (
+        Number(product.local_id)
+        !== Number(fallbackContext.productId)
+    ) {
+        const mismatchError = new Error(
+            `المنتج المجهز رقم ${product.local_id} لا يطابق منتج إعادة المحاولة رقم ${fallbackContext.productId}.`,
+        );
+
+        await reportFallbackSubmissionResult({
+            success: false,
+            productId: fallbackContext.productId,
+            error: mismatchError.message,
+        });
+
+        throw mismatchError;
+    }
+
     automaticRunStarted = true;
-    const status = document.querySelector('#alphacode-admin-status');
+
+    const status = document.querySelector(
+        '#alphacode-admin-status',
+    );
+
     const setStatus = (message, type = '') => {
         if (!status) return;
         status.textContent = message;
         status.className = type;
     };
 
+    setStatus(
+        'إعادة المحاولة: تعبئة المنتج وإضافته، وسيُغلق هذا التبويب تلقائياً بعد النتيجة...',
+        'working',
+    );
+
     try {
-        await autofillLatestProduct(setStatus, { submitAfterFill: true });
+        await autofillLatestProduct(
+            setStatus,
+            {
+                submitAfterFill: true,
+            },
+        );
     } catch (error) {
         setStatus(error.message, 'error');
 
-        await updateWorkflowStatus(product.local_id, 'submit_failed', {
-            error: error.message,
-        });
+        await updateWorkflowStatus(
+            product.local_id,
+            'submit_failed',
+            {
+                mode: 'fallback_tab',
+                error: error.message,
+            },
+        );
 
         await logClientEvent(
             'ERROR',
-            'admin_automatic_add_failed',
+            'admin_fallback_retry_failed',
             error.message,
             {
                 product_id: product.local_id,
@@ -2557,28 +2674,48 @@ async function runAutomaticAddIfEnabled() {
             },
         );
 
-        await returnToAutomaticFlowSource('failed', product, error.message);
+        await reportFallbackSubmissionResult({
+            success: false,
+            productId: product.local_id,
+            searchCode: product.search_code || '',
+            styleCode: product.style_code || '',
+            error: error.message,
+        });
     }
 }
 
-// Arabic: تأكيد نجاح الانتقال بعد إرسال المنتج وتحديث الأرشيف إلى submitted.
-// English: Confirm post-submit navigation and mark the archived product as submitted.
+// Arabic: تأكيد نجاح التحويل بعد إرسال المنتج ثم إغلاق تبويب إعادة المحاولة عبر Service Worker.
+// English: Confirm post-submit navigation, then let the service worker close the retry tab.
 async function confirmSubmissionAfterNavigation() {
     const productId = Number(
-        sessionStorage.getItem('alphacodeSubmitProductId'),
+        sessionStorage.getItem(
+            'alphacodeSubmitProductId',
+        ),
     );
 
-    if (!productId || findProductForm()) return;
+    if (!productId || findProductForm()) {
+        return;
+    }
 
-    await updateWorkflowStatus(productId, 'submitted', {
-        redirected_to: window.location.href,
-    });
+    const fallbackContext = getFallbackRetryContext();
 
-    sessionStorage.removeItem('alphacodeSubmitProductId');
+    await updateWorkflowStatus(
+        productId,
+        'submitted',
+        {
+            mode: fallbackContext?.isRetry
+                ? 'fallback_tab'
+                : 'admin_visible',
+            redirected_to: window.location.href,
+        },
+    );
+
+    sessionStorage.removeItem(
+        'alphacodeSubmitProductId',
+    );
 
     const stored = await safeStorageGet([
         'pendingSooqifyProduct',
-        AUTO_FLOW_STORAGE_KEY,
     ]);
 
     const product = stored.pendingSooqifyProduct || {
@@ -2586,11 +2723,14 @@ async function confirmSubmissionAfterNavigation() {
     };
 
     if (
-        stored.pendingSooqifyProduct?.local_id === productId
+        stored.pendingSooqifyProduct?.local_id
+            === productId
         && isExtensionContextAvailable()
     ) {
         try {
-            await chrome.storage.local.remove('pendingSooqifyProduct');
+            await chrome.storage.local.remove(
+                'pendingSooqifyProduct',
+            );
         } catch (_) {}
     }
 
@@ -2601,10 +2741,24 @@ async function confirmSubmissionAfterNavigation() {
         {
             product_id: productId,
             page: window.location.href,
+            fallback_retry: Boolean(
+                fallbackContext?.isRetry,
+            ),
         },
     );
 
-    await returnToAutomaticFlowSource('submitted', product);
+    if (fallbackContext?.isRetry) {
+        await reportFallbackSubmissionResult({
+            success: true,
+            productId,
+            searchCode: product.search_code || '',
+            styleCode: product.style_code || '',
+        });
+
+        sessionStorage.removeItem(
+            FALLBACK_RETRY_SESSION_KEY,
+        );
+    }
 }
 
 // Arabic: تسجيل أخطاء JavaScript غير المعالجة في السجل الخارجي.

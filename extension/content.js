@@ -5,7 +5,6 @@
 'use strict';
 
 const API_BASE_URL = 'http://127.0.0.1:5000';
-const AUTO_FLOW_STORAGE_KEY = 'alphacodeAutoFlow';
 const PRODUCT_CARD_SELECTOR = [
     '[class*="normal_item_timeline_common_item"]',
     '[class*="goods-item"]',
@@ -34,6 +33,7 @@ const DEFAULT_CONFIG = globalThis.ALPHACODE_DEFAULT_CONFIG || {
 let extractorConfig = { ...DEFAULT_CONFIG };
 let lastAddedSearchCodeGlobal = null;
 let observerTimer = null;
+let activeAutomaticResultOverlay = null;
 
 // Arabic: انتظار خفيف واختبار شرط لواجهات التحميل الديناميكي.
 // English: Lightweight delay and condition polling for dynamic interfaces.
@@ -803,12 +803,16 @@ async function openExtractionModal(productBox, buttonElement) {
                         lastAlphaCodeProductId: archiveData.id
                     });
                     if (extractorConfig.AutoAddProduct) {
-                        await startSameTabAutomaticFlow({
-                            productId: archiveData.id,
-                            searchCode,
-                            styleCode,
-                            originalProductName,
-                        });
+                        overlay.remove();
+
+                        await submitPreparedProductInBackground(
+                            pendingData.pending_product,
+                            {
+                                searchCode,
+                                styleCode,
+                            },
+                        );
+
                         return;
                     }
 
@@ -1009,20 +1013,23 @@ function renderNewProductForm(context) {
     const fallbackNameAR = buildFallbackArabicName(sourceText, styleCode);
     const fallbackDescriptionAR = buildFallbackArabicDescription(sourceText, styleCode);
     const fallbackBrand = canonicalBrandName(sourceText);
-    const originalNameDisplay = escapeHtml(normalizeText(originalProductName) || 'غير موجود');
-    const originalNameTitle = escapeHtml(normalizeText(originalProductName));
 
     const contentArea = modalBox.querySelector('#modal-content-area');
     contentArea.className = '';
     contentArea.innerHTML = `
         <div class="alphacode-ai-toolbar">
             <button class="alphacode-ai-btn" id="generateAiBtn" type="button">✨ إنشاء المحتوى العربي والإنجليزي</button>
-            <button class="alphacode-copy-btn" id="copyOriginalNameBtn" type="button" title="نسخ الاسم الأصلي من موقع المورد">📋 نسخ الاسم الأصلي</button>
             <span id="aiStatus" class="alphacode-ai-status">جاهز</span>
         </div>
         <div class="alphacode-language-grid">
             <div>
-                <div class="alphacode-field alphacode-ltr-field"><label>اسم المنتج بالإنجليزية:</label><input type="text" id="modNameEN" dir="ltr"></div>
+                <div class="alphacode-field alphacode-ltr-field">
+                    <label style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                        <span>اسم المنتج بالإنجليزية:</span>
+                        <button class="alphacode-copy-btn" id="copyOriginalNameBtn" type="button" title="نسخ اسم المنتج الأصلي من موقع المورد" style="min-width:32px;padding:3px 7px;font-size:13px;line-height:1;">📋</button>
+                    </label>
+                    <input type="text" id="modNameEN" dir="ltr">
+                </div>
                 <div class="alphacode-field alphacode-ltr-field"><label>الوصف بالإنجليزية:</label><textarea id="modDescEN" dir="ltr"></textarea></div>
             </div>
             <div>
@@ -1048,7 +1055,6 @@ function renderNewProductForm(context) {
             <div class="alphacode-field"><label>بعد إضافة ${addedFee} يوان:</label><input type="number" id="modPriceFee" disabled></div>
         </div>
         <div class="alphacode-readonly-group">
-            <div class="alphacode-readonly-item"><span>الاسم الأصلي:</span><strong title="${originalNameTitle}">${originalNameDisplay}</strong></div>
             <div class="alphacode-readonly-item"><span>السعر بعد المصارفة:</span><strong id="displaySAR" class="alphacode-success-text"></strong></div>
             <div class="alphacode-readonly-item"><span>Category / SubCategory:</span><strong>${extractorConfig.CategoryId} / ${extractorConfig.SubCategoryId}</strong></div>
             <div class="alphacode-readonly-item"><span>صور المعرض الكامل:</span><strong class="alphacode-image-count">${images.length} صور</strong></div>
@@ -1105,10 +1111,10 @@ function renderNewProductForm(context) {
 
     modalBox.querySelector('#copyOriginalNameBtn').onclick = async event => {
         const copied = await copyTextToClipboard(originalProductName || sourceText);
-        event.currentTarget.textContent = copied ? '✔ تم نسخ الاسم الأصلي' : 'تعذر النسخ';
+        event.currentTarget.textContent = copied ? '✔' : '✖';
         setTimeout(() => {
             if (event.currentTarget?.isConnected) {
-                event.currentTarget.textContent = '📋 نسخ الاسم الأصلي';
+                event.currentTarget.textContent = '📋';
             }
         }, 1800);
     };
@@ -1120,17 +1126,35 @@ function renderNewProductForm(context) {
 
     modalBox.querySelector('#cancelBtn').onclick = () => overlay.remove();
 
-    const runAiGeneration = () => generateProductCopy({
-        modalBox,
-        sourceText,
-        originalProductName,
-        searchCode,
-        styleCode,
-        fields,
-    });
+    let successfulAiGenerations = 0;
+
+    const runAiGeneration = async () => {
+        const officialResearch = successfulAiGenerations > 0;
+        const generated = await generateProductCopy({
+            modalBox,
+            sourceText,
+            originalProductName,
+            searchCode,
+            styleCode,
+            fields,
+            officialResearch,
+        });
+
+        if (generated) {
+            successfulAiGenerations += 1;
+            modalBox.querySelector('#generateAiBtn').textContent = (
+                '🔎 البحث الرسمي وإعادة إنشاء المحتوى'
+            );
+        }
+    };
 
     modalBox.querySelector('#generateAiBtn').onclick = runAiGeneration;
-    if (extractorConfig.AIAutoGenerate) runAiGeneration();
+
+    // Arabic: التشغيل التلقائي الأول يستخدم التوليد العادي فقط دون بحث رسمي.
+    // English: The first automatic generation uses normal AI without official-store research.
+    if (extractorConfig.AIAutoGenerate) {
+        runAiGeneration();
+    }
 
     modalBox.querySelector('#confirmExtractBtn').onclick = () => submitProduct({
         overlay,
@@ -1146,8 +1170,8 @@ function renderNewProductForm(context) {
     });
 }
 
-// Arabic: طلب محتوى عربي وإنجليزي من Groq مع الاحتفاظ بالقيم المحلية عند الخطأ.
-// English: Request bilingual Groq copy while retaining local editable values on failure.
+// Arabic: التوليد الأول عادي، والضغطات التالية تبحث عن المنتج نفسه في الموقع الرسمي فقط.
+// English: The first generation is normal; later clicks research only this product on the official site.
 async function generateProductCopy(context) {
     const {
         modalBox,
@@ -1156,94 +1180,399 @@ async function generateProductCopy(context) {
         searchCode,
         styleCode,
         fields,
+        officialResearch = false,
     } = context;
 
-    const aiButton = modalBox.querySelector('#generateAiBtn');
-    const aiStatus = modalBox.querySelector('#aiStatus');
+    const aiButton = modalBox.querySelector(
+        '#generateAiBtn',
+    );
+
+    const aiStatus = modalBox.querySelector(
+        '#aiStatus',
+    );
+
     aiButton.disabled = true;
-    aiButton.textContent = '⏳ بحث رسمي وإنشاء المحتوى...';
-    aiStatus.className = 'alphacode-ai-status alphacode-ai-working';
-    aiStatus.textContent = 'جارٍ البحث في المتجر الرسمي للشركة';
+    aiButton.textContent = officialResearch
+        ? '⏳ بحث رسمي لهذا المنتج فقط...'
+        : '⏳ إنشاء المحتوى...';
+
+    aiStatus.className = (
+        'alphacode-ai-status alphacode-ai-working'
+    );
+
+    aiStatus.textContent = officialResearch
+        ? 'جارٍ البحث بالـ Style Code في الموقع الرسمي للشركة'
+        : 'جارٍ إنشاء الاسم والوصف بالطريقة العادية';
 
     try {
         const sizes = uniqueSizes(
-            fields.sizes.value.split(/[,،\s]+/).filter(Boolean),
+            fields.sizes.value
+                .split(/[,،\s]+/)
+                .filter(Boolean),
         );
 
-        const response = await fetch(`${API_BASE_URL}/api/ai/generate`, {
-            method: 'POST',
-            cache: 'no-store',
-            headers: {
-                'Content-Type': 'application/json',
-                'Cache-Control': 'no-store',
+        const response = await fetch(
+            `${API_BASE_URL}/api/ai/generate`,
+            {
+                method: 'POST',
+                cache: 'no-store',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Cache-Control': 'no-store',
+                },
+                body: JSON.stringify({
+                    SourceText: sourceText,
+                    OriginalProductName:
+                        originalProductName || '',
+                    SearchCode: searchCode || 'NONE',
+                    StyleCode: styleCode,
+                    Sizes: sizes,
+                    BrandName: fields.brandName.value,
+                    AIModel: extractorConfig.AIModel,
+                    ResearchOfficial:
+                        Boolean(officialResearch),
+                    RegenerateNonce:
+                        `${Date.now()}_${Math.random()}`,
+                    UseCache: false,
+                }),
             },
-            body: JSON.stringify({
-                SourceText: sourceText,
-                OriginalProductName: originalProductName || '',
-                SearchCode: searchCode || 'NONE',
-                StyleCode: styleCode,
-                Sizes: sizes,
-                BrandName: fields.brandName.value,
-                AIModel: extractorConfig.AIModel,
-                RegenerateNonce: `${Date.now()}_${Math.random()}`,
-                UseCache: false,
-            }),
-        });
+        );
 
         const data = await response.json();
+
         if (!response.ok || !data.success) {
-            throw new Error(data.error || `AI request failed (${response.status})`);
+            if (
+                response.status === 429
+                && Number(data.retry_after_seconds) > 0
+            ) {
+                throw new Error(
+                    `تم بلوغ حد Groq. أعد المحاولة بعد ${data.retry_after_seconds} ثانية.`,
+                );
+            }
+
+            throw new Error(
+                data.error
+                || `AI request failed (${response.status})`,
+            );
         }
 
         fields.nameEN.value = data.name_en;
         fields.descEN.value = data.description_en;
         fields.nameAR.value = data.name_ar;
         fields.descAR.value = data.description_ar;
-        fields.brandName.value = canonicalBrandName(data.brand_name);
-        fields.brandId.value = resolveBrandId(fields.brandName.value);
+        fields.brandName.value = canonicalBrandName(
+            data.brand_name,
+        );
+        fields.brandId.value = resolveBrandId(
+            fields.brandName.value,
+        );
 
-        aiStatus.className = 'alphacode-ai-status alphacode-ai-success';
-        aiStatus.textContent = `تم إنشاء نتيجة جديدة من ${data.official_domain || 'المتجر الرسمي'}`;
+        aiStatus.className = (
+            'alphacode-ai-status alphacode-ai-success'
+        );
+
+        aiStatus.textContent = officialResearch
+            ? `تم البحث عن هذا المنتج فقط في ${data.official_domain || 'الموقع الرسمي'} وإعادة إنشاء المحتوى`
+            : 'تم إنشاء المحتوى بالطريقة العادية. اضغط الزر مرة أخرى للبحث الرسمي إذا لم تعجبك النتيجة.';
+
+        return true;
+
     } catch (error) {
-        aiStatus.className = 'alphacode-ai-status alphacode-ai-error';
-        aiStatus.textContent = `${error.message} — تم الاحتفاظ بالنص الحالي القابل للتعديل.`;
+        aiStatus.className = (
+            'alphacode-ai-status alphacode-ai-error'
+        );
+
+        aiStatus.textContent = (
+            `${error.message} — تم الاحتفاظ بالنص الحالي القابل للتعديل.`
+        );
+
+        return false;
+
     } finally {
         aiButton.disabled = false;
-        aiButton.textContent = '✨ بحث رسمي وإعادة إنشاء المحتوى';
+        aiButton.textContent = officialResearch
+            ? '🔎 البحث الرسمي وإعادة إنشاء المحتوى'
+            : '✨ إنشاء المحتوى العربي والإنجليزي';
     }
 }
 
 // Arabic: إرسال المنتج إلى Flask ثم حفظ حزمة التعبئة في تخزين الإضافة.
 // English: Save through Flask, then persist the Sooqify autofill package in extension storage.
 
-// Arabic: بدء الإضافة التلقائية في التبويب نفسه مع حفظ رابط الرجوع والمنتج.
-// English: Start automatic submission in the same tab while preserving return context.
-async function startSameTabAutomaticFlow({
+// Arabic: التحقق من حالة المنتج في الأرشيف المحلي بعد الإضافة.
+// English: Verify the archived workflow state after submission.
+async function verifyAutomaticSubmission(
     productId,
-    searchCode,
-    styleCode,
-    originalProductName,
-}) {
-    const flow = {
-        productId: Number(productId),
-        searchCode: String(searchCode || ''),
-        styleCode: String(styleCode || ''),
-        originalProductName: String(originalProductName || ''),
-        sourceUrl: window.location.href,
-        sourceScrollY: Math.max(0, window.scrollY || 0),
-        status: 'opening_store',
-        startedAt: new Date().toISOString(),
-    };
+    detailsElement,
+    button,
+) {
+    button.disabled = true;
+    button.textContent = 'جارٍ التحقق...';
 
-    const stored = await safeStorageSet({
-        [AUTO_FLOW_STORAGE_KEY]: flow,
-    });
+    try {
+        const response = await fetch(
+            `${API_BASE_URL}/api/archive/product/${Number(productId)}`,
+            {
+                cache: 'no-store',
+            },
+        );
 
-    if (!stored) {
-        throw new Error('تعذر حفظ حالة الإضافة التلقائية قبل الانتقال إلى المتجر.');
+        const data = await response.json();
+
+        if (!response.ok || !data.success) {
+            throw new Error(
+                data.error || 'تعذر قراءة حالة المنتج.',
+            );
+        }
+
+        const status = (
+            data.product?.workflow_status
+            || data.product?.store_submission_status
+            || 'غير محدد'
+        );
+
+        const verified = status === 'submitted';
+        const workflowDetails = (
+            data.product?.workflow_details || {}
+        );
+
+        detailsElement.textContent = verified
+            ? `تم التحقق: المنتج مضاف بحالة submitted${workflowDetails.store_product_id ? `، ورقم المتجر ${workflowDetails.store_product_id}` : ''}.`
+            : `الحالة الحالية: ${status}.`;
+
+        button.textContent = verified
+            ? '✅ تمت الإضافة'
+            : 'إعادة التحقق';
+
+        return verified;
+
+    } catch (error) {
+        detailsElement.textContent = (
+            `فشل التحقق: ${error.message}`
+        );
+        button.textContent = 'إعادة التحقق';
+        return false;
+
+    } finally {
+        button.disabled = false;
+    }
+}
+
+// Arabic: عرض نتيجة الإضافة الخلفية، مع زر استمرار أكبر وزر تحقق أصغر.
+// English: Show the background result with a larger Continue button and a smaller Verify button.
+async function renderAutomaticSubmissionResult(
+    result,
+    context = {},
+) {
+    if (activeAutomaticResultOverlay?.isConnected) {
+        activeAutomaticResultOverlay.remove();
     }
 
-    window.location.assign(extractorConfig.SooqifyAddUrl);
+    const { overlay, modalBox } = createModalShell();
+    activeAutomaticResultOverlay = overlay;
+
+    const contentArea = modalBox.querySelector(
+        '#modal-content-area',
+    );
+
+    const submitted = Boolean(result?.success);
+    const productId = Number(
+        result?.productId
+        || context.product?.local_id
+        || context.productId
+        || 0,
+    );
+
+    const searchCode = String(
+        result?.searchCode
+        || context.searchCode
+        || context.product?.search_code
+        || '',
+    );
+
+    const styleCode = String(
+        result?.styleCode
+        || context.styleCode
+        || context.product?.style_code
+        || '',
+    );
+
+    const closeResult = () => {
+        if (overlay.isConnected) overlay.remove();
+        if (activeAutomaticResultOverlay === overlay) {
+            activeAutomaticResultOverlay = null;
+        }
+    };
+
+    contentArea.className = '';
+
+    if (submitted) {
+        contentArea.innerHTML = `
+            <div class="alphacode-already-box">
+                <strong>✅ تم إضافة المنتج إلى Sooqify بنجاح</strong><br>
+                ID المحلي: <b>${productId || '-'}</b><br>
+                ${result.storeProductId ? `رقم المنتج في المتجر: <b>${result.storeProductId}</b><br>` : ''}
+                Style Code: <b>${escapeHtml(styleCode || '-')}</b><br>
+                <span id="alphacode-auto-result-details">تم إرسال المنتج في الخلفية دون مغادرة صفحة المورد.</span>
+            </div>
+            <div class="alphacode-actions" style="display:flex;gap:10px;direction:ltr;">
+                <button class="alphacode-btn-scroll" id="alphacode-auto-verify" type="button" style="flex:1;">التحقق من الإضافة</button>
+                <button class="alphacode-btn-submit" id="alphacode-auto-continue" type="button" style="flex:2;font-weight:700;">استمرار</button>
+            </div>`;
+
+        const details = modalBox.querySelector(
+            '#alphacode-auto-result-details',
+        );
+
+        const verifyButton = modalBox.querySelector(
+            '#alphacode-auto-verify',
+        );
+
+        const continueButton = modalBox.querySelector(
+            '#alphacode-auto-continue',
+        );
+
+        verifyButton.onclick = () => (
+            verifyAutomaticSubmission(
+                productId,
+                details,
+                verifyButton,
+            )
+        );
+
+        continueButton.onclick = async () => {
+            closeResult();
+            if (searchCode) {
+                await scrollToLastProduct(searchCode);
+            }
+        };
+
+        modalBox.querySelector(
+            '.alphacode-close-btn',
+        ).onclick = closeResult;
+
+        return;
+    }
+
+    contentArea.innerHTML = `
+        <div class="alphacode-already-box">
+            <strong>⚠️ تعذر إضافة المنتج في الخلفية</strong><br>
+            ID المحلي: <b>${productId || '-'}</b><br>
+            Style Code: <b>${escapeHtml(styleCode || '-')}</b><br>
+            <span id="alphacode-auto-result-details">${escapeHtml(result?.error || 'حدث خطأ غير معروف.')}</span>
+        </div>
+        <div class="alphacode-actions" style="display:flex;gap:10px;direction:ltr;">
+            <button class="alphacode-btn-cancel" id="alphacode-auto-close" type="button" style="flex:1;">إغلاق</button>
+            <button class="alphacode-btn-submit" id="alphacode-auto-retry" type="button" style="flex:2;font-weight:700;">إعادة المحاولة في تبويب جديد</button>
+        </div>`;
+
+    const retryButton = modalBox.querySelector(
+        '#alphacode-auto-retry',
+    );
+
+    const details = modalBox.querySelector(
+        '#alphacode-auto-result-details',
+    );
+
+    const closeButton = modalBox.querySelector(
+        '#alphacode-auto-close',
+    );
+
+    const product = context.product
+        || (await fetch(
+            `${API_BASE_URL}/api/pending/${productId}`,
+            { cache: 'no-store' },
+        ).then(async response => {
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error(
+                    data.error || 'تعذر تجهيز منتج إعادة المحاولة.',
+                );
+            }
+            return data.pending_product;
+        }).catch(error => {
+            details.textContent = error.message;
+            return null;
+        }));
+
+    closeButton.onclick = closeResult;
+    modalBox.querySelector(
+        '.alphacode-close-btn',
+    ).onclick = closeResult;
+
+    retryButton.onclick = async () => {
+        if (!product) {
+            details.textContent = (
+                'بيانات المنتج غير متاحة لإعادة المحاولة.'
+            );
+            return;
+        }
+
+        retryButton.disabled = true;
+        retryButton.textContent = (
+            'جارٍ فتح تبويب إعادة المحاولة...'
+        );
+
+        await safeStorageSet({
+            pendingSooqifyProduct: product,
+            lastAlphaCodeProductId: product.local_id,
+        });
+
+        const response = await safeRuntimeMessage({
+            action: 'OPEN_FALLBACK_SUBMISSION_TAB',
+            product,
+            addUrl: extractorConfig.SooqifyAddUrl,
+            searchCode,
+            styleCode,
+        });
+
+        if (!response?.success) {
+            retryButton.disabled = false;
+            retryButton.textContent = (
+                'إعادة المحاولة في تبويب جديد'
+            );
+            details.textContent = (
+                response?.error
+                || 'تعذر فتح تبويب إعادة المحاولة.'
+            );
+            return;
+        }
+
+        details.textContent = (
+            'تم فتح تبويب مؤقت. ستتم تعبئة المنتج وإضافته ثم سيُغلق التبويب تلقائياً.'
+        );
+        retryButton.textContent = 'جارٍ تنفيذ المحاولة...';
+    };
+}
+
+// Arabic: إرسال المنتج إلى Sooqify في الخلفية دون فتح تبويب جديد.
+// English: Submit the prepared product to Sooqify in the background without opening a new tab.
+async function submitPreparedProductInBackground(
+    product,
+    context = {},
+) {
+    const result = await safeRuntimeMessage({
+        action: 'SUBMIT_PRODUCT_BACKGROUND',
+        product,
+        addUrl: extractorConfig.SooqifyAddUrl,
+    });
+
+    await renderAutomaticSubmissionResult(
+        result?.success
+            ? result
+            : {
+                success: false,
+                productId: product.local_id,
+                error: result?.error
+                    || 'تعذر تنفيذ الإضافة الخلفية.',
+            },
+        {
+            ...context,
+            product,
+        },
+    );
+
+    return Boolean(result?.success);
 }
 
 async function submitProduct(context) {
@@ -1331,13 +1660,20 @@ async function submitProduct(context) {
         lastAddedSearchCodeGlobal = searchCode;
 
         if (extractorConfig.AutoAddProduct) {
-            submitButton.textContent = 'يتم الانتقال إلى المتجر في التبويب نفسه...';
-            await startSameTabAutomaticFlow({
-                productId: result.id,
-                searchCode,
-                styleCode,
-                originalProductName,
-            });
+            submitButton.textContent = (
+                'جارٍ إضافة المنتج في الخلفية...'
+            );
+
+            overlay.remove();
+
+            await submitPreparedProductInBackground(
+                result.pending_product,
+                {
+                    searchCode,
+                    styleCode,
+                },
+            );
+
             return;
         }
 
@@ -1441,84 +1777,68 @@ async function scrollToLastProduct(targetSearchCode, options = {}) {
 
 
 
-// Arabic: عرض نتيجة الإضافة التلقائية بعد الرجوع من Sooqify إلى صفحة المورد.
-// English: Show the automatic-submission result after returning from Sooqify.
-async function resumeAutomaticFlowResult() {
-    const stored = await safeStorageGet([AUTO_FLOW_STORAGE_KEY]);
-    const flow = stored[AUTO_FLOW_STORAGE_KEY];
+// Arabic: استقبال نتيجة تبويب إعادة المحاولة بعد أن يغلقه Service Worker.
+// English: Receive the temporary retry-tab result after the service worker closes it.
+function installFallbackResultListener() {
+    if (!isExtensionContextAvailable()) return;
 
-    if (!flow || !['submitted', 'failed'].includes(flow.status)) return false;
-    if (flow.sourceUrl) {
-        try {
-            const source = new URL(flow.sourceUrl);
-            const current = new URL(window.location.href);
-            if (source.origin !== current.origin || source.pathname !== current.pathname) return false;
-        } catch (_) {}
-    }
+    chrome.runtime.onMessage.addListener(message => {
+        if (
+            message?.action
+            !== 'ALPHACODE_FALLBACK_RESULT'
+        ) {
+            return false;
+        }
 
-    if (Number.isFinite(Number(flow.sourceScrollY))) {
-        window.scrollTo(0, Number(flow.sourceScrollY));
-    }
+        renderAutomaticSubmissionResult(
+            message.result || {
+                success: false,
+                error: 'لم تصل نتيجة صالحة من تبويب إعادة المحاولة.',
+            },
+        );
 
-    const { overlay, modalBox } = createModalShell();
-    const contentArea = modalBox.querySelector('#modal-content-area');
-    const submitted = flow.status === 'submitted';
+        return false;
+    });
 
-    contentArea.className = '';
-    contentArea.innerHTML = `
-        <div class="alphacode-already-box" id="alphacode-auto-result-box">
-            <strong>${submitted ? '✅ تم إضافة المنتج إلى المتجر' : '⚠️ تعذر إكمال الإضافة التلقائية'}</strong><br>
-            ID المحلي: <b>${flow.productId || '-'}</b><br>
-            Style Code: <b>${flow.styleCode || '-'}</b><br>
-            <span id="alphacode-auto-result-details">${submitted ? 'تم تأكيد الانتقال بعد إرسال نموذج Sooqify.' : (flow.error || 'راجع حالة المنتج عبر زر التحقق.')}</span>
-        </div>
-        <div class="alphacode-actions">
-            <button class="alphacode-btn-submit" id="alphacode-auto-continue" type="button">استمرار</button>
-            <button class="alphacode-btn-scroll" id="alphacode-auto-verify" type="button">التحقق من الإضافة</button>
-        </div>`;
-
-    const continueButton = modalBox.querySelector('#alphacode-auto-continue');
-    const verifyButton = modalBox.querySelector('#alphacode-auto-verify');
-    const details = modalBox.querySelector('#alphacode-auto-result-details');
-    const closeButton = modalBox.querySelector('.alphacode-close-btn');
-
-    const finish = async () => {
-        await safeStorageRemove([AUTO_FLOW_STORAGE_KEY]);
-        overlay.remove();
-    };
-
-    closeButton.onclick = finish;
-    continueButton.onclick = async () => {
-        const code = flow.searchCode;
-        await finish();
-        if (code) await scrollToLastProduct(code);
-    };
-
-    verifyButton.onclick = async event => {
-        event.currentTarget.disabled = true;
-        event.currentTarget.textContent = 'جارٍ التحقق...';
-        try {
-            const response = await fetch(`${API_BASE_URL}/api/archive/product/${flow.productId}`, {
-                cache: 'no-store',
-            });
-            const data = await response.json();
-            if (!response.ok || !data.success) {
-                throw new Error(data.error || 'تعذر قراءة حالة المنتج.');
+    chrome.storage.onChanged.addListener(
+        (changes, areaName) => {
+            if (
+                areaName !== 'local'
+                || !changes.alphacodeFallbackResult?.newValue
+            ) {
+                return;
             }
 
-            const status = data.product?.workflow_status || data.product?.store_submission_status || 'غير محدد';
-            const verified = status === 'submitted';
-            details.textContent = verified
-                ? 'تم التحقق: المنتج مسجل في الأرشيف بحالة submitted.'
-                : `الحالة الحالية في الأرشيف: ${status}.`;
-            event.currentTarget.textContent = verified ? '✅ تمت الإضافة' : 'إعادة التحقق';
-        } catch (error) {
-            details.textContent = `فشل التحقق: ${error.message}`;
-            event.currentTarget.textContent = 'إعادة التحقق';
-        } finally {
-            event.currentTarget.disabled = false;
-        }
-    };
+            const result = (
+                changes.alphacodeFallbackResult.newValue
+            );
+
+            renderAutomaticSubmissionResult(result);
+            safeStorageRemove([
+                'alphacodeFallbackResult',
+            ]);
+        },
+    );
+}
+
+// Arabic: استعادة نتيجة احتياطية حُفظت إذا كانت صفحة المورد غير جاهزة وقت الإرسال.
+// English: Restore a fallback result saved while the supplier page was not ready.
+async function restoreStoredFallbackResult() {
+    const stored = await safeStorageGet([
+        'alphacodeFallbackResult',
+    ]);
+
+    if (!stored.alphacodeFallbackResult) {
+        return false;
+    }
+
+    await renderAutomaticSubmissionResult(
+        stored.alphacodeFallbackResult,
+    );
+
+    await safeStorageRemove([
+        'alphacodeFallbackResult',
+    ]);
 
     return true;
 }
@@ -1544,8 +1864,9 @@ function installExtractorErrorLogging() {
 // English: initializeExtractor is part of the extraction flow and can be adapted for another store.
 async function initializeExtractor() {
     installExtractorErrorLogging();
+    installFallbackResultListener();
     await loadConfiguration();
-    await resumeAutomaticFlowResult();
+    await restoreStoredFallbackResult();
     injectExtractionButtons();
 
     const observer = new MutationObserver(() => {

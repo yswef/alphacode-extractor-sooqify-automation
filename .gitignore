@@ -1,0 +1,72 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local backend runtime data
+backend/product_archive.json
+backend/products_archive.json
+backend/products_database.xlsx
+backend/ai_copy_cache.json
+backend/logs/
+backend/images/
+backend/downloads/
+backend/tmp/
+backend/.env
+.env
+*.log
+
+# Generated product data
+products_database.xlsx
+product_archive.json
+ai_copy_cache.json
+logs/
+images/
+downloads/
+tmp/
+
+# API keys and secrets
+*.env
+.env.*
+secrets.json
+credentials.json
+*.pem
+*.key
+*.crt
+
+# Chrome extension packaging
+*.crx
+*.pem
+extension/dist/
+extension/build/
+
+# Node / tooling
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS/editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Excel temporary files
+~$*.xlsx
+~$*.xls
+
+# PDF/HTML render caches
+_renders/
+_tmp/

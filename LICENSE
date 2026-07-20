@@ -1,0 +1,49 @@
+Proprietary Source-Available License
+Copyright (c) 2026 AlphaCode / Yousef Alhmzy. All rights reserved.
+
+IMPORTANT NOTICE
+This software, including all source code, documentation, designs, workflows,
+configuration, prompts, automation logic, and related materials, is private and
+proprietary. It is provided only for viewing, evaluation, maintenance, or use by
+people who have received prior written permission from the copyright owner.
+
+1. No license is granted by default.
+You may not use, copy, publish, distribute, sublicense, sell, rent, host, deploy,
+modify, reverse engineer, create derivative works from, or integrate this
+software into another product or service unless you have explicit prior written
+permission from the copyright owner.
+
+2. Internal review only.
+If you received access to this repository, that access is limited to private
+review and discussion with the owner. Repository access does not grant any right
+to use the code in production, commercial work, client work, public tools, or
+competing products.
+
+3. No redistribution.
+You may not upload, mirror, fork for public use, share, or redistribute this
+software or any part of it in any form.
+
+4. No commercial use.
+Commercial use is strictly prohibited without a separate written agreement.
+This includes using the software to provide services, run a business workflow,
+resell automation, train another tool, or build similar extraction/submission
+systems.
+
+5. Confidential information.
+The source code and documentation may contain private business logic, store
+workflows, automation behavior, prompts, and configuration strategies. These
+materials must be treated as confidential unless the owner states otherwise in
+writing.
+
+6. Enforcement.
+Unauthorized use, copying, distribution, modification, hosting, or commercial
+exploitation may result in legal action. The copyright owner reserves all rights
+and remedies available under applicable law.
+
+7. No warranty.
+This software is provided "as is" without warranty of any kind. The owner is not
+liable for any damages, losses, account issues, data loss, platform restrictions,
+or business interruption arising from use or misuse of the software.
+
+To request permission, contact the copyright owner before using any part of this
+project.

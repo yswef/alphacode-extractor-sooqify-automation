@@ -191,7 +191,7 @@ function setControlValue(selector, value) {
 
 // Arabic: انتظار شرط في الواجهة الديناميكية مع مهلة محددة.
 // English: Wait for a condition in the dynamic admin interface with a timeout.
-async function waitForCondition(check, timeoutMs = 10000, intervalMs = 200) {
+async function waitForCondition(check, timeoutMs = 10000, intervalMs = 100) {
     const startedAt = Date.now();
 
     while (Date.now() - startedAt < timeoutMs) {
@@ -247,7 +247,8 @@ async function setDynamicSelectValue(name, value, label = '') {
 
     const element = await waitForCondition(
         () => getNamedControl(name),
-        8000,
+        5000,
+        100,
     );
 
     if (!element) return false;
@@ -259,8 +260,8 @@ async function setDynamicSelectValue(name, value, label = '') {
             () => Array.from(element.options || []).find(item => (
                 String(item.value) === wanted
             )),
-            8000,
-            250,
+            5000,
+            100,
         );
 
         if (!option) {
@@ -288,7 +289,7 @@ async function setDynamicSelectValue(name, value, label = '') {
         }
 
         dispatchControlEvents(element);
-        await sleep(150);
+        await sleep(60);
 
         return String(element.value) === wanted
             || Array.from(element.selectedOptions || []).some(item => (
@@ -1505,8 +1506,155 @@ async function fillSizeVariants(form, product) {
     };
 }
 
-// Arabic: تعبئة حقول Sooqify الديناميكية بالترتيب الصحيح: متجر ثم فئة ثم فئة فرعية.
-// English: Fill Sooqify dynamic fields in dependency order: store, category, then subcategory.
+// Arabic: كتابة ID المنتج المحلي داخل حقل العلامات الظاهر فقط.
+// English: Write the local product ID into the visible tags field only.
+async function fillProductIdTag(form, productId) {
+    const tagValue = String(productId ?? '').trim();
+
+    if (!tagValue) return false;
+
+    const originalControl = (
+        form.querySelector('[name="tags"]')
+        || form.querySelector('[name="tags[]"]')
+    );
+
+    if (!originalControl) return false;
+
+    // Arabic: دعم Tagify إذا كان المتجر يستخدمه.
+    // English: Support Tagify when the store uses it.
+    if (
+        originalControl._tagify?.removeAllTags
+        && originalControl._tagify?.addTags
+    ) {
+        originalControl._tagify.removeAllTags();
+        originalControl._tagify.addTags([tagValue]);
+        await sleep(60);
+        return true;
+    }
+
+    // Arabic: دعم Tom Select.
+    // English: Support Tom Select.
+    if (originalControl.tomselect) {
+        originalControl.tomselect.clear(true);
+        originalControl.tomselect.addOption({
+            value: tagValue,
+            text: tagValue,
+        });
+        originalControl.tomselect.addItem(tagValue, true);
+        await sleep(60);
+        return true;
+    }
+
+    // Arabic: دعم Selectize.
+    // English: Support Selectize.
+    if (originalControl.selectize) {
+        originalControl.selectize.clear(true);
+        originalControl.selectize.addOption({
+            value: tagValue,
+            text: tagValue,
+        });
+        originalControl.selectize.addItem(tagValue, true);
+        await sleep(60);
+        return true;
+    }
+
+    // Arabic: دعم Bootstrap Tags Input.
+    // English: Support Bootstrap Tags Input.
+    if (window.jQuery) {
+        try {
+            const jqControl = window.jQuery(originalControl);
+
+            if (typeof jqControl.tagsinput === 'function') {
+                jqControl.tagsinput('removeAll');
+                jqControl.tagsinput('add', tagValue);
+                await sleep(60);
+                return true;
+            }
+        } catch (_) {}
+    }
+
+    // Arabic: دعم select متعدد القيم.
+    // English: Support a multiple-value select.
+    if (originalControl.tagName === 'SELECT') {
+        Array.from(originalControl.options || []).forEach(option => {
+            option.selected = false;
+        });
+
+        let option = Array.from(
+            originalControl.options || [],
+        ).find(item => String(item.value) === tagValue);
+
+        if (!option) {
+            option = new Option(
+                tagValue,
+                tagValue,
+                true,
+                true,
+            );
+            originalControl.add(option);
+        }
+
+        option.selected = true;
+
+        if (window.jQuery) {
+            try {
+                window.jQuery(originalControl)
+                    .val(
+                        originalControl.multiple
+                            ? [tagValue]
+                            : tagValue,
+                    )
+                    .trigger('change.select2')
+                    .trigger('change');
+            } catch (_) {}
+        }
+
+        dispatchControlEvents(originalControl);
+        await sleep(60);
+        return true;
+    }
+
+    // Arabic: تعبئة الحقل الأصلي ثم حقل الكتابة المرئي إن وُجد.
+    // English: Fill the original control and its visible widget input when present.
+    setElementValue(originalControl, tagValue);
+
+    const visibleInput = Array.from(
+        (
+            originalControl.closest(
+                '.form-group, .row, [class*="tag"]',
+            )
+            || originalControl.parentElement
+            || form
+        ).querySelectorAll(
+            '.bootstrap-tagsinput input, .tagify__input, input[placeholder*="علامات"], input[placeholder*="tags" i]',
+        ),
+    ).find(isElementVisible);
+
+    if (visibleInput && visibleInput !== originalControl) {
+        visibleInput.focus();
+        setElementValue(visibleInput, tagValue);
+
+        for (const eventName of ['keydown', 'keypress', 'keyup']) {
+            visibleInput.dispatchEvent(
+                new KeyboardEvent(eventName, {
+                    key: 'Enter',
+                    code: 'Enter',
+                    keyCode: 13,
+                    which: 13,
+                    bubbles: true,
+                    cancelable: true,
+                }),
+            );
+        }
+
+        await sleep(60);
+    }
+
+    return true;
+}
+
+// Arabic: تعبئة حقول Sooqify الديناميكية بسرعة مع احترام اعتماد الفئة الفرعية على الفئة.
+// English: Fill Sooqify fields quickly while respecting the category-to-subcategory dependency.
 async function fillCoreFields(product) {
     const settings = product.settings || {};
 
@@ -1537,13 +1685,15 @@ async function fillCoreFields(product) {
 
     const results = {};
 
+    // Arabic: المتجر ثم الفئة لأن الفئة تعتمد على المتجر.
+    // English: Store first, then category because category data depends on the store.
     results.store = await setDynamicSelectValue(
         'store_id',
         storeId,
         `Store ${storeId}`,
     );
 
-    await sleep(200);
+    await sleep(80);
 
     results.category = await setDynamicSelectValue(
         'category_id',
@@ -1551,51 +1701,76 @@ async function fillCoreFields(product) {
         `${categoryId}`,
     );
 
-    // العربية: انتظار جاهزية الفئة الفرعية بدلاً من الانتظار الثابت.
-// English: Wait for the subcategory control to become ready instead of using a fixed delay.
-await waitForCondition(
-    () => {
-        const control = getNamedControl(
-            'sub_category_id',
-        );
+    // Arabic: الانتظار الذكي للفئة الفرعية دون تأخير ثابت طويل.
+    // English: Smart-wait for the subcategory without a long fixed delay.
+    await waitForCondition(
+        () => {
+            const control = getNamedControl(
+                'sub_category_id',
+            );
 
-        if (
-            !control
-            || control.disabled
-        ) {
-            return null;
-        }
+            if (
+                !control
+                || control.disabled
+            ) {
+                return null;
+            }
 
-        if (
-            control.tagName === 'SELECT'
-            && control.options.length < 2
-        ) {
-            return null;
-        }
+            if (
+                control.tagName === 'SELECT'
+                && control.options.length < 2
+            ) {
+                return null;
+            }
 
-        return control;
-    },
-    5000,
-    100,
-);
-
-results.subCategory = await setDynamicSelectValue(
-    'sub_category_id',
-    subCategoryId,
-    `${subCategoryId}`,
-);
-    results.brand = await setDynamicSelectValue(
-        'brand_id',
-        brandId,
-        product.brand_name || `Brand ${brandId}`,
+            return control;
+        },
+        3500,
+        75,
     );
 
-    results.unit = await setDynamicSelectValue(
-        'unit',
-        unitId,
-        `Unit ${unitId}`,
+    results.subCategory = await setDynamicSelectValue(
+        'sub_category_id',
+        subCategoryId,
+        `${subCategoryId}`,
     );
 
+    // Arabic: تعبئة الحقول المستقلة بالتوازي لتقليل زمن الانتظار بين الحقول.
+    // English: Fill independent fields in parallel to reduce delays between controls.
+    const [
+        brandResult,
+        unitResult,
+        discountTypeResult,
+        tagResult,
+    ] = await Promise.all([
+        setDynamicSelectValue(
+            'brand_id',
+            brandId,
+            product.brand_name || `Brand ${brandId}`,
+        ),
+        setDynamicSelectValue(
+            'unit',
+            unitId,
+            `Unit ${unitId}`,
+        ),
+        setDynamicSelectValue(
+            'discount_type',
+            settings.DiscountType || 'percent',
+            settings.DiscountType || 'percent',
+        ),
+        fillProductIdTag(
+            findProductForm(),
+            product.local_id,
+        ),
+    ]);
+
+    results.brand = brandResult;
+    results.unit = unitResult;
+    results.discountType = discountTypeResult;
+    results.productIdTag = tagResult;
+
+    // Arabic: الحقول النصية والرقمية لا تحتاج انتظاراً متسلسلاً.
+    // English: Plain text and numeric fields do not require sequential waits.
     setControlValue(
         '[name="maximum_cart_quantity"]',
         settings.MaximumCartQuantity || '',
@@ -1606,26 +1781,15 @@ results.subCategory = await setDynamicSelectValue(
         product.price,
     );
 
-    await setDynamicSelectValue(
-        'discount_type',
-        settings.DiscountType || 'percent',
-        settings.DiscountType || 'percent',
-    );
-
     setControlValue(
         '[name="discount"]',
         settings.Discount ?? 0,
     );
 
-    setControlValue(
-        '[name="tags"]',
-        '',
-    );
-
     await logClientEvent(
         'INFO',
         'admin_core_fields_ready',
-        'Core dynamic fields were prepared.',
+        'Core dynamic fields were prepared using fast parallel autofill.',
         {
             product_id: product.local_id,
             wanted: {
@@ -1634,6 +1798,7 @@ results.subCategory = await setDynamicSelectValue(
                 subCategoryId,
                 brandId,
                 unitId,
+                tagId: product.local_id,
             },
             results,
             actual: {
@@ -1653,6 +1818,10 @@ results.subCategory = await setDynamicSelectValue(
                     || '',
                 unit:
                     getNamedControl('unit')?.value
+                    || '',
+                tags:
+                    getNamedControl('tags')?.value
+                    || getNamedControl('tags[]')?.value
                     || '',
             },
         },
@@ -2513,7 +2682,7 @@ async function initializeAdminAutofill() {
         'admin_adapter_ready',
         'Sooqify admin adapter initialized.',
         {
-            version: '3.4.1-size-fix',
+            version: '3.4.2-fast-fields-product-id-tag',
             target_store:
                 adminConfig.StoreProfileName,
             supplier_store:

@@ -3280,4 +3280,32 @@ function installExtractorErrorLogging() {
     });
     window.addEventListener('unhandledrejection', event => {
         const reason = event.reason instanceof Error ? event.reason : new Error(String(event.reason || 'Unhandled rejection'));
-        logExtractorEvent('ERROR', 'extractor_unhandled_rejec
+        logExtractorEvent('ERROR', 'extractor_unhandled_rejection', reason.message, { stack: reason.stack || '' });
+    });
+}
+
+// Arabic: دالة initializeExtractor جزء من تدفق الاستخراج ويمكن تخصيصها عند نقل الأداة.
+// English: initializeExtractor is part of the extraction flow and can be adapted for another store.
+async function initializeExtractor() {
+    installExtractorErrorLogging();
+    installSubmissionResultListener();
+    await loadConfiguration();
+    restoreBatchSelections();
+    await restoreStoredSubmissionResult();
+    await restoreBatchQueueState();
+    injectExtractionButtons();
+
+    const observer = new MutationObserver(() => {
+        if (observerTimer) return;
+        observerTimer = setTimeout(() => {
+            injectExtractionButtons();
+            observerTimer = null;
+        }, 400);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+}
+
+initializeExtractor().catch(async error => {
+    console.error('AlphaCode Extractor initialization failed:', error);
+    await logExtractorEvent('ERROR', 'extractor_initialization_failed', error.message, { stack: error.stack || '' });
+});

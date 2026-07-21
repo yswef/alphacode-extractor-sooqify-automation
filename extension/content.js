@@ -32,7 +32,8 @@ const DEFAULT_CONFIG = globalThis.ALPHACODE_DEFAULT_CONFIG || {
     AutoAddProduct: false, AutoSubmitDelaySeconds: 0, FastAutofillMode: true,
     BatchModeEnabled: true, BatchPreparationConcurrency: 1, BatchMaximumProducts: 25,
     BatchContinueOnFailure: true, BatchNotifyEachProduct: true, BatchMaxRetries: 1,
-    BatchDownloadSelectedImagesOnly: true, AdminPanelPosition: 'middle-left'
+    BatchDownloadSelectedImagesOnly: true, BatchReuseStoreTab: true,
+    BatchSelectionPersistence: true, AdminPanelPosition: 'middle-left'
 };
 
 let extractorConfig = { ...DEFAULT_CONFIG };
@@ -44,6 +45,16 @@ const selectedBatchProducts = new Map();
 let activeBatchReviewOverlay = null;
 let latestBatchQueueState = null;
 let batchAiCooldownUntil = 0;
+
+// Arabic: حفظ اختيارات الدفعة كبيانات مستقلة عن عناصر DOM التي يعيد SZWEGO تدويرها أثناء التمرير.
+// English: Persist batch selections independently from DOM nodes recycled by SZWEGO virtualization.
+const BATCH_SELECTION_SESSION_KEY = 'alphacodeBatchSelectionsV2';
+const EMPTY_EXTERNAL_COPY_TEMPLATE = Object.freeze({
+    name_en: '',
+    description_en: '',
+    name_ar: '',
+    description_ar: '',
+});
 
 // Arabic: انتظار خفيف واختبار شرط لواجهات التحميل الديناميكي.
 // English: Lightweight delay and condition polling for dynamic interfaces.
@@ -273,7 +284,9 @@ function extractSourceDescription(productBox) {
     if (preferredElement) return normalizeText(preferredElement.innerText || preferredElement.textContent);
 
     const clone = productBox.cloneNode(true);
-    clone.querySelectorAll('details, .alphacode-extract-btn, [class*="handle_bar"]').forEach(node => node.remove());
+    clone.querySelectorAll(
+        'details, .alphacode-extract-btn, .alphacode-batch-select, .alphacode-generated-action-bar, [class*="handle_bar"]',
+    ).forEach(node => node.remove());
     return normalizeText(clone.innerText || clone.textContent);
 }
 
@@ -327,6 +340,114 @@ async function copyTextToClipboard(value) {
         textarea.remove();
         return copied;
     }
+}
+
+
+// Arabic: إنشاء قالب JSON فارغ يمكن إرساله إلى أي نموذج ذكاء اصطناعي خارجي.
+// English: Build an empty JSON template that can be sent to any external AI model.
+function buildEmptyExternalCopyTemplate() {
+    return JSON.stringify(EMPTY_EXTERNAL_COPY_TEMPLATE, null, 2);
+}
+
+// Arabic: قراءة قالب JSON مع دعم أسماء المفاتيح القديمة أو المختلفة الشائعة.
+// English: Parse a JSON copy template while accepting common legacy key aliases.
+function parseExternalCopyTemplate(rawValue) {
+    let text = String(rawValue || '').trim();
+    text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    if (!text) throw new Error('ألصق قالب JSON أولاً.');
+
+    let parsed;
+    try {
+        parsed = JSON.parse(text);
+    } catch (error) {
+        throw new Error(`قالب JSON غير صالح: ${error.message}`);
+    }
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('يجب أن يكون القالب كائن JSON واحداً.');
+    }
+
+    const read = (...keys) => {
+        for (const key of keys) {
+            if (Object.prototype.hasOwnProperty.call(parsed, key)) {
+                return String(parsed[key] ?? '').trim();
+            }
+        }
+        return '';
+    };
+
+    const normalized = {
+        name_en: read('name_en', 'NameEN', 'nameEN', 'english_name', 'title_en'),
+        description_en: read('description_en', 'DescriptionEN', 'descriptionEN', 'english_description', 'desc_en'),
+        name_ar: read('name_ar', 'NameAR', 'nameAR', 'arabic_name', 'title_ar'),
+        description_ar: read('description_ar', 'DescriptionAR', 'descriptionAR', 'arabic_description', 'desc_ar'),
+    };
+
+    if (!Object.values(normalized).some(Boolean)) {
+        throw new Error('القالب لا يحتوي على أي من حقول الاسم والوصف المطلوبة.');
+    }
+
+    return normalized;
+}
+
+// Arabic: تطبيق قيم القالب على حقول الاسم والوصف دون مسح الحقول التي لم يرسلها القالب.
+// English: Apply template values without clearing fields omitted by the supplied JSON.
+function applyExternalCopyTemplate(template, fields) {
+    const assignments = [
+        ['name_en', fields.nameEN],
+        ['description_en', fields.descEN],
+        ['name_ar', fields.nameAR],
+        ['description_ar', fields.descAR],
+    ];
+
+    for (const [key, element] of assignments) {
+        if (!element || !template[key]) continue;
+        element.value = template[key];
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+}
+
+// Arabic: ربط أزرار قبول القالب ونسخ القالب الفارغ ونسخ الاسم الأصلي داخل أي نافذة مراجعة.
+// English: Bind apply, copy-empty-template, and copy-original-name controls in any review surface.
+function bindExternalCopyTemplateControls({
+    root,
+    textarea,
+    applyButton,
+    copyEmptyButton,
+    copyOriginalButton,
+    statusElement,
+    fields,
+    originalProductName,
+}) {
+    const setStatus = (message, isError = false) => {
+        if (!statusElement) return;
+        statusElement.textContent = message;
+        statusElement.classList.toggle('error', Boolean(isError));
+        statusElement.classList.toggle('success', !isError && Boolean(message));
+    };
+
+    applyButton?.addEventListener('click', () => {
+        try {
+            const template = parseExternalCopyTemplate(textarea?.value || '');
+            applyExternalCopyTemplate(template, fields);
+            setStatus('تم قبول القالب وتعبئة الحقول.');
+        } catch (error) {
+            setStatus(error.message, true);
+        }
+    });
+
+    copyEmptyButton?.addEventListener('click', async () => {
+        const copied = await copyTextToClipboard(buildEmptyExternalCopyTemplate());
+        setStatus(copied ? 'تم نسخ القالب الفارغ.' : 'تعذر نسخ القالب.', !copied);
+    });
+
+    copyOriginalButton?.addEventListener('click', async () => {
+        const copied = await copyTextToClipboard(originalProductName || '');
+        setStatus(copied ? 'تم نسخ الاسم الأصلي.' : 'لا يوجد اسم أصلي قابل للنسخ.', !copied);
+    });
+
+    return root;
 }
 
 
@@ -789,20 +910,38 @@ function injectExtractionButtons() {
 function createAndInjectButton(container, parentCard) {
     if (!container || !parentCard) return;
 
-    const existingButton = parentCard.querySelector('.alphacode-extract-btn');
-    if (existingButton) {
-        ensureBatchSelectionControl(container, parentCard, existingButton);
-        return;
-    }
-
     const sourceText = extractSourceDescription(parentCard);
     const searchCode = extractSearchCode(parentCard);
     const styleCode = extractStyleCode(sourceText);
+    const productKey = getBatchCardKey(parentCard);
+    const existingButton = parentCard.querySelector('.alphacode-extract-btn');
+
+    if (existingButton) {
+        // Arabic: يعيد الموقع استخدام بطاقة المنتج؛ حدّث حالة الزر حتى لا تبقى حالة المنتج السابق.
+        // English: Refresh a recycled card button so it cannot retain the previous product state.
+        if (existingButton.dataset.alphacodeProductKey !== productKey) {
+            existingButton.dataset.alphacodeProductKey = productKey;
+            existingButton.classList.remove('alphacode-btn-green');
+            existingButton.classList.add('alphacode-btn-red');
+            existingButton.innerHTML = '⚡ سحب لـ 6amMart';
+            existingButton.dataset.searchCode = searchCode || '';
+            existingButton.dataset.styleCode = isValidCode(styleCode) ? styleCode : '';
+            checkArchive(searchCode, styleCode)
+                .then(data => {
+                    if (existingButton.dataset.alphacodeProductKey !== productKey) return;
+                    if (data.exists) updateButtonAsAdded(existingButton, data.id || null, data.workflow_status || 'prepared');
+                })
+                .catch(() => {});
+        }
+        ensureBatchSelectionControl(container, parentCard, existingButton);
+        return;
+    }
 
     const button = document.createElement('button');
     button.className = 'alphacode-extract-btn alphacode-btn-red';
     button.innerHTML = '⚡ سحب لـ 6amMart';
     button.type = 'button';
+    button.dataset.alphacodeProductKey = productKey;
     if (searchCode) button.dataset.searchCode = searchCode;
     if (isValidCode(styleCode)) button.dataset.styleCode = styleCode;
 
@@ -1032,12 +1171,8 @@ function initializeStoreImageSelector(modalBox, images, configuredLimit) {
     function selectImage(index, shouldSelect) {
         if (shouldSelect) {
             if (!selected.has(index) && selected.size >= limit) {
-                const removable = Array.from(selected).reverse().find(value => value !== mainIndex);
-                if (removable === undefined) {
-                    alert(`المتجر يقبل ${limit} صور فقط. اختر صورة أخرى بعد إلغاء إحدى الصور.`);
-                    return false;
-                }
-                selected.delete(removable);
+                alert(`المتجر يقبل ${limit} صور فقط. ألغِ صورة محددة ثم اختر الصورة المطلوبة.`);
+                return false;
             }
             selected.add(index);
         } else {
@@ -1119,6 +1254,18 @@ function renderNewProductForm(context) {
             <button class="alphacode-ai-btn" id="generateAiBtn" type="button">✨ إنشاء المحتوى العربي والإنجليزي</button>
             <span id="aiStatus" class="alphacode-ai-status">جاهز</span>
         </div>
+        <section class="alphacode-json-template-section">
+            <div class="alphacode-json-template-heading">
+                <div><strong>قالب محتوى JSON خارجي</strong><small>ألصق نتيجة أي ذكاء اصطناعي ثم اضغط قبول القالب.</small></div>
+                <span class="alphacode-json-template-status" id="externalCopyJsonStatus"></span>
+            </div>
+            <textarea id="externalCopyJson" class="alphacode-json-template-input" dir="ltr" spellcheck="false" placeholder='{"name_en":"","description_en":"","name_ar":"","description_ar":""}'></textarea>
+            <div class="alphacode-json-template-actions">
+                <button type="button" class="primary" id="applyExternalCopyJson">قبول القالب</button>
+                <button type="button" id="copyEmptyExternalCopyJson">نسخ القالب الفارغ</button>
+                <button type="button" id="copyOriginalNameJson">نسخ الاسم الأصلي</button>
+            </div>
+        </section>
         <div class="alphacode-language-grid">
             <div>
                 <div class="alphacode-field alphacode-ltr-field">
@@ -1195,6 +1342,17 @@ function renderNewProductForm(context) {
         images,
         extractorConfig.StoreImageLimit || 6,
     );
+
+    bindExternalCopyTemplateControls({
+        root: modalBox,
+        textarea: modalBox.querySelector('#externalCopyJson'),
+        applyButton: modalBox.querySelector('#applyExternalCopyJson'),
+        copyEmptyButton: modalBox.querySelector('#copyEmptyExternalCopyJson'),
+        copyOriginalButton: modalBox.querySelector('#copyOriginalNameJson'),
+        statusElement: modalBox.querySelector('#externalCopyJsonStatus'),
+        fields,
+        originalProductName: originalProductName || sourceText,
+    });
 
     fields.brandName.addEventListener('input', () => {
         fields.brandId.value = resolveBrandId(fields.brandName.value);
@@ -1975,48 +2133,216 @@ async function scrollToLastProduct(targetSearchCode, options = {}) {
 // English: Select, review, pipeline-prepare, and sequentially submit multiple products.
 // =========================================================
 
-function getBatchCardKey(card) {
-    if (!card.dataset.alphacodeBatchKey) {
-        const sourceText = extractSourceDescription(card);
-        const searchCode = extractSearchCode(card);
-        const styleCode = extractStyleCode(sourceText);
-        card.dataset.alphacodeBatchKey = searchCode || styleCode || `card_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+function stableBatchHash(value) {
+    let hash = 2166136261;
+    const text = String(value || '');
+    for (let index = 0; index < text.length; index += 1) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
     }
-    return card.dataset.alphacodeBatchKey;
+    return (hash >>> 0).toString(36);
+}
+
+function getBatchPageIdentity() {
+    return `${window.location.origin}${window.location.pathname}`;
+}
+
+function getBatchCardKey(card) {
+    // Arabic: لا نعتمد على data قديمة لأن React قد يعيد استخدام العنصر لمنتج آخر.
+    // English: Never trust cached dataset values because React may recycle the node for another product.
+    const sourceText = extractSourceDescription(card);
+    const searchCode = extractSearchCode(card);
+    const styleCode = extractStyleCode(sourceText);
+    const firstImage = normalizeImageUrl(
+        card.querySelector('img')?.currentSrc
+        || card.querySelector('img')?.src
+        || '',
+    );
+
+    const key = isValidCode(searchCode)
+        ? `search:${String(searchCode).toUpperCase()}`
+        : (isValidCode(styleCode)
+            ? `style:${String(styleCode).toUpperCase()}:${stableBatchHash(sourceText.slice(0, 260))}`
+            : `text:${stableBatchHash(`${sourceText.slice(0, 900)}|${firstImage}`)}`);
+
+    card.dataset.alphacodeBatchKey = key;
+    return key;
+}
+
+function serializeBatchSelectionEntry(entry) {
+    return {
+        key: entry.key,
+        sourceText: entry.sourceText || '',
+        originalProductName: entry.originalProductName || '',
+        searchCode: entry.searchCode || '',
+        styleCode: entry.styleCode || '',
+        originalPrice: Number(entry.originalPrice || 0),
+        sizes: Array.isArray(entry.sizes) ? entry.sizes : [],
+        images: Array.isArray(entry.images) ? entry.images : [],
+        selectedAt: Number(entry.selectedAt || Date.now()),
+    };
+}
+
+function persistBatchSelections() {
+    if (extractorConfig.BatchSelectionPersistence === false) return;
+    try {
+        sessionStorage.setItem(
+            BATCH_SELECTION_SESSION_KEY,
+            JSON.stringify({
+                pageIdentity: getBatchPageIdentity(),
+                entries: Array.from(selectedBatchProducts.values()).map(serializeBatchSelectionEntry),
+            }),
+        );
+    } catch (_) {}
+}
+
+function restoreBatchSelections() {
+    if (extractorConfig.BatchSelectionPersistence === false) return;
+    try {
+        const stored = JSON.parse(sessionStorage.getItem(BATCH_SELECTION_SESSION_KEY) || 'null');
+        if (!stored || stored.pageIdentity !== getBatchPageIdentity() || !Array.isArray(stored.entries)) return;
+        for (const rawEntry of stored.entries) {
+            if (!rawEntry?.key) continue;
+            selectedBatchProducts.set(rawEntry.key, {
+                ...rawEntry,
+                card: null,
+                button: null,
+                checkbox: null,
+                imagePromise: null,
+            });
+        }
+    } catch (_) {}
+}
+
+function createBatchSelectionSnapshot(card, button, key) {
+    const sourceText = extractSourceDescription(card);
+    const originalProductName = extractOriginalProductName(card);
+    const searchCode = extractSearchCode(card);
+    const styleCode = extractStyleCode(sourceText);
+    const snapshot = {
+        key,
+        card,
+        button,
+        checkbox: null,
+        sourceText,
+        originalProductName,
+        searchCode,
+        styleCode,
+        originalPrice: extractOriginalPrice(sourceText),
+        sizes: extractSizes(sourceText),
+        images: extractDomImages(card),
+        imagePromise: null,
+        selectedAt: Date.now(),
+    };
+
+    // Arabic: ابدأ جمع المعرض الكامل فور التحديد قبل أن يزيل التمرير بطاقة المنتج من DOM.
+    // English: Capture the full gallery immediately before virtualization removes the card from the DOM.
+    snapshot.imagePromise = extractAllImages(card, searchCode, styleCode)
+        .then(images => {
+            if (images.length) snapshot.images = images;
+            snapshot.imagePromise = null;
+            persistBatchSelections();
+            return snapshot.images;
+        })
+        .catch(() => {
+            snapshot.imagePromise = null;
+            persistBatchSelections();
+            return snapshot.images;
+        });
+
+    return snapshot;
+}
+
+function bindBatchEntryToRenderedCard(entry, card, button, checkbox) {
+    entry.card = card;
+    entry.button = button;
+    entry.checkbox = checkbox;
+    checkbox.checked = true;
+    card.classList.add('alphacode-batch-selected-card');
+
+    if ((!entry.images || !entry.images.length) && !entry.imagePromise) {
+        entry.imagePromise = extractAllImages(card, entry.searchCode, entry.styleCode)
+            .then(images => {
+                if (images.length) entry.images = images;
+                entry.imagePromise = null;
+                persistBatchSelections();
+                return entry.images;
+            })
+            .catch(() => {
+                entry.imagePromise = null;
+                return entry.images || [];
+            });
+    }
 }
 
 function ensureBatchSelectionControl(container, card, button) {
-    if (!extractorConfig.BatchModeEnabled || card.querySelector('.alphacode-batch-select')) return;
+    if (!extractorConfig.BatchModeEnabled) return;
 
+    const previousKey = card.dataset.alphacodeBatchKey || '';
     const key = getBatchCardKey(card);
-    const label = document.createElement('label');
-    label.className = 'alphacode-batch-select';
-    label.innerHTML = '<input class="alphacode-batch-checkbox" type="checkbox"> <span>تحديد للدفعة</span>';
+    let label = card.querySelector('.alphacode-batch-select');
+
+    if (previousKey && previousKey !== key) {
+        const previousEntry = selectedBatchProducts.get(previousKey);
+        if (previousEntry?.card === card) {
+            previousEntry.card = null;
+            previousEntry.button = null;
+            previousEntry.checkbox = null;
+        }
+    }
+
+    // Arabic: عند إعادة تدوير البطاقة احذف عنصر التحكم المرتبط بالمنتج السابق.
+    // English: Replace stale controls when a virtualized card node now represents a different product.
+    if (label && label.dataset.batchKey !== key) {
+        label.remove();
+        label = null;
+    }
+
+    card.classList.remove('alphacode-batch-selected-card');
+
+    if (!label) {
+        label = document.createElement('label');
+        label.className = 'alphacode-batch-select';
+        label.dataset.batchKey = key;
+        label.innerHTML = '<input class="alphacode-batch-checkbox" type="checkbox"> <span>تحديد للدفعة</span>';
+        container.insertBefore(label, button.nextSibling);
+    }
 
     const checkbox = label.querySelector('input');
-    checkbox.checked = selectedBatchProducts.has(key);
+    const existingEntry = selectedBatchProducts.get(key);
+    if (existingEntry) {
+        bindBatchEntryToRenderedCard(existingEntry, card, button, checkbox);
+    } else {
+        checkbox.checked = false;
+    }
+
+    if (checkbox.dataset.alphacodeBoundKey === key) return;
+    checkbox.dataset.alphacodeBoundKey = key;
     checkbox.addEventListener('click', event => event.stopPropagation());
     checkbox.addEventListener('change', event => {
         event.stopPropagation();
+        const currentKey = getBatchCardKey(card);
         const maximum = Math.max(2, Number(extractorConfig.BatchMaximumProducts || 25));
 
-        if (checkbox.checked && selectedBatchProducts.size >= maximum) {
+        if (checkbox.checked && selectedBatchProducts.size >= maximum && !selectedBatchProducts.has(currentKey)) {
             checkbox.checked = false;
             alert(`الحد الأقصى للدفعة هو ${maximum} منتجاً.`);
             return;
         }
 
         if (checkbox.checked) {
-            selectedBatchProducts.set(key, { key, card, button, checkbox });
-            card.classList.add('alphacode-batch-selected-card');
+            const entry = selectedBatchProducts.get(currentKey)
+                || createBatchSelectionSnapshot(card, button, currentKey);
+            selectedBatchProducts.set(currentKey, entry);
+            bindBatchEntryToRenderedCard(entry, card, button, checkbox);
         } else {
-            selectedBatchProducts.delete(key);
+            selectedBatchProducts.delete(currentKey);
             card.classList.remove('alphacode-batch-selected-card');
         }
+
+        persistBatchSelections();
         updateBatchToolbar();
     });
-
-    container.insertBefore(label, button.nextSibling);
 }
 
 function ensureBatchToolbar() {
@@ -2046,7 +2372,7 @@ function ensureBatchToolbar() {
             const maximum = Math.max(2, Number(extractorConfig.BatchMaximumProducts || 25));
             for (const checkbox of document.querySelectorAll('.alphacode-batch-checkbox')) {
                 if (selectedBatchProducts.size >= maximum) break;
-                if (!checkbox.checked && checkbox.offsetParent) {
+                if (!checkbox.checked && checkbox.isConnected) {
                     checkbox.checked = true;
                     checkbox.dispatchEvent(new Event('change', { bubbles: true }));
                 }
@@ -2055,10 +2381,11 @@ function ensureBatchToolbar() {
 
         toolbar.querySelector('#alphacodeClearBatch').onclick = () => {
             for (const item of selectedBatchProducts.values()) {
-                item.checkbox.checked = false;
-                item.card.classList.remove('alphacode-batch-selected-card');
+                if (item.checkbox?.isConnected) item.checkbox.checked = false;
+                if (item.card?.isConnected) item.card.classList.remove('alphacode-batch-selected-card');
             }
             selectedBatchProducts.clear();
+            persistBatchSelections();
             updateBatchToolbar();
         };
 
@@ -2099,20 +2426,167 @@ async function mapWithConcurrency(items, concurrency, worker) {
     return results;
 }
 
+// Arabic: الترتيب الافتراضي: الصور 1 و2 و3 و4 و6 و10، والصورة 10 رئيسية.
+// English: Default order: images 1, 2, 3, 4, 6, and 10, with image 10 as main.
 function defaultBatchImageSelection(images) {
-    const limit = Math.max(1, Math.min(Number(extractorConfig.StoreImageLimit || 6), 6));
-    const preferred = [0, 1, 2, 3, 5, 9]
-        .filter(index => index >= 0 && index < images.length);
-    for (let index = 0; index < images.length && preferred.length < limit; index += 1) {
-        if (!preferred.includes(index)) preferred.push(index);
+    const limit = Math.max(
+        1,
+        Math.min(
+            Number(extractorConfig.StoreImageLimit || 6),
+            6,
+        ),
+    );
+
+    // الأرقام تبدأ من صفر داخل JavaScript:
+    // 0 = الصورة 1، و5 = الصورة 6، و9 = الصورة 10.
+    const preferredIndexes = [
+        0, // #1
+        1, // #2
+        2, // #3
+        3, // #4
+        5, // #6
+        9, // #10
+    ];
+
+    const selectedIndexes = preferredIndexes
+        .filter(index => (
+            index >= 0
+            && index < images.length
+        ))
+        .slice(0, limit);
+
+    // إكمال العدد من الصور المتوفرة إذا لم توجد الصورة 6 أو 10.
+    for (
+        let index = 0;
+        index < images.length
+        && selectedIndexes.length < limit;
+        index += 1
+    ) {
+        if (!selectedIndexes.includes(index)) {
+            selectedIndexes.push(index);
+        }
     }
-    const selected = preferred.slice(0, limit);
-    const mainIndex = selected.includes(9) ? 9 : (selected[0] ?? 0);
+
+    // الصورة رقم 10 رئيسية، وإن لم توجد فآخر صورة مختارة تكون الرئيسية.
+    const mainIndex = images.length > 9
+        ? 9
+        : (selectedIndexes[selectedIndexes.length - 1] ?? 0);
+
     return {
-        selectedIndexes: [mainIndex, ...selected.filter(index => index !== mainIndex)].slice(0, limit),
+        selectedIndexes,
         mainIndex,
         limit,
     };
+}
+// Arabic: محدد صور مستقل لكل منتج داخل شرائح الدفعة.
+// English: Independent image picker for every product in the batch-review slides.
+function initializeBatchDraftImageSelector(slide, draft) {
+    const grid = slide.querySelector('.batch-image-selector-grid');
+    const counter = slide.querySelector('.batch-image-counter');
+    const selectFirstButton = slide.querySelector('.batch-select-first-images');
+    const clearButton = slide.querySelector('.batch-clear-images');
+    if (!grid || !counter) return;
+
+    const initial = draft.imageSelection || defaultBatchImageSelection(draft.images);
+    const limit = Math.max(1, Math.min(Number(initial.limit || 6), 6));
+    const selectionLocked = Boolean(draft.archiveData?.exists);
+    const selected = new Set(
+        (initial.selectedIndexes || [])
+            .map(Number)
+            .filter(index => Number.isInteger(index) && index >= 0 && index < draft.images.length)
+            .slice(0, limit),
+    );
+    let mainIndex = Number(initial.mainIndex);
+    if (!selected.size && draft.images.length) selected.add(0);
+    if (!selected.has(mainIndex)) mainIndex = Array.from(selected)[0] ?? 0;
+
+    const refresh = () => {
+        grid.querySelectorAll('.batch-image-choice').forEach(card => {
+            const index = Number(card.dataset.index);
+            const checkbox = card.querySelector('.batch-image-check');
+            const radio = card.querySelector('.batch-image-main');
+            const isSelected = selected.has(index);
+            checkbox.checked = isSelected;
+            checkbox.disabled = selectionLocked;
+            radio.checked = index === mainIndex;
+            radio.disabled = selectionLocked || !isSelected;
+            card.classList.toggle('selected', isSelected);
+            card.classList.toggle('main-image', index === mainIndex);
+        });
+        counter.textContent = selectionLocked
+            ? `مؤرشف — يستخدم الصور المحفوظة`
+            : `${selected.size} / ${limit} — الرئيسية #${mainIndex + 1}`;
+        draft.imageSelection = {
+            selectedIndexes: [mainIndex, ...Array.from(selected).filter(index => index !== mainIndex)],
+            mainIndex,
+            limit,
+        };
+    };
+
+    const setSelected = (index, shouldSelect) => {
+        if (shouldSelect) {
+            if (!selected.has(index) && selected.size >= limit) {
+                alert(`المتجر يقبل ${limit} صور فقط. ألغِ صورة ثم اختر البديلة.`);
+                return false;
+            }
+            selected.add(index);
+        } else {
+            if (index === mainIndex) {
+                alert('اختر صورة رئيسية أخرى قبل إلغاء هذه الصورة.');
+                return false;
+            }
+            selected.delete(index);
+        }
+        refresh();
+        return true;
+    };
+
+    draft.images.forEach((url, index) => {
+        const card = document.createElement('div');
+        card.className = 'batch-image-choice';
+        card.dataset.index = String(index);
+        card.innerHTML = `
+            <img loading="lazy" alt="Product image ${index + 1}">
+            <div class="batch-image-choice-footer">
+                <label><input class="batch-image-check" type="checkbox"> رفع</label>
+                <label><input class="batch-image-main" type="radio" name="batch-main-image-${stableBatchHash(draft.key)}"> رئيسية</label>
+                <strong>#${index + 1}</strong>
+            </div>`;
+        card.querySelector('img').src = url;
+        card.querySelector('.batch-image-check').addEventListener('change', event => {
+            if (!setSelected(index, event.target.checked)) event.target.checked = selected.has(index);
+        });
+        card.querySelector('.batch-image-main').addEventListener('change', event => {
+            if (!event.target.checked) return;
+            if (!selected.has(index) && !setSelected(index, true)) return;
+            mainIndex = index;
+            refresh();
+        });
+        grid.appendChild(card);
+    });
+
+    if (selectionLocked) {
+        if (selectFirstButton) selectFirstButton.disabled = true;
+        if (clearButton) clearButton.disabled = true;
+    }
+
+    selectFirstButton?.addEventListener('click', () => {
+        if (selectionLocked) return;
+        selected.clear();
+        for (let index = 0; index < Math.min(limit, draft.images.length); index += 1) selected.add(index);
+        mainIndex = Array.from(selected)[0] ?? 0;
+        refresh();
+    });
+
+    clearButton?.addEventListener('click', () => {
+        if (selectionLocked) return;
+        selected.clear();
+        if (draft.images.length) selected.add(mainIndex >= 0 && mainIndex < draft.images.length ? mainIndex : 0);
+        mainIndex = Array.from(selected)[0] ?? 0;
+        refresh();
+    });
+
+    refresh();
 }
 
 async function requestBatchAiCopy(draft, officialResearch = false) {
@@ -2159,19 +2633,30 @@ async function requestBatchAiCopy(draft, officialResearch = false) {
 }
 
 async function buildBatchDraft(entry, index, total, updateProgress) {
-    const card = entry.card;
-    const sourceText = extractSourceDescription(card);
-    const originalProductName = extractOriginalProductName(card);
-    const searchCode = extractSearchCode(card);
-    const styleCode = extractStyleCode(sourceText);
-    const originalPrice = extractOriginalPrice(sourceText);
-    const sizes = extractSizes(sourceText);
+    const card = entry.card?.isConnected ? entry.card : null;
+    const sourceText = entry.sourceText || (card ? extractSourceDescription(card) : '');
+    const originalProductName = entry.originalProductName || (card ? extractOriginalProductName(card) : sourceText);
+    const searchCode = entry.searchCode || (card ? extractSearchCode(card) : '');
+    const styleCode = entry.styleCode || extractStyleCode(sourceText);
+    const originalPrice = Number(entry.originalPrice || extractOriginalPrice(sourceText));
+    const sizes = uniqueSizes(entry.sizes?.length ? entry.sizes : extractSizes(sourceText));
 
     updateProgress?.(`قراءة المنتج ${index + 1} من ${total}...`);
+    const imageTask = entry.imagePromise
+        || (entry.images?.length ? Promise.resolve(entry.images) : null)
+        || (card ? extractAllImages(card, searchCode, styleCode) : Promise.resolve([]));
     const [archiveData, images] = await Promise.all([
         checkArchive(searchCode, styleCode),
-        extractAllImages(card, searchCode, styleCode),
+        imageTask,
     ]);
+
+    if (!images.length) {
+        throw new Error(`لم تُحفظ صور المنتج المحدد رقم ${index + 1}. أعد إظهاره في الصفحة وحدده مرة أخرى.`);
+    }
+
+    entry.images = images;
+    entry.imagePromise = null;
+    persistBatchSelections();
 
     const draft = {
         key: entry.key,
@@ -2186,6 +2671,7 @@ async function buildBatchDraft(entry, index, total, updateProgress) {
         originalPrice,
         sizes,
         images,
+        imageSelection: defaultBatchImageSelection(images),
         nameEN: buildFallbackEnglishName(sourceText, styleCode),
         descriptionEN: buildFallbackEnglishDescription(sourceText, styleCode),
         nameAR: buildFallbackArabicName(sourceText, styleCode),
@@ -2263,9 +2749,29 @@ function renderBatchReviewSlides(modalBox, drafts) {
                         <label><input class="batch-include" type="checkbox" ${draft.include ? 'checked' : ''} ${draft.archiveData.workflow_status === 'submitted' ? 'disabled' : ''}> ${draft.archiveData.workflow_status === 'submitted' ? 'مضاف سابقاً للمتجر' : 'إضافة هذا المنتج'}</label>
                         <span class="batch-draft-status ${draft.aiStatus}">${draft.archiveData.exists ? `مؤرشف ID ${draft.archiveData.id}` : (draft.aiStatus === 'generated' ? 'تم إنشاء المحتوى' : 'صياغة محلية احتياطية')}</span>
                     </div>
-                    <div class="alphacode-batch-preview-images">
-                        ${draft.images.slice(0, 6).map(url => `<img src="${escapeHtml(url)}" loading="lazy">`).join('')}
-                    </div>
+                    <section class="batch-image-selector-section">
+                        <div class="batch-image-selector-heading">
+                            <div><strong>اختيار صور هذا المنتج</strong><small>حدد حتى ${Math.min(Number(extractorConfig.StoreImageLimit || 6), 6)} صور واختر الرئيسية.</small></div>
+                            <span class="batch-image-counter"></span>
+                        </div>
+                        <div class="batch-image-selector-actions">
+                            <button class="batch-select-first-images" type="button">اختيار أول 6</button>
+                            <button class="batch-clear-images" type="button">الإبقاء على الرئيسية فقط</button>
+                        </div>
+                        <div class="batch-image-selector-grid"></div>
+                    </section>
+                    <section class="alphacode-json-template-section batch-json-template-section">
+                        <div class="alphacode-json-template-heading">
+                            <div><strong>قالب محتوى JSON خارجي</strong><small>يمكنك توليد المحتوى خارج الإضافة ثم لصقه هنا.</small></div>
+                            <span class="alphacode-json-template-status batch-json-status"></span>
+                        </div>
+                        <textarea class="alphacode-json-template-input batch-copy-json" dir="ltr" spellcheck="false" placeholder='{"name_en":"","description_en":"","name_ar":"","description_ar":""}'></textarea>
+                        <div class="alphacode-json-template-actions">
+                            <button class="primary batch-apply-json" type="button">قبول القالب</button>
+                            <button class="batch-copy-empty-json" type="button">نسخ القالب الفارغ</button>
+                            <button class="batch-copy-original-name" type="button">نسخ الاسم الأصلي</button>
+                        </div>
+                    </section>
                     <div class="alphacode-language-grid">
                         <div>
                             <div class="alphacode-field alphacode-ltr-field"><label>الاسم الإنجليزي</label><input class="batch-name-en" dir="ltr" value="${escapeHtml(draft.nameEN)}"></div>
@@ -2302,6 +2808,22 @@ function renderBatchReviewSlides(modalBox, drafts) {
 
     drafts.forEach((draft, index) => {
         const slide = content.querySelector(`.alphacode-batch-slide[data-index="${index}"]`);
+        initializeBatchDraftImageSelector(slide, draft);
+        bindExternalCopyTemplateControls({
+            root: slide,
+            textarea: slide.querySelector('.batch-copy-json'),
+            applyButton: slide.querySelector('.batch-apply-json'),
+            copyEmptyButton: slide.querySelector('.batch-copy-empty-json'),
+            copyOriginalButton: slide.querySelector('.batch-copy-original-name'),
+            statusElement: slide.querySelector('.batch-json-status'),
+            fields: {
+                nameEN: slide.querySelector('.batch-name-en'),
+                descEN: slide.querySelector('.batch-desc-en'),
+                nameAR: slide.querySelector('.batch-name-ar'),
+                descAR: slide.querySelector('.batch-desc-ar'),
+            },
+            originalProductName: draft.originalProductName || draft.sourceText,
+        });
         slide.querySelector('.batch-brand').value = draft.brandName;
         slide.querySelector('.batch-brand').addEventListener('change', event => {
             draft.brandName = canonicalBrandName(event.target.value);
@@ -2380,7 +2902,8 @@ function renderBatchReviewSlides(modalBox, drafts) {
 }
 
 async function openBatchReviewModal() {
-    const entries = Array.from(selectedBatchProducts.values()).filter(entry => entry.card?.isConnected);
+    const entries = Array.from(selectedBatchProducts.values())
+        .sort((left, right) => Number(left.selectedAt || 0) - Number(right.selectedAt || 0));
     if (entries.length < 2) {
         alert('حدد منتجين أو أكثر أولاً.');
         return;
@@ -2433,7 +2956,10 @@ async function prepareBatchDraftForStore(draft, batchId, batchIndex, batchTotal)
         const exchangeRate = Number(extractorConfig.ExchangeRate || 0);
         const priceAfterFee = draft.originalPrice + addedFee;
         const priceSAR = Math.round(priceAfterFee * exchangeRate);
-        const imageSelection = defaultBatchImageSelection(draft.images);
+        const imageSelection = draft.imageSelection || defaultBatchImageSelection(draft.images);
+        if (!imageSelection.selectedIndexes?.length) {
+            throw new Error('اختر صورة واحدة على الأقل لهذا المنتج.');
+        }
         const batchSettings = {
             ...extractorConfig,
             AutoSubmitDelaySeconds: 0,
@@ -2507,7 +3033,13 @@ async function prepareBatchDraftForStore(draft, batchId, batchIndex, batchTotal)
     });
     if (!queued?.success) throw new Error(queued?.error || 'تعذر إضافة المنتج إلى طابور الإرسال.');
 
-    updateButtonAsAdded(draft.button, productId, 'prepared');
+    if (
+        draft.button?.isConnected
+        && draft.card?.isConnected
+        && getBatchCardKey(draft.card) === draft.key
+    ) {
+        updateButtonAsAdded(draft.button, productId, 'prepared');
+    }
     return pendingProduct;
 }
 
@@ -2521,6 +3053,7 @@ async function startBatchPipeline(drafts) {
         continueOnFailure: extractorConfig.BatchContinueOnFailure !== false,
         notifyEachProduct: extractorConfig.BatchNotifyEachProduct !== false,
         maxRetries: Number(extractorConfig.BatchMaxRetries || 0),
+        reuseStoreTab: extractorConfig.BatchReuseStoreTab !== false,
     });
     if (!startResponse?.success) throw new Error(startResponse?.error || 'تعذر بدء طابور الدفعة.');
 
@@ -2571,10 +3104,11 @@ async function startBatchPipeline(drafts) {
 
     await safeRuntimeMessage({ action: 'FINALIZE_BATCH_QUEUE', batchId });
     for (const item of selectedBatchProducts.values()) {
-        item.checkbox.checked = false;
-        item.card.classList.remove('alphacode-batch-selected-card');
+        if (item.checkbox?.isConnected) item.checkbox.checked = false;
+        if (item.card?.isConnected) item.card.classList.remove('alphacode-batch-selected-card');
     }
     selectedBatchProducts.clear();
+    persistBatchSelections();
     updateBatchToolbar();
 }
 
@@ -2746,31 +3280,4 @@ function installExtractorErrorLogging() {
     });
     window.addEventListener('unhandledrejection', event => {
         const reason = event.reason instanceof Error ? event.reason : new Error(String(event.reason || 'Unhandled rejection'));
-        logExtractorEvent('ERROR', 'extractor_unhandled_rejection', reason.message, { stack: reason.stack || '' });
-    });
-}
-
-// Arabic: دالة initializeExtractor جزء من تدفق الاستخراج ويمكن تخصيصها عند نقل الأداة.
-// English: initializeExtractor is part of the extraction flow and can be adapted for another store.
-async function initializeExtractor() {
-    installExtractorErrorLogging();
-    installSubmissionResultListener();
-    await loadConfiguration();
-    await restoreStoredSubmissionResult();
-    await restoreBatchQueueState();
-    injectExtractionButtons();
-
-    const observer = new MutationObserver(() => {
-        if (observerTimer) return;
-        observerTimer = setTimeout(() => {
-            injectExtractionButtons();
-            observerTimer = null;
-        }, 400);
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
-}
-
-initializeExtractor().catch(async error => {
-    console.error('AlphaCode Extractor initialization failed:', error);
-    await logExtractorEvent('ERROR', 'extractor_initialization_failed', error.message, { stack: error.stack || '' });
-});
+        logExtractorEvent('ERROR', 'extractor_unhandled_rejec

@@ -2911,7 +2911,7 @@ async function initializeAdminAutofill() {
         'admin_adapter_ready',
         'Sooqify admin adapter initialized.',
         {
-            version: '4.3.0-batch-queue-fast-autofill',
+            version: '4.4.0-reusable-batch-tab-json-template',
             target_store:
                 adminConfig.StoreProfileName,
             supplier_store:

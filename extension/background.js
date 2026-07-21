@@ -586,6 +586,8 @@ function createInitialBatchState(message, sourceTabId) {
         continueOnFailure: message.continueOnFailure !== false,
         notifyEachProduct: message.notifyEachProduct !== false,
         maxRetries: Math.max(0, Math.min(safeInteger(message.maxRetries, 0), 3)),
+        reuseStoreTab: message.reuseStoreTab !== false,
+        workerTabId: 0,
         finalized: false,
         pending: [],
         current: null,
@@ -698,10 +700,13 @@ async function cancelBatchQueue(message) {
     state.updatedAt = Date.now();
 
     const jobs = await readFallbackJobs();
-    const tabsToClose = [];
+    const tabsToClose = Number(state.workerTabId) > 0
+        ? [Number(state.workerTabId)]
+        : [];
+    state.workerTabId = 0;
     for (const [tabId, job] of Object.entries(jobs)) {
         if (job.batchId === state.batchId) {
-            tabsToClose.push(Number(tabId));
+            if (!tabsToClose.includes(Number(tabId))) tabsToClose.push(Number(tabId));
             delete jobs[tabId];
         }
     }
@@ -738,10 +743,21 @@ async function retryFailedBatchProducts(message) {
 
 async function maybeCompleteBatchQueue(state) {
     if (!state || !state.finalized || state.current || state.pending.length) return false;
+
+    const workerTabId = Number(state.workerTabId || 0);
+    state.workerTabId = 0;
     state.status = 'completed';
     state.completedAt = Date.now();
     state.updatedAt = Date.now();
     await writeBatchQueueState(state);
+
+    // Arabic: يغلق تبويب العامل مرة واحدة فقط بعد انتهاء الدفعة كاملة.
+    // English: Close the reusable worker tab only after the entire batch has finished.
+    if (workerTabId > 0) {
+        try {
+            await chrome.tabs.remove(workerTabId);
+        } catch (_) {}
+    }
 
     const succeeded = state.results.filter(item => item.success).length;
     const failed = state.results.filter(item => !item.success).length + state.preparationFailures.length;
@@ -923,6 +939,43 @@ async function writeFallbackJobs(jobs) {
     });
 }
 
+// Arabic: جلب تبويب العامل المحفوظ إذا كان ما يزال موجوداً.
+// English: Return the persisted batch worker tab when it still exists.
+async function getExistingBatchWorkerTab(tabId) {
+    const wantedId = safeInteger(tabId, 0);
+    if (!wantedId) return null;
+    try {
+        return await chrome.tabs.get(wantedId);
+    } catch (_) {
+        return null;
+    }
+}
+
+// Arabic: إنشاء تبويب عامل واحد للدفعة أو إعادة استخدامه بين المنتجات.
+// English: Create one batch worker tab or reuse it across sequential products.
+async function getOrCreateAutomatedTab({ batchId, active, reuseStoreTab }) {
+    if (batchId && reuseStoreTab) {
+        const state = await readBatchQueueState();
+        if (state?.batchId === batchId) {
+            const existing = await getExistingBatchWorkerTab(state.workerTabId);
+            if (existing?.id) {
+                return { tab: existing, reused: true };
+            }
+
+            const created = await chrome.tabs.create({ url: 'about:blank', active });
+            state.workerTabId = created.id;
+            state.updatedAt = Date.now();
+            await writeBatchQueueState(state);
+            return { tab: created, reused: false };
+        }
+    }
+
+    return {
+        tab: await chrome.tabs.create({ url: 'about:blank', active }),
+        reused: false,
+    };
+}
+
 // Arabic: فتح تبويب آلي؛ يكون مخفياً للمحاولة الأساسية ومرئياً عند إعادة المحاولة.
 // English: Open an automated tab; inactive for the primary attempt and visible for manual retry.
 async function openFallbackSubmissionTab(message, sender) {
@@ -964,11 +1017,14 @@ async function openFallbackSubmissionTab(message, sender) {
         mode,
     );
 
-    // Arabic: إنشاء التبويب على صفحة فارغة أولاً حتى تُحفظ المهمة قبل تحميل Sooqify.
-    // English: Create an about:blank tab first so the job is persisted before Sooqify starts loading.
-    const automatedTab = await chrome.tabs.create({
-        url: 'about:blank',
+    // Arabic: الدفعات تعيد استخدام تبويب واحد؛ الإضافة الفردية تبقى في تبويب مستقل.
+    // English: Batches reuse one worker tab; single submissions still use an isolated tab.
+    const batchId = normalizeText(message.batchId);
+    const batchState = batchId ? await readBatchQueueState() : null;
+    const { tab: automatedTab, reused } = await getOrCreateAutomatedTab({
+        batchId,
         active,
+        reuseStoreTab: batchState?.reuseStoreTab !== false,
     });
 
     const jobs = await readFallbackJobs();
@@ -979,7 +1035,8 @@ async function openFallbackSubmissionTab(message, sender) {
         styleCode: normalizeText(message.styleCode),
         mode,
         active,
-        batchId: normalizeText(message.batchId),
+        batchId,
+        reusedTab: Boolean(reused),
         createdAt: Date.now(),
     };
     await writeFallbackJobs(jobs);
@@ -997,6 +1054,14 @@ async function openFallbackSubmissionTab(message, sender) {
         delete failedJobs[String(automatedTab.id)];
         await writeFallbackJobs(failedJobs);
         chrome.tabs.remove(automatedTab.id).catch(() => {});
+        if (batchId) {
+            const state = await readBatchQueueState();
+            if (state?.batchId === batchId && Number(state.workerTabId) === Number(automatedTab.id)) {
+                state.workerTabId = 0;
+                state.updatedAt = Date.now();
+                await writeBatchQueueState(state);
+            }
+        }
         throw new Error(
             `تعذر فتح صفحة Sooqify: ${error.message}`,
         );
@@ -1015,6 +1080,7 @@ async function openFallbackSubmissionTab(message, sender) {
                     tab_id: automatedTab.id,
                     mode,
                     active,
+                    reused_tab: Boolean(reused),
                 },
                 page: sender.tab?.url || '',
             },
@@ -1026,6 +1092,7 @@ async function openFallbackSubmissionTab(message, sender) {
         pending: true,
         tabId: automatedTab.id,
         mode,
+        reusedTab: Boolean(reused),
     };
 }
 
@@ -1049,10 +1116,14 @@ async function completeFallbackSubmission(message, sender) {
         mode: normalizeText(job.mode) || 'fallback_tab',
     };
 
-    if (job.batchId) await recordBatchSubmissionResult(result, job);
-    else await deliverSingleSubmissionResult(result, job);
-
-    setTimeout(() => chrome.tabs.remove(retryTabId).catch(() => {}), 250);
+    if (job.batchId) {
+        await recordBatchSubmissionResult(result, job);
+        // Arabic: اترك تبويب العامل مفتوحاً ليستخدمه المنتج التالي في الدفعة.
+        // English: Keep the worker tab open so the next batch product can reuse it.
+    } else {
+        await deliverSingleSubmissionResult(result, job);
+        setTimeout(() => chrome.tabs.remove(retryTabId).catch(() => {}), 250);
+    }
     return { success: true, result };
 }
 
@@ -1065,8 +1136,17 @@ async function handleAutomatedTabFailure(tabId, job, error) {
         error,
         mode: normalizeText(job.mode) || 'background_tab',
     };
-    if (job.batchId) await recordBatchSubmissionResult(result, job);
-    else await deliverSingleSubmissionResult(result, job);
+    if (job.batchId) {
+        const state = await readBatchQueueState();
+        if (state?.batchId === job.batchId && Number(state.workerTabId) === Number(tabId)) {
+            state.workerTabId = 0;
+            state.updatedAt = Date.now();
+            await writeBatchQueueState(state);
+        }
+        await recordBatchSubmissionResult(result, job);
+    } else {
+        await deliverSingleSubmissionResult(result, job);
+    }
     chrome.tabs.remove(tabId).catch(() => {});
 }
 

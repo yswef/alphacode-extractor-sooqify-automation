@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "AlphaCode Product Extractor",
-  "version": "4.3.0",
-  "description": "AlphaCode batch product queue with bilingual AI copy, six-image Sooqify uploads, official-site research, notifications, and sequential low-resource submission.",
+  "version": "4.4.0",
+  "description": "AlphaCode v4.4 with persistent virtual-list batch selection, per-product image choice, JSON copy templates, notifications, and reusable sequential Sooqify submission.",
   "permissions": [
     "activeTab",
     "scripting",

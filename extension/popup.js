@@ -48,6 +48,8 @@ const BOOLEAN_FIELDS = new Set([
     'BatchContinueOnFailure',
     'BatchNotifyEachProduct',
     'BatchDownloadSelectedImagesOnly',
+    'BatchReuseStoreTab',
+    'BatchSelectionPersistence',
 ]);
 
 const CONFIG_FIELDS = Object.keys(DEFAULTS);

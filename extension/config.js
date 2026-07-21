@@ -90,6 +90,8 @@
         BatchNotifyEachProduct: true,
         BatchMaxRetries: 1,
         BatchDownloadSelectedImagesOnly: true,
+        BatchReuseStoreTab: true,
+        BatchSelectionPersistence: true,
         AdminPanelPosition: 'middle-left',
     };
 

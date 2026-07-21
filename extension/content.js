@@ -20,14 +20,19 @@ const DEFAULT_CONFIG = globalThis.ALPHACODE_DEFAULT_CONFIG || {
     AvailableTimeStarts: '00:00:00', AvailableTimeEnds: '23:59:59', MaximumCartQuantity: '',
     StoreId: 3, ModuleId: 2, Status: 'active', Veg: 'no', Recommended: 'yes',
     BrandName: 'Air Jordan', BrandId: 6, BrandMapJson: '{"Air Jordan":6}',
-    SizeAttributeId: 1, SizeactualChoiceNo: 1, SizeTitle: 'Size', DefaultLanguage: 'en',
+    SizeAttributeId: 1, SizeChoiceNo: 1, SizeactualChoiceNo: 1, SizeTitle: 'الحجم', DefaultLanguage: 'en',
     SooqifyAddUrl: 'https://admin.sooqifyonline.com/admin/item/add-new',
     StoreProfileName: 'Sooqify Online', StoreDomain: 'admin.sooqifyonline.com',
     SupplierStoreName: 'BRANDKINGDOM', SupplierStoreId: '',
     ImageMaxDimension: 1200, ImageQuality: 60, ImageFormat: 'jpeg',
-    OptimizeImageAtSource: true, RequireAllImages: true, MaxImages: 30,
-    AIAutoGenerate: true, AIModel: 'openai/gpt-oss-20b',
-    AutoAddProduct: false, AutoSubmitDelaySeconds: 3, AdminPanelPosition: 'middle-left'
+    OptimizeImageAtSource: true, RequireAllImages: true, MaxImages: 30, StoreImageLimit: 6,
+    AIAutoGenerate: true, AIProvider: 'groq', AIModel: 'openai/gpt-oss-120b',
+    AIBaseUrl: '', AIKeyEnv: 'GROQ_API_KEY', AIJsonRepairEnabled: true,
+    ArabicCopyStyle: 'sales-natural', OfficialResearchOnRegenerate: true,
+    AutoAddProduct: false, AutoSubmitDelaySeconds: 0, FastAutofillMode: true,
+    BatchModeEnabled: true, BatchPreparationConcurrency: 1, BatchMaximumProducts: 25,
+    BatchContinueOnFailure: true, BatchNotifyEachProduct: true, BatchMaxRetries: 1,
+    BatchDownloadSelectedImagesOnly: true, AdminPanelPosition: 'middle-left'
 };
 
 let extractorConfig = { ...DEFAULT_CONFIG };
@@ -35,6 +40,10 @@ let lastAddedSearchCodeGlobal = null;
 let observerTimer = null;
 let activeAutomaticResultOverlay = null;
 const automaticSubmissionContexts = new Map();
+const selectedBatchProducts = new Map();
+let activeBatchReviewOverlay = null;
+let latestBatchQueueState = null;
+let batchAiCooldownUntil = 0;
 
 // Arabic: انتظار خفيف واختبار شرط لواجهات التحميل الديناميكي.
 // English: Lightweight delay and condition polling for dynamic interfaces.
@@ -396,32 +405,88 @@ function extractSizes(sourceText) {
 function parseBrandMap() {
     try {
         const parsed = JSON.parse(extractorConfig.BrandMapJson || '{}');
-        return parsed && typeof parsed === 'object' ? parsed : {};
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+
+        const cleaned = {};
+        for (const [rawName, rawId] of Object.entries(parsed)) {
+            const name = canonicalBrandAlias(rawName);
+            const id = Number(rawId || 0);
+            if (name && Number.isFinite(id) && id > 0) cleaned[name] = id;
+        }
+        return cleaned;
     } catch (_) {
         return {};
     }
 }
 
-// Arabic: توحيد اسم البراند ومنع كتابة Jordan منفردة.
-// English: Canonicalize brand names and prevent standalone Jordan branding.
-function canonicalBrandName(value) {
-    const text = normalizeText(value);
-    if (/\b(?:air\s+jordan|jordan\s*\d+|aj\s*\d+)\b/i.test(text)) return 'Air Jordan';
+// Arabic: توحيد الاسم فقط دون استخدام نص المنتج الكامل كبراند.
+// English: Canonicalize a brand token without treating full product text as a brand.
+function canonicalBrandAlias(value) {
+    const text = normalizeText(value).slice(0, 120);
+    if (/\b(?:air\s+jordan|jordan\s+brand|jordan\s*\d+|aj\s*\d+)\b/i.test(text) || text.toLowerCase() === 'jordan') return 'Air Jordan';
     if (/\bnike\b/i.test(text)) return 'Nike';
     if (/\badidas\b/i.test(text)) return 'Adidas';
-    return text || normalizeText(extractorConfig.BrandName) || 'Air Jordan';
+    if (/\bnew\s+balance\b/i.test(text)) return 'New Balance';
+    if (/\bpuma\b/i.test(text)) return 'Puma';
+    if (/\bconverse\b/i.test(text)) return 'Converse';
+    if (/\bvans\b/i.test(text)) return 'Vans';
+    if (/\basics\b/i.test(text)) return 'ASICS';
+    if (/\breebok\b/i.test(text)) return 'Reebok';
+    if (/\bunder\s+armour\b/i.test(text)) return 'Under Armour';
+    return text.length <= 60 ? text : '';
 }
 
-// Arabic: تحديد ID البراند من الخريطة ثم الرجوع للقيمة الافتراضية.
-// English: Resolve Brand ID from the map, then fall back to the configured ID.
+// Arabic: إرجاع أسماء البراندات الموجودة فعلياً في خريطة المتجر.
+// English: Return only brands that actually exist in the configured store map.
+function getAllowedBrandNames() {
+    const map = parseBrandMap();
+    const names = Object.keys(map);
+    const configured = canonicalBrandAlias(extractorConfig.BrandName);
+
+    if (configured && !names.some(name => name.toLowerCase() === configured.toLowerCase())) {
+        names.push(configured);
+    }
+
+    return names.length ? names : ['Air Jordan'];
+}
+
+// Arabic: رفض أي براند غير موجود في خريطة المتجر والعودة للبراند الافتراضي.
+// English: Reject any brand absent from the store map and fall back to the configured brand.
+function canonicalBrandName(value) {
+    const allowed = getAllowedBrandNames();
+    const candidate = canonicalBrandAlias(value);
+
+    for (const brand of allowed) {
+        if (candidate && canonicalBrandAlias(brand).toLowerCase() === candidate.toLowerCase()) {
+            return brand;
+        }
+    }
+
+    const evidence = normalizeText(value);
+    for (const brand of allowed) {
+        const canonical = canonicalBrandAlias(brand);
+        const pattern = canonical === 'Air Jordan'
+            ? /\b(?:air\s+jordan|jordan\s*\d+|aj\s*\d+)\b/i
+            : new RegExp(`\\b${canonical.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}\\b`, 'i');
+        if (pattern.test(evidence)) return brand;
+    }
+
+    const configured = canonicalBrandAlias(extractorConfig.BrandName);
+    return allowed.find(brand => canonicalBrandAlias(brand).toLowerCase() === configured.toLowerCase())
+        || allowed[0];
+}
+
+// Arabic: تحديد ID البراند من الخريطة فقط، لمنع إرسال ID لبراند غير موجود.
+// English: Resolve the brand ID strictly from the configured map.
 function resolveBrandId(brandName) {
     const map = parseBrandMap();
     const wanted = canonicalBrandName(brandName).toLowerCase();
     for (const [name, id] of Object.entries(map)) {
-        if (canonicalBrandName(name).toLowerCase() === wanted && Number(id) > 0) return Number(id);
+        if (canonicalBrandAlias(name).toLowerCase() === wanted && Number(id) > 0) return Number(id);
     }
     return Number(extractorConfig.BrandId || 0);
 }
+
 
 // Arabic: استخراج معرف متجر SZWEGO من الإعدادات أو رابط الصفحة.
 // English: Resolve the SZWEGO supplier-store ID from settings or the current URL.
@@ -700,10 +765,14 @@ function injectExtractionButtons() {
     });
 
     document.querySelectorAll(PRODUCT_CARD_SELECTOR).forEach(card => {
-        if (card.querySelector('.alphacode-extract-btn')) return;
         let actionContainer = card.querySelector(
             '[class*="handle_bar"], [class*="footer"], [class*="bottom"], [class*="action"], [class*="operation"]'
         );
+        const existingButton = card.querySelector('.alphacode-extract-btn');
+        if (existingButton && actionContainer) {
+            ensureBatchSelectionControl(actionContainer, card, existingButton);
+            return;
+        }
         if (!actionContainer) {
             actionContainer = document.createElement('div');
             actionContainer.className = 'alphacode-generated-action-bar';
@@ -711,12 +780,20 @@ function injectExtractionButtons() {
         }
         createAndInjectButton(actionContainer, card);
     });
+
+    ensureBatchToolbar();
 }
 
 // Arabic: دالة createAndInjectButton جزء من تدفق الاستخراج ويمكن تخصيصها عند نقل الأداة.
 // English: createAndInjectButton is part of the extraction flow and can be adapted for another store.
 function createAndInjectButton(container, parentCard) {
-    if (!container || !parentCard || parentCard.querySelector('.alphacode-extract-btn')) return;
+    if (!container || !parentCard) return;
+
+    const existingButton = parentCard.querySelector('.alphacode-extract-btn');
+    if (existingButton) {
+        ensureBatchSelectionControl(container, parentCard, existingButton);
+        return;
+    }
 
     const sourceText = extractSourceDescription(parentCard);
     const searchCode = extractSearchCode(parentCard);
@@ -743,6 +820,8 @@ function createAndInjectButton(container, parentCard) {
     });
 
     container.insertBefore(button, container.firstChild);
+    ensureBatchSelectionControl(container, parentCard, button);
+    ensureBatchToolbar();
 }
 
 // Arabic: دالة createModalShell جزء من تدفق الاستخراج ويمكن تخصيصها عند نقل الأداة.
@@ -881,8 +960,8 @@ function initializeStoreImageSelector(modalBox, images, configuredLimit) {
     // English: Automatically select images 1, 2, 3, 4, 6, and 10.
     const preferredImageOrder = [
         0, // الصورة الأولى / First image
-        5, // الصورة الثانية / Second image
-        6, // الصورة الثالثة / Third image
+        1, // الصورة الثانية / Second image
+        2, // الصورة الثالثة / Third image
         3, // الصورة الرابعة / Fourth image
         5, // الصورة السادسة / Sixth image
         9, // الصورة العاشرة / Tenth image
@@ -1148,7 +1227,8 @@ function renderNewProductForm(context) {
     let successfulAiGenerations = 0;
 
     const runAiGeneration = async () => {
-        const officialResearch = successfulAiGenerations > 0;
+        const officialResearch = successfulAiGenerations > 0
+            && extractorConfig.OfficialResearchOnRegenerate !== false;
         const generated = await generateProductCopy({
             modalBox,
             sourceText,
@@ -1260,7 +1340,13 @@ async function generateProductCopy(context) {
                     BrandName: String(
                         fields.brandName.value || '',
                     ).slice(0, 100),
+                    AIProvider: extractorConfig.AIProvider || 'groq',
                     AIModel: extractorConfig.AIModel,
+                    AIBaseUrl: extractorConfig.AIBaseUrl || '',
+                    AIKeyEnv: extractorConfig.AIKeyEnv || 'GROQ_API_KEY',
+                    AIJsonRepairEnabled: extractorConfig.AIJsonRepairEnabled !== false,
+                    ArabicCopyStyle: extractorConfig.ArabicCopyStyle || 'sales-natural',
+                    AllowedBrands: getAllowedBrandNames(),
                     ResearchOfficial:
                         Boolean(officialResearch),
                     RegenerateNonce:
@@ -1882,12 +1968,681 @@ async function scrollToLastProduct(targetSearchCode, options = {}) {
 
 
 
+
+// =========================================================
+// AlphaCode Batch Product Queue
+// Arabic: تحديد عدة منتجات، مراجعتها، تجهيزها بخط أنابيب، ثم إرسالها بالتتابع.
+// English: Select, review, pipeline-prepare, and sequentially submit multiple products.
+// =========================================================
+
+function getBatchCardKey(card) {
+    if (!card.dataset.alphacodeBatchKey) {
+        const sourceText = extractSourceDescription(card);
+        const searchCode = extractSearchCode(card);
+        const styleCode = extractStyleCode(sourceText);
+        card.dataset.alphacodeBatchKey = searchCode || styleCode || `card_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    }
+    return card.dataset.alphacodeBatchKey;
+}
+
+function ensureBatchSelectionControl(container, card, button) {
+    if (!extractorConfig.BatchModeEnabled || card.querySelector('.alphacode-batch-select')) return;
+
+    const key = getBatchCardKey(card);
+    const label = document.createElement('label');
+    label.className = 'alphacode-batch-select';
+    label.innerHTML = '<input class="alphacode-batch-checkbox" type="checkbox"> <span>تحديد للدفعة</span>';
+
+    const checkbox = label.querySelector('input');
+    checkbox.checked = selectedBatchProducts.has(key);
+    checkbox.addEventListener('click', event => event.stopPropagation());
+    checkbox.addEventListener('change', event => {
+        event.stopPropagation();
+        const maximum = Math.max(2, Number(extractorConfig.BatchMaximumProducts || 25));
+
+        if (checkbox.checked && selectedBatchProducts.size >= maximum) {
+            checkbox.checked = false;
+            alert(`الحد الأقصى للدفعة هو ${maximum} منتجاً.`);
+            return;
+        }
+
+        if (checkbox.checked) {
+            selectedBatchProducts.set(key, { key, card, button, checkbox });
+            card.classList.add('alphacode-batch-selected-card');
+        } else {
+            selectedBatchProducts.delete(key);
+            card.classList.remove('alphacode-batch-selected-card');
+        }
+        updateBatchToolbar();
+    });
+
+    container.insertBefore(label, button.nextSibling);
+}
+
+function ensureBatchToolbar() {
+    let toolbar = document.getElementById('alphacode-batch-toolbar');
+
+    if (!extractorConfig.BatchModeEnabled) {
+        toolbar?.remove();
+        return null;
+    }
+
+    if (!toolbar) {
+        toolbar = document.createElement('div');
+        toolbar.id = 'alphacode-batch-toolbar';
+        toolbar.innerHTML = `
+            <div class="alphacode-batch-toolbar-main">
+                <strong>دفعة AlphaCode</strong>
+                <span id="alphacodeBatchSelectedCount">0 منتج</span>
+            </div>
+            <div class="alphacode-batch-toolbar-actions">
+                <button id="alphacodeSelectVisibleBatch" type="button">تحديد الظاهر</button>
+                <button id="alphacodeReviewBatch" class="primary" type="button">مراجعة وإضافة</button>
+                <button id="alphacodeClearBatch" type="button">مسح</button>
+            </div>`;
+        document.body.appendChild(toolbar);
+
+        toolbar.querySelector('#alphacodeSelectVisibleBatch').onclick = () => {
+            const maximum = Math.max(2, Number(extractorConfig.BatchMaximumProducts || 25));
+            for (const checkbox of document.querySelectorAll('.alphacode-batch-checkbox')) {
+                if (selectedBatchProducts.size >= maximum) break;
+                if (!checkbox.checked && checkbox.offsetParent) {
+                    checkbox.checked = true;
+                    checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            }
+        };
+
+        toolbar.querySelector('#alphacodeClearBatch').onclick = () => {
+            for (const item of selectedBatchProducts.values()) {
+                item.checkbox.checked = false;
+                item.card.classList.remove('alphacode-batch-selected-card');
+            }
+            selectedBatchProducts.clear();
+            updateBatchToolbar();
+        };
+
+        toolbar.querySelector('#alphacodeReviewBatch').onclick = () => openBatchReviewModal();
+    }
+
+    updateBatchToolbar();
+    return toolbar;
+}
+
+function updateBatchToolbar() {
+    const toolbar = document.getElementById('alphacode-batch-toolbar');
+    if (!toolbar) return;
+    const count = selectedBatchProducts.size;
+    toolbar.querySelector('#alphacodeBatchSelectedCount').textContent = `${count} منتج`;
+    toolbar.querySelector('#alphacodeReviewBatch').disabled = count === 0;
+    toolbar.classList.toggle('has-selection', count > 0);
+}
+
+async function mapWithConcurrency(items, concurrency, worker) {
+    const results = new Array(items.length);
+    let cursor = 0;
+    const count = Math.max(1, Math.min(Number(concurrency || 1), 3, items.length || 1));
+
+    async function runWorker() {
+        while (cursor < items.length) {
+            const index = cursor;
+            cursor += 1;
+            try {
+                results[index] = await worker(items[index], index);
+            } catch (error) {
+                results[index] = { error };
+            }
+        }
+    }
+
+    await Promise.all(Array.from({ length: count }, runWorker));
+    return results;
+}
+
+function defaultBatchImageSelection(images) {
+    const limit = Math.max(1, Math.min(Number(extractorConfig.StoreImageLimit || 6), 6));
+    const preferred = [0, 1, 2, 3, 5, 9]
+        .filter(index => index >= 0 && index < images.length);
+    for (let index = 0; index < images.length && preferred.length < limit; index += 1) {
+        if (!preferred.includes(index)) preferred.push(index);
+    }
+    const selected = preferred.slice(0, limit);
+    const mainIndex = selected.includes(9) ? 9 : (selected[0] ?? 0);
+    return {
+        selectedIndexes: [mainIndex, ...selected.filter(index => index !== mainIndex)].slice(0, limit),
+        mainIndex,
+        limit,
+    };
+}
+
+async function requestBatchAiCopy(draft, officialResearch = false) {
+    const response = await fetch(`${API_BASE_URL}/api/ai/generate`, {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+        body: JSON.stringify({
+            SourceText: compactAiSourceText(draft.sourceText, officialResearch ? 1400 : 3000),
+            OriginalProductName: compactAiSourceText(draft.originalProductName, 320),
+            SearchCode: String(draft.searchCode || 'NONE').slice(0, 80),
+            StyleCode: String(draft.styleCode || '').slice(0, 80),
+            Sizes: draft.sizes.slice(0, 40),
+            BrandName: draft.brandName,
+            AllowedBrands: getAllowedBrandNames(),
+            AIProvider: extractorConfig.AIProvider || 'groq',
+            AIModel: extractorConfig.AIModel,
+            AIBaseUrl: extractorConfig.AIBaseUrl || '',
+            AIKeyEnv: extractorConfig.AIKeyEnv || 'GROQ_API_KEY',
+            AIJsonRepairEnabled: extractorConfig.AIJsonRepairEnabled !== false,
+            ArabicCopyStyle: extractorConfig.ArabicCopyStyle || 'sales-natural',
+            ResearchOfficial: Boolean(officialResearch),
+            UseCache: false,
+            RegenerateNonce: `${Date.now()}_${Math.random()}`,
+        }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.success) {
+        const retry = Number(data.retry_after_seconds || 0);
+        const error = new Error(
+            retry > 0
+                ? `تم بلوغ حد الذكاء الاصطناعي. أعد المحاولة بعد ${retry} ثانية.`
+                : (data.error || `AI request failed (${response.status})`),
+        );
+        error.retryAfterSeconds = retry;
+        if (retry > 0) {
+            batchAiCooldownUntil = Date.now() + (retry * 1000);
+        }
+        throw error;
+    }
+
+    return data;
+}
+
+async function buildBatchDraft(entry, index, total, updateProgress) {
+    const card = entry.card;
+    const sourceText = extractSourceDescription(card);
+    const originalProductName = extractOriginalProductName(card);
+    const searchCode = extractSearchCode(card);
+    const styleCode = extractStyleCode(sourceText);
+    const originalPrice = extractOriginalPrice(sourceText);
+    const sizes = extractSizes(sourceText);
+
+    updateProgress?.(`قراءة المنتج ${index + 1} من ${total}...`);
+    const [archiveData, images] = await Promise.all([
+        checkArchive(searchCode, styleCode),
+        extractAllImages(card, searchCode, styleCode),
+    ]);
+
+    const draft = {
+        key: entry.key,
+        card,
+        button: entry.button,
+        include: archiveData.workflow_status !== 'submitted',
+        archiveData,
+        sourceText,
+        originalProductName,
+        searchCode,
+        styleCode,
+        originalPrice,
+        sizes,
+        images,
+        nameEN: buildFallbackEnglishName(sourceText, styleCode),
+        descriptionEN: buildFallbackEnglishDescription(sourceText, styleCode),
+        nameAR: buildFallbackArabicName(sourceText, styleCode),
+        descriptionAR: buildFallbackArabicDescription(sourceText, styleCode),
+        brandName: canonicalBrandName(sourceText),
+        brandId: 0,
+        aiStatus: archiveData.exists ? 'archived' : 'fallback',
+    };
+    draft.brandId = resolveBrandId(draft.brandName);
+
+    if (archiveData.exists && Number(archiveData.id)) {
+        try {
+            const archivedResponse = await fetch(
+                `${API_BASE_URL}/api/archive/product/${Number(archiveData.id)}`,
+                { cache: 'no-store' },
+            );
+            const archivedData = await archivedResponse.json();
+            if (archivedResponse.ok && archivedData.success && archivedData.product) {
+                const archived = archivedData.product;
+                draft.nameEN = archived.name_en || archived.name || draft.nameEN;
+                draft.descriptionEN = archived.description_en || archived.description || draft.descriptionEN;
+                draft.nameAR = archived.name_ar || draft.nameAR;
+                draft.descriptionAR = archived.description_ar || draft.descriptionAR;
+                draft.brandName = canonicalBrandName(archived.brand_name || draft.brandName);
+                draft.brandId = resolveBrandId(draft.brandName);
+                draft.sizes = uniqueSizes(archived.sizes || draft.sizes);
+                draft.originalPrice = Number(archived.original_price || draft.originalPrice || 0);
+            }
+        } catch (_) {}
+    }
+
+    if (
+        !archiveData.exists
+        && extractorConfig.AIAutoGenerate
+        && Date.now() >= batchAiCooldownUntil
+    ) {
+        updateProgress?.(`إنشاء محتوى المنتج ${index + 1} من ${total}...`);
+        try {
+            const generated = await requestBatchAiCopy(draft, false);
+            draft.nameEN = generated.name_en;
+            draft.descriptionEN = generated.description_en;
+            draft.nameAR = generated.name_ar;
+            draft.descriptionAR = generated.description_ar;
+            draft.brandName = canonicalBrandName(generated.brand_name);
+            draft.brandId = resolveBrandId(draft.brandName);
+            draft.aiStatus = 'generated';
+        } catch (error) {
+            draft.aiStatus = 'fallback';
+            draft.aiError = error.message;
+        }
+    } else if (!archiveData.exists && Date.now() < batchAiCooldownUntil) {
+        const seconds = Math.max(1, Math.ceil((batchAiCooldownUntil - Date.now()) / 1000));
+        draft.aiError = `تم إيقاف طلبات الذكاء الاصطناعي لبقية الدفعة مؤقتاً بسبب Rate Limit لمدة ${seconds} ثانية.`;
+    }
+
+    return draft;
+}
+
+function renderBatchReviewSlides(modalBox, drafts) {
+    const content = modalBox.querySelector('#modal-content-area');
+    const brandOptions = getAllowedBrandNames()
+        .map(brand => `<option value="${escapeHtml(brand)}">${escapeHtml(brand)}</option>`)
+        .join('');
+
+    content.className = '';
+    content.innerHTML = `
+        <div class="alphacode-batch-review-header">
+            <strong>مراجعة دفعة من ${drafts.length} منتجات</strong>
+            <span id="alphacodeBatchSlideCounter"></span>
+        </div>
+        <div class="alphacode-batch-slide-list">
+            ${drafts.map((draft, index) => `
+                <section class="alphacode-batch-slide" data-index="${index}">
+                    <div class="alphacode-batch-slide-top">
+                        <label><input class="batch-include" type="checkbox" ${draft.include ? 'checked' : ''} ${draft.archiveData.workflow_status === 'submitted' ? 'disabled' : ''}> ${draft.archiveData.workflow_status === 'submitted' ? 'مضاف سابقاً للمتجر' : 'إضافة هذا المنتج'}</label>
+                        <span class="batch-draft-status ${draft.aiStatus}">${draft.archiveData.exists ? `مؤرشف ID ${draft.archiveData.id}` : (draft.aiStatus === 'generated' ? 'تم إنشاء المحتوى' : 'صياغة محلية احتياطية')}</span>
+                    </div>
+                    <div class="alphacode-batch-preview-images">
+                        ${draft.images.slice(0, 6).map(url => `<img src="${escapeHtml(url)}" loading="lazy">`).join('')}
+                    </div>
+                    <div class="alphacode-language-grid">
+                        <div>
+                            <div class="alphacode-field alphacode-ltr-field"><label>الاسم الإنجليزي</label><input class="batch-name-en" dir="ltr" value="${escapeHtml(draft.nameEN)}"></div>
+                            <div class="alphacode-field alphacode-ltr-field"><label>الوصف الإنجليزي</label><textarea class="batch-desc-en" dir="ltr">${escapeHtml(draft.descriptionEN)}</textarea></div>
+                        </div>
+                        <div>
+                            <div class="alphacode-field"><label>الاسم العربي</label><input class="batch-name-ar" dir="rtl" value="${escapeHtml(draft.nameAR)}"></div>
+                            <div class="alphacode-field"><label>الوصف العربي</label><textarea class="batch-desc-ar" dir="rtl">${escapeHtml(draft.descriptionAR)}</textarea></div>
+                        </div>
+                    </div>
+                    <div class="alphacode-inline-grid">
+                        <div class="alphacode-field"><label>البراند المتاح في المتجر</label><select class="batch-brand">${brandOptions}</select></div>
+                        <div class="alphacode-field"><label>السعر باليوان</label><input class="batch-price" type="number" value="${Number(draft.originalPrice || 0)}"></div>
+                        <div class="alphacode-field alphacode-wide-field"><label>المقاسات</label><input class="batch-sizes" dir="ltr" value="${escapeHtml(draft.sizes.join(', '))}"></div>
+                    </div>
+                    <div class="alphacode-readonly-group">
+                        <div class="alphacode-readonly-item"><span>Style Code</span><strong>${escapeHtml(draft.styleCode)}</strong></div>
+                        <div class="alphacode-readonly-item"><span>Search Code</span><strong>${escapeHtml(draft.searchCode || '-')}</strong></div>
+                        <div class="alphacode-readonly-item"><span>الصور المكتشفة</span><strong>${draft.images.length}</strong></div>
+                    </div>
+                    <button class="alphacode-ai-btn batch-official-regenerate" type="button" ${draft.archiveData.exists ? 'disabled' : ''}>🔎 بحث رسمي وإعادة صياغة هذا المنتج</button>
+                    <span class="alphacode-ai-status batch-ai-status">${escapeHtml(draft.aiError || '')}</span>
+                </section>`).join('')}
+        </div>
+        <div class="alphacode-batch-navigation">
+            <button id="alphacodeBatchPrev" type="button">السابق</button>
+            <div class="alphacode-batch-dots">${drafts.map((_, index) => `<button type="button" data-slide="${index}"></button>`).join('')}</div>
+            <button id="alphacodeBatchNext" type="button">التالي</button>
+        </div>
+        <div class="alphacode-actions">
+            <button class="alphacode-btn-submit" id="alphacodeStartBatch" type="button">بدء التجهيز والإضافة المتتابعة</button>
+            <button class="alphacode-btn-cancel" id="alphacodeCancelBatchReview" type="button">إلغاء</button>
+        </div>`;
+
+    drafts.forEach((draft, index) => {
+        const slide = content.querySelector(`.alphacode-batch-slide[data-index="${index}"]`);
+        slide.querySelector('.batch-brand').value = draft.brandName;
+        slide.querySelector('.batch-brand').addEventListener('change', event => {
+            draft.brandName = canonicalBrandName(event.target.value);
+            draft.brandId = resolveBrandId(draft.brandName);
+        });
+        slide.querySelector('.batch-official-regenerate').onclick = async event => {
+            const status = slide.querySelector('.batch-ai-status');
+            event.currentTarget.disabled = true;
+            status.textContent = 'جارٍ البحث في الموقع الرسمي فقط...';
+            try {
+                const generated = await requestBatchAiCopy(draft, true);
+                slide.querySelector('.batch-name-en').value = generated.name_en;
+                slide.querySelector('.batch-desc-en').value = generated.description_en;
+                slide.querySelector('.batch-name-ar').value = generated.name_ar;
+                slide.querySelector('.batch-desc-ar').value = generated.description_ar;
+                draft.brandName = canonicalBrandName(generated.brand_name);
+                draft.brandId = resolveBrandId(draft.brandName);
+                slide.querySelector('.batch-brand').value = draft.brandName;
+                status.textContent = `تم البحث في ${generated.official_domain || 'الموقع الرسمي'}.`;
+            } catch (error) {
+                status.textContent = error.message;
+            } finally {
+                event.currentTarget.disabled = false;
+            }
+        };
+    });
+
+    let currentIndex = 0;
+    const slides = Array.from(content.querySelectorAll('.alphacode-batch-slide'));
+    const dots = Array.from(content.querySelectorAll('.alphacode-batch-dots button'));
+    const showSlide = index => {
+        currentIndex = Math.max(0, Math.min(index, slides.length - 1));
+        slides.forEach((slide, slideIndex) => slide.classList.toggle('active', slideIndex === currentIndex));
+        dots.forEach((dot, dotIndex) => dot.classList.toggle('active', dotIndex === currentIndex));
+        content.querySelector('#alphacodeBatchSlideCounter').textContent = `${currentIndex + 1} / ${slides.length}`;
+        content.querySelector('#alphacodeBatchPrev').disabled = currentIndex === 0;
+        content.querySelector('#alphacodeBatchNext').disabled = currentIndex === slides.length - 1;
+    };
+    content.querySelector('#alphacodeBatchPrev').onclick = () => showSlide(currentIndex - 1);
+    content.querySelector('#alphacodeBatchNext').onclick = () => showSlide(currentIndex + 1);
+    dots.forEach(dot => { dot.onclick = () => showSlide(Number(dot.dataset.slide)); });
+    showSlide(0);
+
+    content.querySelector('#alphacodeCancelBatchReview').onclick = () => activeBatchReviewOverlay?.remove();
+    content.querySelector('#alphacodeStartBatch').onclick = async event => {
+        const includedDrafts = [];
+        drafts.forEach((draft, index) => {
+            const slide = slides[index];
+            draft.include = slide.querySelector('.batch-include').checked;
+            draft.nameEN = slide.querySelector('.batch-name-en').value.trim();
+            draft.descriptionEN = slide.querySelector('.batch-desc-en').value.trim();
+            draft.nameAR = slide.querySelector('.batch-name-ar').value.trim();
+            draft.descriptionAR = slide.querySelector('.batch-desc-ar').value.trim();
+            draft.brandName = canonicalBrandName(slide.querySelector('.batch-brand').value);
+            draft.brandId = resolveBrandId(draft.brandName);
+            draft.originalPrice = Number(slide.querySelector('.batch-price').value || 0);
+            draft.sizes = uniqueSizes(slide.querySelector('.batch-sizes').value.split(/[,،\s]+/).filter(Boolean));
+            if (draft.include) includedDrafts.push(draft);
+        });
+
+        if (!includedDrafts.length) {
+            alert('لم يتم اختيار أي منتج داخل شاشة المراجعة.');
+            return;
+        }
+
+        event.currentTarget.disabled = true;
+        event.currentTarget.textContent = 'جارٍ بدء طابور الدفعة...';
+        activeBatchReviewOverlay?.remove();
+        try {
+            await startBatchPipeline(includedDrafts);
+        } catch (error) {
+            alert(`تعذر بدء الدفعة: ${error.message}`);
+            await logExtractorEvent('ERROR', 'batch_start_failed', error.message, { stack: error.stack || '' });
+        }
+    };
+}
+
+async function openBatchReviewModal() {
+    const entries = Array.from(selectedBatchProducts.values()).filter(entry => entry.card?.isConnected);
+    if (entries.length < 2) {
+        alert('حدد منتجين أو أكثر أولاً.');
+        return;
+    }
+
+    const { overlay, modalBox } = createModalShell();
+    activeBatchReviewOverlay = overlay;
+    modalBox.classList.add('alphacode-batch-modal-box');
+    modalBox.querySelector('.alphacode-modal-title span').textContent = `مراجعة دفعة AlphaCode — ${entries.length} منتجات`;
+    modalBox.querySelector('.alphacode-close-btn').onclick = () => overlay.remove();
+    const content = modalBox.querySelector('#modal-content-area');
+    const concurrency = Math.max(1, Math.min(Number(extractorConfig.BatchPreparationConcurrency || 1), 3));
+    let completed = 0;
+    const updateProgress = message => {
+        if (!content?.isConnected) return;
+        content.innerHTML = `<span class="alphacode-spinner"></span><div>${escapeHtml(message)}</div><small>تم تجهيز المسودة ${completed} من ${entries.length}</small>`;
+    };
+    updateProgress('جارٍ قراءة المنتجات وإنشاء مسودات المراجعة...');
+
+    const results = await mapWithConcurrency(entries, concurrency, async (entry, index) => {
+        const draft = await buildBatchDraft(entry, index, entries.length, updateProgress);
+        completed += 1;
+        updateProgress(`اكتملت مسودة المنتج ${index + 1}.`);
+        return draft;
+    });
+
+    if (!overlay.isConnected) return;
+    const drafts = results.filter(result => result && !result.error);
+    const failures = results.filter(result => result?.error);
+    if (!drafts.length) {
+        content.className = 'alphacode-error-box';
+        content.textContent = failures[0]?.error?.message || 'تعذر تجهيز منتجات الدفعة.';
+        return;
+    }
+
+    renderBatchReviewSlides(modalBox, drafts);
+}
+
+async function prepareBatchDraftForStore(draft, batchId, batchIndex, batchTotal) {
+    let pendingProduct = null;
+    let productId = Number(draft.archiveData?.id || 0);
+
+    if (draft.archiveData?.exists && productId) {
+        const pendingResponse = await fetch(`${API_BASE_URL}/api/pending/${productId}`, { cache: 'no-store' });
+        const pendingData = await pendingResponse.json();
+        if (!pendingResponse.ok || !pendingData.success) throw new Error(pendingData.error || 'تعذر جلب المنتج المؤرشف.');
+        pendingProduct = pendingData.pending_product;
+    } else {
+        const addedFee = Number(extractorConfig.AddedFeeYuan || 0);
+        const exchangeRate = Number(extractorConfig.ExchangeRate || 0);
+        const priceAfterFee = draft.originalPrice + addedFee;
+        const priceSAR = Math.round(priceAfterFee * exchangeRate);
+        const imageSelection = defaultBatchImageSelection(draft.images);
+        const batchSettings = {
+            ...extractorConfig,
+            AutoSubmitDelaySeconds: 0,
+            FastAutofillMode: true,
+            DownloadSelectedImagesOnly: Boolean(extractorConfig.BatchDownloadSelectedImagesOnly),
+        };
+        const payload = {
+            Name: draft.nameEN,
+            Description: draft.descriptionEN,
+            NameEN: draft.nameEN,
+            DescriptionEN: draft.descriptionEN,
+            NameAR: draft.nameAR,
+            DescriptionAR: draft.descriptionAR,
+            BrandName: draft.brandName,
+            BrandId: draft.brandId,
+            Sizes: draft.sizes,
+            OriginalPrice: draft.originalPrice,
+            PriceAfterFee: priceAfterFee,
+            PriceSAR: priceSAR,
+            SearchCode: draft.searchCode || 'NONE',
+            StyleCode: draft.styleCode,
+            Images: draft.images,
+            SelectedImageIndexes: imageSelection.selectedIndexes,
+            MainImageIndex: imageSelection.mainIndex,
+            StoreImageLimit: imageSelection.limit,
+            DownloadSelectedImagesOnly: Boolean(extractorConfig.BatchDownloadSelectedImagesOnly),
+            SourceUrl: window.location.href,
+            SupplierStoreName: extractorConfig.SupplierStoreName || '',
+            SupplierStoreId: resolveSupplierStoreId(),
+            Settings: batchSettings,
+        };
+        const response = await fetch(`${API_BASE_URL}/api/extract`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const result = await response.json();
+        if (response.status === 409 && result.exists) {
+            productId = Number(result.id || 0);
+            const pendingResponse = await fetch(`${API_BASE_URL}/api/pending/${productId}`, { cache: 'no-store' });
+            const pendingData = await pendingResponse.json();
+            if (!pendingResponse.ok || !pendingData.success) throw new Error(pendingData.error || 'تعذر استعادة المنتج المكرر.');
+            pendingProduct = pendingData.pending_product;
+        } else if (!response.ok || !result.success) {
+            throw new Error(result.error || `Save request failed (${response.status})`);
+        } else {
+            productId = Number(result.id || 0);
+            pendingProduct = result.pending_product;
+        }
+    }
+
+    pendingProduct = {
+        ...pendingProduct,
+        batch_id: batchId,
+        batch_index: batchIndex,
+        batch_total: batchTotal,
+        settings: {
+            ...(pendingProduct.settings || {}),
+            AutoSubmitDelaySeconds: 0,
+            FastAutofillMode: true,
+        },
+    };
+
+    const queued = await safeRuntimeMessage({
+        action: 'ENQUEUE_BATCH_PRODUCT',
+        batchId,
+        product: pendingProduct,
+        searchCode: draft.searchCode || '',
+        styleCode: draft.styleCode || '',
+        addUrl: extractorConfig.SooqifyAddUrl,
+    });
+    if (!queued?.success) throw new Error(queued?.error || 'تعذر إضافة المنتج إلى طابور الإرسال.');
+
+    updateButtonAsAdded(draft.button, productId, 'prepared');
+    return pendingProduct;
+}
+
+async function startBatchPipeline(drafts) {
+    const batchId = `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const startResponse = await safeRuntimeMessage({
+        action: 'START_BATCH_QUEUE',
+        batchId,
+        totalPlanned: drafts.length,
+        addUrl: extractorConfig.SooqifyAddUrl,
+        continueOnFailure: extractorConfig.BatchContinueOnFailure !== false,
+        notifyEachProduct: extractorConfig.BatchNotifyEachProduct !== false,
+        maxRetries: Number(extractorConfig.BatchMaxRetries || 0),
+    });
+    if (!startResponse?.success) throw new Error(startResponse?.error || 'تعذر بدء طابور الدفعة.');
+
+    latestBatchQueueState = startResponse.state;
+    renderBatchProgressPanel(latestBatchQueueState);
+    const concurrency = Math.max(1, Math.min(Number(extractorConfig.BatchPreparationConcurrency || 1), 3));
+
+    await mapWithConcurrency(drafts, concurrency, async (draft, index) => {
+        const maximumAttempts = 1 + Math.max(0, Math.min(Number(extractorConfig.BatchMaxRetries || 0), 2));
+        let lastError = null;
+
+        for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+            try {
+                return await prepareBatchDraftForStore(draft, batchId, index + 1, drafts.length);
+            } catch (error) {
+                lastError = error;
+                await logExtractorEvent(
+                    attempt < maximumAttempts ? 'WARNING' : 'ERROR',
+                    'batch_product_preparation_attempt',
+                    error.message,
+                    {
+                        batch_id: batchId,
+                        batch_index: index + 1,
+                        attempt,
+                        maximum_attempts: maximumAttempts,
+                        style_code: draft.styleCode || '',
+                        search_code: draft.searchCode || '',
+                    },
+                );
+
+                if (attempt < maximumAttempts) {
+                    await sleep(500);
+                }
+            }
+        }
+
+        await safeRuntimeMessage({
+            action: 'REPORT_BATCH_PREPARATION_FAILURE',
+            batchId,
+            index: index + 1,
+            name: draft.nameEN || draft.originalProductName,
+            searchCode: draft.searchCode || '',
+            styleCode: draft.styleCode || '',
+            error: lastError?.message || 'تعذر تجهيز المنتج.',
+        });
+        return { error: lastError || new Error('تعذر تجهيز المنتج.') };
+    });
+
+    await safeRuntimeMessage({ action: 'FINALIZE_BATCH_QUEUE', batchId });
+    for (const item of selectedBatchProducts.values()) {
+        item.checkbox.checked = false;
+        item.card.classList.remove('alphacode-batch-selected-card');
+    }
+    selectedBatchProducts.clear();
+    updateBatchToolbar();
+}
+
+function renderBatchProgressPanel(state) {
+    if (!state?.batchId) return;
+    latestBatchQueueState = state;
+    let panel = document.getElementById('alphacode-batch-progress-panel');
+    if (!panel) {
+        panel = document.createElement('div');
+        panel.id = 'alphacode-batch-progress-panel';
+        panel.innerHTML = `
+            <div class="batch-progress-header"><strong>طابور AlphaCode</strong><button type="button" class="batch-progress-close">×</button></div>
+            <div class="batch-progress-summary"></div>
+            <div class="batch-progress-current"></div>
+            <div class="batch-progress-bar"><span></span></div>
+            <div class="batch-progress-actions">
+                <button class="batch-pause" type="button">إيقاف مؤقت</button>
+                <button class="batch-resume" type="button">استكمال</button>
+                <button class="batch-retry" type="button">إعادة الفاشل</button>
+                <button class="batch-cancel" type="button">إلغاء</button>
+            </div>`;
+        document.body.appendChild(panel);
+        panel.querySelector('.batch-progress-close').onclick = () => panel.remove();
+        panel.querySelector('.batch-pause').onclick = () => safeRuntimeMessage({ action: 'PAUSE_BATCH_QUEUE', batchId: latestBatchQueueState?.batchId });
+        panel.querySelector('.batch-resume').onclick = () => safeRuntimeMessage({ action: 'RESUME_BATCH_QUEUE', batchId: latestBatchQueueState?.batchId });
+        panel.querySelector('.batch-retry').onclick = () => safeRuntimeMessage({ action: 'RETRY_FAILED_BATCH', batchId: latestBatchQueueState?.batchId });
+        panel.querySelector('.batch-cancel').onclick = () => {
+            if (confirm('هل تريد إلغاء بقية منتجات الدفعة؟')) safeRuntimeMessage({ action: 'CANCEL_BATCH_QUEUE', batchId: latestBatchQueueState?.batchId });
+        };
+    }
+
+    const succeeded = (state.results || []).filter(item => item.success).length;
+    const retryableFailed = (state.results || []).filter(item => !item.success && item.product).length;
+    const failed = (state.results || []).filter(item => !item.success).length + (state.preparationFailures || []).length;
+    const completed = succeeded + failed;
+    const total = Number(state.totalPlanned || 0);
+    const percent = total ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+    panel.querySelector('.batch-progress-summary').textContent = `الحالة: ${state.status} | اكتمل ${completed}/${total} | نجح ${succeeded} | فشل ${failed}`;
+    panel.querySelector('.batch-progress-current').textContent = state.current
+        ? `جارٍ إضافة: ${state.current.product?.name_en || `ID ${state.current.product?.local_id || ''}`}`
+        : (state.pending?.length ? `${state.pending.length} منتجات جاهزة في الانتظار` : 'بانتظار تجهيز المنتج التالي');
+    panel.querySelector('.batch-progress-bar span').style.width = `${percent}%`;
+    panel.querySelector('.batch-pause').style.display = state.status === 'running' ? '' : 'none';
+    panel.querySelector('.batch-resume').style.display = state.status === 'paused' ? '' : 'none';
+    panel.querySelector('.batch-retry').style.display = state.status === 'completed' && retryableFailed > 0 ? '' : 'none';
+    panel.querySelector('.batch-cancel').disabled = ['completed', 'cancelled'].includes(state.status);
+    panel.classList.toggle('completed', state.status === 'completed');
+    panel.classList.toggle('failed', state.status === 'cancelled');
+}
+
+async function restoreBatchQueueState() {
+    const response = await safeRuntimeMessage({ action: 'GET_BATCH_QUEUE_STATE' });
+    if (response?.success && response.state?.batchId && !['completed', 'cancelled'].includes(response.state.status)) {
+        renderBatchProgressPanel(response.state);
+    }
+}
+
 // Arabic: استقبال نتيجة تبويب إعادة المحاولة بعد أن يغلقه Service Worker.
 // English: Receive the temporary retry-tab result after the service worker closes it.
 function installSubmissionResultListener() {
     if (!isExtensionContextAvailable()) return;
 
     chrome.runtime.onMessage.addListener(message => {
+        if (message?.action === 'ALPHACODE_BATCH_UPDATE') {
+            renderBatchProgressPanel(message.state || {});
+            return false;
+        }
+
         if (
             message?.action
             !== 'ALPHACODE_SUBMISSION_RESULT'
@@ -1918,6 +2673,10 @@ function installSubmissionResultListener() {
 
     chrome.storage.onChanged.addListener(
         (changes, areaName) => {
+            if (areaName === 'local' && changes.alphacodeBatchQueueState?.newValue) {
+                renderBatchProgressPanel(changes.alphacodeBatchQueueState.newValue);
+            }
+
             if (
                 areaName !== 'local'
                 || !changes.alphacodeSubmissionResult?.newValue
@@ -1998,6 +2757,7 @@ async function initializeExtractor() {
     installSubmissionResultListener();
     await loadConfiguration();
     await restoreStoredSubmissionResult();
+    await restoreBatchQueueState();
     injectExtractionButtons();
 
     const observer = new MutationObserver(() => {

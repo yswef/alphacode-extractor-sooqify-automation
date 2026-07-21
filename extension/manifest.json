@@ -1,13 +1,15 @@
 {
   "manifest_version": 3,
   "name": "AlphaCode Product Extractor",
-  "version": "4.0.0",
-  "description": "SZWEGO extractor with Groq bilingual copy, selectable five-image Sooqify uploads, dynamic category/brand/variant autofill, data management, and diagnostics.",
+  "version": "4.3.0",
+  "description": "AlphaCode batch product queue with bilingual AI copy, six-image Sooqify uploads, official-site research, notifications, and sequential low-resource submission.",
   "permissions": [
     "activeTab",
     "scripting",
     "storage",
-    "tabs"
+    "tabs",
+    "notifications",
+    "alarms"
   ],
   "host_permissions": [
     "*://*.szwego.com/*",
@@ -18,7 +20,12 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "content_scripts": [
     {
@@ -59,5 +66,10 @@
       ],
       "run_at": "document_idle"
     }
-  ]
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
 }

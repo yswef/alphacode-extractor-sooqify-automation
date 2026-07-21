@@ -110,7 +110,7 @@
 <header class="app-header">
     <div class="brand-row">
         <div>
-            <h1 class="brand-title">AlphaCode Extractor 4.0</h1>
+            <h1 class="brand-title">AlphaCode Extractor 4.3</h1>
             <div class="brand-subtitle">SZWEGO → Python → Sooqify</div>
         </div>
         <div class="profile-chip" id="profileChip">Sooqify Online</div>
@@ -143,6 +143,21 @@
                 <div class="field"><label for="AdminPanelPosition">موضع لوحة المتجر</label><select id="AdminPanelPosition"><option value="middle-left">وسط اليسار</option><option value="middle-right">وسط اليمين</option><option value="bottom-left">أسفل اليسار</option><option value="bottom-right">أسفل اليمين</option><option value="center">منتصف الشاشة</option></select></div>
             </div>
             <button class="btn btn-outline btn-block" id="resetPanelPositionBtn" type="button">مسح الموضع المسحوب يدوياً</button>
+        </article>
+
+        <article class="card">
+            <h2>الإضافة الدفعيّة السريعة</h2>
+            <p class="hint">يتم تجهيز المنتجات بخط أنابيب منخفض الاستهلاك، بينما يُرسل منتج واحد فقط إلى Sooqify في كل لحظة.</p>
+            <div class="toggle-row"><div class="toggle-copy"><strong>تفعيل تحديد عدة منتجات</strong><small>يعرض مربعات التحديد وشريط الدفعة داخل صفحة المورد.</small></div><label class="switch"><input id="BatchModeEnabled" type="checkbox"><span class="slider"></span></label></div>
+            <div class="toggle-row"><div class="toggle-copy"><strong>التعبئة السريعة</strong><small>يلغي الانتظارات الثابتة غير الضرورية ويعتمد على جاهزية الحقول.</small></div><label class="switch"><input id="FastAutofillMode" type="checkbox"><span class="slider"></span></label></div>
+            <div class="toggle-row"><div class="toggle-copy"><strong>متابعة الدفعة بعد فشل منتج</strong><small>يُسجل الفشل ويكمل بقية المنتجات.</small></div><label class="switch"><input id="BatchContinueOnFailure" type="checkbox"><span class="slider"></span></label></div>
+            <div class="toggle-row"><div class="toggle-copy"><strong>إشعار بعد كل منتج</strong><small>يعرض إشعار نظام عند النجاح أو الفشل.</small></div><label class="switch"><input id="BatchNotifyEachProduct" type="checkbox"><span class="slider"></span></label></div>
+            <div class="toggle-row"><div class="toggle-copy"><strong>تنزيل الصور الست المختارة فقط في الدفعة</strong><small>يقلل وقت التنزيل والقرص أثناء العمل الدفعي، دون تغيير الوضع الفردي.</small></div><label class="switch"><input id="BatchDownloadSelectedImagesOnly" type="checkbox"><span class="slider"></span></label></div>
+            <div class="grid-3">
+                <div class="field"><label for="BatchPreparationConcurrency">توازي التجهيز</label><input id="BatchPreparationConcurrency" type="number" min="1" max="3"></div>
+                <div class="field"><label for="BatchMaximumProducts">أقصى عدد</label><input id="BatchMaximumProducts" type="number" min="2" max="100"></div>
+                <div class="field"><label for="BatchMaxRetries">محاولات الفاشل</label><input id="BatchMaxRetries" type="number" min="0" max="3"></div>
+            </div>
         </article>
 
         <article class="card">
@@ -206,7 +221,7 @@
                 <label class="switch"><input id="OfficialResearchOnRegenerate" type="checkbox"><span class="slider"></span></label>
             </div>
             <div class="field"><label for="AIProvider">المزود</label><select id="AIProvider"><option value="groq">Groq</option><option value="openai">OpenAI API</option><option value="custom">OpenAI-compatible / Custom</option></select></div>
-            <div class="field"><label for="AIModel">اسم النموذج</label><input id="AIModel" type="text" placeholder="openai/gpt-oss-20b"></div>
+            <div class="field"><label for="AIModel">اسم النموذج</label><input id="AIModel" type="text" placeholder="openai/gpt-oss-120b"></div>
             <div class="field"><label for="AIBaseUrl">Base URL للمزود المخصص</label><input id="AIBaseUrl" dir="ltr" type="url" placeholder="https://provider.example/v1/chat/completions"></div>
             <div class="field"><label for="AIKeyEnv">اسم متغير البيئة للمفتاح</label><input id="AIKeyEnv" dir="ltr" type="text" placeholder="GROQ_API_KEY"></div>
             <div class="field"><label for="ArabicCopyStyle">أسلوب الصياغة العربية</label><select id="ArabicCopyStyle"><option value="sales-natural">تجاري طبيعي وجذاب</option><option value="premium">فاخر وهادئ</option><option value="concise">مختصر ومباشر</option><option value="seo">متوازن لمحركات البحث</option></select></div>

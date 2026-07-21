@@ -9,6 +9,9 @@
 const LOCAL_API_BASE = 'http://127.0.0.1:5000';
 const DEFAULT_SOOQIFY_ADD_URL = 'https://admin.sooqifyonline.com/admin/item/add-new';
 const FALLBACK_JOBS_KEY = 'alphacodeFallbackSubmissionJobs';
+const BATCH_QUEUE_KEY = 'alphacodeBatchQueueState';
+const BATCH_ALARM_NAME = 'alphacodeBatchQueueWake';
+let batchLaunchLock = false;
 
 // Arabic: تحويل Uint8Array إلى Base64 على دفعات لتجنب تجاوز مكدس الاستدعاء.
 // English: Convert bytes to Base64 in chunks to avoid call-stack overflow.
@@ -527,6 +530,350 @@ function extractStoreProductId(finalUrl, html) {
     return htmlMatch ? Number(htmlMatch[1]) : null;
 }
 
+
+// =========================================================
+// AlphaCode Batch Queue
+// Arabic: طابور دائم منخفض الموارد يرسل منتجاً واحداً فقط إلى Sooqify في كل لحظة.
+// English: A persistent low-resource queue that submits exactly one product at a time.
+// =========================================================
+
+async function readBatchQueueState() {
+    const stored = await chrome.storage.local.get(BATCH_QUEUE_KEY);
+    return stored[BATCH_QUEUE_KEY] || null;
+}
+
+async function writeBatchQueueState(state) {
+    await chrome.storage.local.set({ [BATCH_QUEUE_KEY]: state });
+    await broadcastBatchQueueState(state);
+    return state;
+}
+
+async function broadcastBatchQueueState(state) {
+    if (!state) return;
+    const sourceTabId = Number(state.sourceTabId);
+    if (Number.isInteger(sourceTabId)) {
+        try {
+            await chrome.tabs.sendMessage(sourceTabId, {
+                action: 'ALPHACODE_BATCH_UPDATE',
+                state,
+            });
+        } catch (_) {}
+    }
+}
+
+async function showBatchNotification(title, message, notificationId = '') {
+    try {
+        await chrome.notifications.create(
+            notificationId || `alphacode_${Date.now()}`,
+            {
+                type: 'basic',
+                iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+                title: String(title || 'AlphaCode'),
+                message: String(message || ''),
+                priority: 1,
+            },
+        );
+    } catch (_) {}
+}
+
+function createInitialBatchState(message, sourceTabId) {
+    return {
+        batchId: normalizeText(message.batchId) || `batch_${Date.now()}`,
+        status: 'running',
+        sourceTabId: Number(sourceTabId || 0),
+        addUrl: message.addUrl || DEFAULT_SOOQIFY_ADD_URL,
+        totalPlanned: Math.max(1, safeInteger(message.totalPlanned, 1)),
+        continueOnFailure: message.continueOnFailure !== false,
+        notifyEachProduct: message.notifyEachProduct !== false,
+        maxRetries: Math.max(0, Math.min(safeInteger(message.maxRetries, 0), 3)),
+        finalized: false,
+        pending: [],
+        current: null,
+        results: [],
+        preparationFailures: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+    };
+}
+
+async function startBatchQueue(message, sender) {
+    const sourceTabId = sender.tab?.id;
+    if (!Number.isInteger(sourceTabId)) throw new Error('تعذر تحديد تبويب صفحة المورد لبدء الدفعة.');
+
+    const current = await readBatchQueueState();
+    if (current && ['running', 'paused'].includes(current.status) && current.batchId !== message.batchId) {
+        throw new Error('توجد دفعة أخرى قيد التنفيذ. أكملها أو ألغها أولاً.');
+    }
+
+    const state = createInitialBatchState(message, sourceTabId);
+    await writeBatchQueueState(state);
+    await showBatchNotification('بدأت دفعة AlphaCode', `سيتم تجهيز وإضافة ${state.totalPlanned} منتجات بالتتابع.`, `alphacode_batch_${state.batchId}`);
+    return { success: true, state };
+}
+
+async function enqueueBatchProduct(message) {
+    const state = await readBatchQueueState();
+    if (!state || state.batchId !== message.batchId) throw new Error('طابور الدفعة غير موجود أو تغير معرّفه.');
+    if (['cancelled', 'completed'].includes(state.status)) throw new Error('انتهى طابور الدفعة ولا يمكن إضافة منتج جديد إليه.');
+
+    const product = message.product;
+    if (!product?.local_id) throw new Error('المنتج المجهز لا يحتوي على ID محلي.');
+    const productId = Number(product.local_id);
+    const alreadyQueued = state.pending.some(item => Number(item.product?.local_id) === productId)
+        || Number(state.current?.product?.local_id) === productId
+        || state.results.some(item => Number(item.productId) === productId);
+
+    if (!alreadyQueued) {
+        state.pending.push({
+            product,
+            searchCode: normalizeText(message.searchCode),
+            styleCode: normalizeText(message.styleCode),
+            addUrl: message.addUrl || state.addUrl || DEFAULT_SOOQIFY_ADD_URL,
+            attempts: 0,
+            queuedAt: Date.now(),
+        });
+    }
+    state.updatedAt = Date.now();
+    await writeBatchQueueState(state);
+    await processBatchQueue();
+    return { success: true, state: await readBatchQueueState() };
+}
+
+async function reportBatchPreparationFailure(message) {
+    const state = await readBatchQueueState();
+    if (!state || state.batchId !== message.batchId) throw new Error('طابور الدفعة غير موجود.');
+    state.preparationFailures.push({
+        index: safeInteger(message.index, 0),
+        name: normalizeText(message.name),
+        searchCode: normalizeText(message.searchCode),
+        styleCode: normalizeText(message.styleCode),
+        error: normalizeText(message.error) || 'تعذر تجهيز المنتج.',
+        createdAt: Date.now(),
+    });
+    state.updatedAt = Date.now();
+    await writeBatchQueueState(state);
+    if (state.notifyEachProduct) {
+        await showBatchNotification('تعذر تجهيز منتج', `${normalizeText(message.name) || 'منتج'} — ${normalizeText(message.error)}`);
+    }
+    return { success: true, state };
+}
+
+async function finalizeBatchQueue(message) {
+    const state = await readBatchQueueState();
+    if (!state || state.batchId !== message.batchId) throw new Error('طابور الدفعة غير موجود.');
+    state.finalized = true;
+    state.updatedAt = Date.now();
+    await writeBatchQueueState(state);
+    await processBatchQueue();
+    return { success: true, state: await readBatchQueueState() };
+}
+
+async function pauseBatchQueue(message) {
+    const state = await readBatchQueueState();
+    if (!state || (message.batchId && state.batchId !== message.batchId)) throw new Error('طابور الدفعة غير موجود.');
+    if (state.status === 'running') state.status = 'paused';
+    state.updatedAt = Date.now();
+    await writeBatchQueueState(state);
+    return { success: true, state };
+}
+
+async function resumeBatchQueue(message) {
+    const state = await readBatchQueueState();
+    if (!state || (message.batchId && state.batchId !== message.batchId)) throw new Error('طابور الدفعة غير موجود.');
+    if (state.status === 'paused') state.status = 'running';
+    state.updatedAt = Date.now();
+    await writeBatchQueueState(state);
+    await processBatchQueue();
+    return { success: true, state: await readBatchQueueState() };
+}
+
+async function cancelBatchQueue(message) {
+    const state = await readBatchQueueState();
+    if (!state || (message.batchId && state.batchId !== message.batchId)) throw new Error('طابور الدفعة غير موجود.');
+
+    state.status = 'cancelled';
+    state.pending = [];
+    state.current = null;
+    state.finalized = true;
+    state.updatedAt = Date.now();
+
+    const jobs = await readFallbackJobs();
+    const tabsToClose = [];
+    for (const [tabId, job] of Object.entries(jobs)) {
+        if (job.batchId === state.batchId) {
+            tabsToClose.push(Number(tabId));
+            delete jobs[tabId];
+        }
+    }
+    await writeFallbackJobs(jobs);
+    await writeBatchQueueState(state);
+    for (const tabId of tabsToClose) chrome.tabs.remove(tabId).catch(() => {});
+    await showBatchNotification('تم إلغاء دفعة AlphaCode', 'تم إيقاف المنتجات المتبقية في الطابور.');
+    return { success: true, state };
+}
+
+async function retryFailedBatchProducts(message) {
+    const state = await readBatchQueueState();
+    if (!state || (message.batchId && state.batchId !== message.batchId)) throw new Error('طابور الدفعة غير موجود.');
+    const failedResults = state.results.filter(item => !item.success && item.product);
+    if (!failedResults.length) throw new Error('لا توجد منتجات إرسال فاشلة قابلة لإعادة المحاولة.');
+
+    state.pending = failedResults.map(item => ({
+        product: item.product,
+        searchCode: item.searchCode,
+        styleCode: item.styleCode,
+        addUrl: state.addUrl || DEFAULT_SOOQIFY_ADD_URL,
+        attempts: 0,
+        queuedAt: Date.now(),
+    }));
+    state.results = state.results.filter(item => item.success);
+    state.status = 'running';
+    state.finalized = true;
+    state.current = null;
+    state.updatedAt = Date.now();
+    await writeBatchQueueState(state);
+    await processBatchQueue();
+    return { success: true, state: await readBatchQueueState() };
+}
+
+async function maybeCompleteBatchQueue(state) {
+    if (!state || !state.finalized || state.current || state.pending.length) return false;
+    state.status = 'completed';
+    state.completedAt = Date.now();
+    state.updatedAt = Date.now();
+    await writeBatchQueueState(state);
+
+    const succeeded = state.results.filter(item => item.success).length;
+    const failed = state.results.filter(item => !item.success).length + state.preparationFailures.length;
+    const elapsedSeconds = Math.max(1, Math.round((state.completedAt - state.createdAt) / 1000));
+    await showBatchNotification(
+        'اكتملت دفعة AlphaCode',
+        `نجح ${succeeded}، فشل ${failed}، المدة ${elapsedSeconds} ثانية.`,
+        `alphacode_batch_done_${state.batchId}`,
+    );
+    return true;
+}
+
+async function processBatchQueue() {
+    if (batchLaunchLock) return;
+    batchLaunchLock = true;
+    try {
+        const state = await readBatchQueueState();
+        if (!state || state.status !== 'running' || state.current) return;
+        if (!state.pending.length) {
+            await maybeCompleteBatchQueue(state);
+            return;
+        }
+
+        const next = state.pending.shift();
+        state.current = next;
+        state.updatedAt = Date.now();
+        await writeBatchQueueState(state);
+
+        try {
+            const product = {
+                ...next.product,
+                batch_id: state.batchId,
+                settings: {
+                    ...(next.product.settings || {}),
+                    AutoSubmitDelaySeconds: 0,
+                    FastAutofillMode: true,
+                },
+            };
+            next.product = product;
+            state.current = next;
+            await writeBatchQueueState(state);
+
+            await openFallbackSubmissionTab(
+                {
+                    product,
+                    addUrl: next.addUrl || state.addUrl,
+                    searchCode: next.searchCode,
+                    styleCode: next.styleCode,
+                    active: false,
+                    mode: 'background_tab',
+                    batchId: state.batchId,
+                    sourceTabId: state.sourceTabId,
+                },
+                { tab: { id: state.sourceTabId, url: '' } },
+            );
+        } catch (error) {
+            state.current = null;
+            state.results.push({
+                success: false,
+                productId: Number(next.product?.local_id || 0),
+                product: next.product,
+                searchCode: next.searchCode,
+                styleCode: next.styleCode,
+                error: error.message,
+                completedAt: Date.now(),
+            });
+            if (!state.continueOnFailure) state.status = 'paused';
+            await writeBatchQueueState(state);
+            if (state.status === 'running') setTimeout(() => processBatchQueue(), 250);
+        }
+    } finally {
+        batchLaunchLock = false;
+    }
+}
+
+async function recordBatchSubmissionResult(result, job) {
+    const state = await readBatchQueueState();
+    if (!state || state.batchId !== job.batchId) return false;
+
+    const current = state.current || {};
+    const attempt = safeInteger(current.attempts, 0);
+    const retryable = !result.success && attempt < state.maxRetries
+        && !/انتهت جلسة|تسجيل الدخول|login/i.test(result.error || '');
+
+    if (retryable) {
+        state.pending.unshift({ ...current, attempts: attempt + 1, queuedAt: Date.now() });
+    } else {
+        state.results.push({
+            ...result,
+            product: current.product,
+            attempts: attempt + 1,
+            completedAt: Date.now(),
+        });
+    }
+
+    state.current = null;
+    state.updatedAt = Date.now();
+
+    if (!result.success && /انتهت جلسة|تسجيل الدخول|login/i.test(result.error || '')) {
+        state.status = 'paused';
+    } else if (!result.success && !state.continueOnFailure && !retryable) {
+        state.status = 'paused';
+    }
+
+    await writeBatchQueueState(state);
+
+    if (state.notifyEachProduct && !retryable) {
+        const position = state.results.length + state.preparationFailures.length;
+        await showBatchNotification(
+            result.success ? 'تمت إضافة المنتج' : 'تعذر إضافة المنتج',
+            `${current.product?.name_en || `ID ${result.productId}`} — ${position}/${state.totalPlanned}${result.success ? '' : ` — ${result.error}`}`,
+        );
+    }
+
+    if (state.status === 'running') setTimeout(() => processBatchQueue(), 300);
+    else await maybeCompleteBatchQueue(state);
+    return true;
+}
+
+async function deliverSingleSubmissionResult(result, job) {
+    if (Number.isInteger(job.sourceTabId)) {
+        try {
+            await chrome.tabs.sendMessage(job.sourceTabId, {
+                action: 'ALPHACODE_SUBMISSION_RESULT',
+                result,
+            });
+        } catch (_) {
+            await chrome.storage.local.set({ alphacodeSubmissionResult: result });
+        }
+    }
+}
+
 // Arabic: إضافة المنتج في تبويب غير نشط حتى يستخدم المتجر جلسته وJavaScript الحقيقيين دون مغادرة صفحة المورد.
 // English: Submit through an inactive store tab so the real session and JavaScript are used without leaving the supplier page.
 async function submitProductInBackground(message, sender) {
@@ -585,7 +932,9 @@ async function openFallbackSubmissionTab(message, sender) {
         throw new Error('بيانات المنتج غير متاحة للإضافة.');
     }
 
-    const sourceTabId = sender.tab?.id;
+    const sourceTabId = Number.isInteger(message.sourceTabId)
+        ? Number(message.sourceTabId)
+        : sender.tab?.id;
     if (!Number.isInteger(sourceTabId)) {
         throw new Error('تعذر تحديد تبويب صفحة المورد.');
     }
@@ -630,6 +979,7 @@ async function openFallbackSubmissionTab(message, sender) {
         styleCode: normalizeText(message.styleCode),
         mode,
         active,
+        batchId: normalizeText(message.batchId),
         createdAt: Date.now(),
     };
     await writeFallbackJobs(jobs);
@@ -679,13 +1029,11 @@ async function openFallbackSubmissionTab(message, sender) {
     };
 }
 
-// Arabic: استلام نتيجة التبويب المؤقت ثم إغلاقه وإبلاغ صفحة المورد.
-// English: Receive the temporary-tab result, close it, and notify the supplier page.
+// Arabic: استلام نتيجة التبويب المؤقت ثم تحديث الطابور أو إبلاغ صفحة المورد.
+// English: Receive an automated-tab result and update the batch queue or source page.
 async function completeFallbackSubmission(message, sender) {
     const retryTabId = sender.tab?.id;
-    if (!Number.isInteger(retryTabId)) {
-        throw new Error('تعذر تحديد تبويب إعادة المحاولة.');
-    }
+    if (!Number.isInteger(retryTabId)) throw new Error('تعذر تحديد تبويب الإضافة الآلية.');
 
     const jobs = await readFallbackJobs();
     const job = jobs[String(retryTabId)] || {};
@@ -694,134 +1042,97 @@ async function completeFallbackSubmission(message, sender) {
 
     const result = {
         success: Boolean(message.success),
-        productId: Number(
-            message.productId
-            || job.productId
-            || 0,
-        ),
-        searchCode: normalizeText(
-            message.searchCode
-            || job.searchCode,
-        ),
-        styleCode: normalizeText(
-            message.styleCode
-            || job.styleCode,
-        ),
+        productId: Number(message.productId || job.productId || 0),
+        searchCode: normalizeText(message.searchCode || job.searchCode),
+        styleCode: normalizeText(message.styleCode || job.styleCode),
         error: normalizeText(message.error),
         mode: normalizeText(job.mode) || 'fallback_tab',
     };
 
-    if (Number.isInteger(job.sourceTabId)) {
-        try {
-            await chrome.tabs.sendMessage(
-                job.sourceTabId,
-                {
-                    action: 'ALPHACODE_SUBMISSION_RESULT',
-                    result,
-                },
-            );
-        } catch (_) {
-            await chrome.storage.local.set({
-                alphacodeSubmissionResult: result,
-            });
-        }
-    }
+    if (job.batchId) await recordBatchSubmissionResult(result, job);
+    else await deliverSingleSubmissionResult(result, job);
 
-    setTimeout(() => {
-        chrome.tabs.remove(retryTabId).catch(() => {});
-    }, 350);
-
-    return {
-        success: true,
-        result,
-    };
+    setTimeout(() => chrome.tabs.remove(retryTabId).catch(() => {}), 250);
+    return { success: true, result };
 }
 
-// Arabic: اكتشاف تحويل التبويب الآلي إلى تسجيل الدخول وإرجاع خطأ واضح بدلاً من الانتظار.
-// English: Detect automated tabs redirected to login and return a clear error instead of hanging.
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-    if (!changeInfo.url && changeInfo.status !== 'complete') return;
-
-    const jobs = await readFallbackJobs();
-    const job = jobs[String(tabId)];
-    if (!job) return;
-
-    const currentUrl = String(
-        changeInfo.url || tab?.url || '',
-    );
-
-    if (!/\/login(?:\?|$)|\/auth\/login(?:\?|$)/i.test(currentUrl)) {
-        return;
-    }
-
-    delete jobs[String(tabId)];
-    await writeFallbackJobs(jobs);
-
+async function handleAutomatedTabFailure(tabId, job, error) {
     const result = {
         success: false,
         productId: job.productId,
         searchCode: job.searchCode,
         styleCode: job.styleCode,
-        error: 'انتهت جلسة Sooqify. سجّل الدخول إلى لوحة المتجر ثم أعد المحاولة.',
+        error,
         mode: normalizeText(job.mode) || 'background_tab',
     };
-
-    if (Number.isInteger(job.sourceTabId)) {
-        try {
-            await chrome.tabs.sendMessage(
-                job.sourceTabId,
-                {
-                    action: 'ALPHACODE_SUBMISSION_RESULT',
-                    result,
-                },
-            );
-        } catch (_) {
-            await chrome.storage.local.set({
-                alphacodeSubmissionResult: result,
-            });
-        }
-    }
-
+    if (job.batchId) await recordBatchSubmissionResult(result, job);
+    else await deliverSingleSubmissionResult(result, job);
     chrome.tabs.remove(tabId).catch(() => {});
+}
+
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+    if (!changeInfo.url && changeInfo.status !== 'complete') return;
+    const jobs = await readFallbackJobs();
+    const job = jobs[String(tabId)];
+    if (!job) return;
+    const currentUrl = String(changeInfo.url || tab?.url || '');
+    if (!/\/login(?:\?|$)|\/auth\/login(?:\?|$)/i.test(currentUrl)) return;
+    delete jobs[String(tabId)];
+    await writeFallbackJobs(jobs);
+    await handleAutomatedTabFailure(tabId, job, 'انتهت جلسة Sooqify. سجّل الدخول إلى لوحة المتجر ثم استكمل الدفعة.');
 });
 
-// Arabic: تنظيف المهمة إذا أغلق المستخدم تبويب إعادة المحاولة يدوياً.
-// English: Clean up and notify the source if the user manually closes the retry tab.
 chrome.tabs.onRemoved.addListener(async tabId => {
     const jobs = await readFallbackJobs();
     const job = jobs[String(tabId)];
     if (!job) return;
-
     delete jobs[String(tabId)];
     await writeFallbackJobs(jobs);
-
-    if (!Number.isInteger(job.sourceTabId)) return;
-
+    const error = job.mode === 'background_tab'
+        ? 'تم إغلاق تبويب الإضافة الخلفية قبل اكتمال العملية.'
+        : 'تم إغلاق تبويب إعادة المحاولة قبل اكتمال الإضافة.';
     const result = {
         success: false,
         productId: job.productId,
         searchCode: job.searchCode,
         styleCode: job.styleCode,
-        error: job.mode === 'background_tab'
-            ? 'تم إغلاق تبويب الإضافة الخلفية قبل اكتمال العملية.'
-            : 'تم إغلاق تبويب إعادة المحاولة قبل اكتمال الإضافة.',
+        error,
         mode: normalizeText(job.mode) || 'fallback_tab',
     };
-
-    try {
-        await chrome.tabs.sendMessage(
-            job.sourceTabId,
-            {
-                action: 'ALPHACODE_SUBMISSION_RESULT',
-                result,
-            },
-        );
-    } catch (_) {
-        await chrome.storage.local.set({
-            alphacodeSubmissionResult: result,
-        });
-    }
+    if (job.batchId) await recordBatchSubmissionResult(result, job);
+    else await deliverSingleSubmissionResult(result, job);
 });
+
+// Arabic: استعادة طابور مستمر بعد إعادة تشغيل المتصفح أو تعليق Service Worker.
+// English: Recover a persisted queue after browser restart or service-worker suspension.
+async function recoverPersistedBatchQueue() {
+    const state = await readBatchQueueState();
+    if (!state || state.status !== 'running') return;
+    if (state.current) {
+        const jobs = await readFallbackJobs();
+        const hasLiveJob = Object.values(jobs).some(job => (
+            job.batchId === state.batchId
+            && Number(job.productId) === Number(state.current?.product?.local_id)
+        ));
+        if (!hasLiveJob) {
+            state.pending.unshift(state.current);
+            state.current = null;
+            await writeBatchQueueState(state);
+        }
+    }
+    await processBatchQueue();
+}
+
+// Arabic: منبه خفيف يعيد إيقاظ Service Worker إذا عُلّق بين منتجين.
+// English: A lightweight alarm wakes the service worker if it is suspended between products.
+chrome.alarms.create(BATCH_ALARM_NAME, { periodInMinutes: 1 });
+
+chrome.runtime.onStartup.addListener(() => recoverPersistedBatchQueue().catch(() => {}));
+chrome.runtime.onInstalled.addListener(() => recoverPersistedBatchQueue().catch(() => {}));
+chrome.alarms.onAlarm.addListener(alarm => {
+    if (alarm.name === BATCH_ALARM_NAME) recoverPersistedBatchQueue().catch(() => {});
+});
+recoverPersistedBatchQueue().catch(() => {});
 
 // Arabic: توجيه رسائل الإضافة إلى الوظيفة المناسبة.
 // English: Route extension messages to the proper background action.
@@ -869,6 +1180,52 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                         sender,
                     ),
                 );
+                return;
+            }
+
+
+            if (message.action === 'START_BATCH_QUEUE') {
+                sendResponse(await startBatchQueue(message, sender));
+                return;
+            }
+
+            if (message.action === 'ENQUEUE_BATCH_PRODUCT') {
+                sendResponse(await enqueueBatchProduct(message));
+                return;
+            }
+
+            if (message.action === 'REPORT_BATCH_PREPARATION_FAILURE') {
+                sendResponse(await reportBatchPreparationFailure(message));
+                return;
+            }
+
+            if (message.action === 'FINALIZE_BATCH_QUEUE') {
+                sendResponse(await finalizeBatchQueue(message));
+                return;
+            }
+
+            if (message.action === 'GET_BATCH_QUEUE_STATE') {
+                sendResponse({ success: true, state: await readBatchQueueState() });
+                return;
+            }
+
+            if (message.action === 'PAUSE_BATCH_QUEUE') {
+                sendResponse(await pauseBatchQueue(message));
+                return;
+            }
+
+            if (message.action === 'RESUME_BATCH_QUEUE') {
+                sendResponse(await resumeBatchQueue(message));
+                return;
+            }
+
+            if (message.action === 'CANCEL_BATCH_QUEUE') {
+                sendResponse(await cancelBatchQueue(message));
+                return;
+            }
+
+            if (message.action === 'RETRY_FAILED_BATCH') {
+                sendResponse(await retryFailedBatchProducts(message));
                 return;
             }
 

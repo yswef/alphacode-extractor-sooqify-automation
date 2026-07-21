@@ -29,6 +29,9 @@ const NUMBER_FIELDS = new Set([
     'StoreImageLimit',
     'AutoSubmitDelaySeconds',
     'SupplierAutoScrollRounds',
+    'BatchPreparationConcurrency',
+    'BatchMaximumProducts',
+    'BatchMaxRetries',
 ]);
 
 const BOOLEAN_FIELDS = new Set([
@@ -40,6 +43,11 @@ const BOOLEAN_FIELDS = new Set([
     'AIJsonRepairEnabled',
     'OfficialResearchOnRegenerate',
     'OpenSupplierAtLastProduct',
+    'FastAutofillMode',
+    'BatchModeEnabled',
+    'BatchContinueOnFailure',
+    'BatchNotifyEachProduct',
+    'BatchDownloadSelectedImagesOnly',
 ]);
 
 const CONFIG_FIELDS = Object.keys(DEFAULTS);
@@ -747,7 +755,7 @@ function handleAiProviderChange() {
     }
 
     if (provider === 'groq') {
-        if (!model?.value || !/gpt-oss/i.test(model.value)) model.value = 'openai/gpt-oss-20b';
+        if (!model?.value || !/gpt-oss/i.test(model.value)) model.value = 'openai/gpt-oss-120b';
         if (baseUrl) baseUrl.value = '';
         if (keyEnv && (!keyEnv.value || keyEnv.value === 'OPENAI_API_KEY')) {
             keyEnv.value = 'GROQ_API_KEY';

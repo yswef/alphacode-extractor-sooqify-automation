@@ -598,12 +598,12 @@ async function populateChoiceOptionsControl(element, sizes, form = null) {
             }));
         }
 
-        await sleep(180);
+        await sleep(adminConfig.FastAutofillMode ? 80 : 180);
         setNativeInputValue('');
     }
 
     visibleInput.dispatchEvent(new Event('blur', { bubbles: true }));
-    await sleep(350);
+    await sleep(adminConfig.FastAutofillMode ? 120 : 350);
     return true;
 }
 
@@ -1300,7 +1300,7 @@ async function selectOnlyProductAttribute(attributeId, expectedTitle = 'الحج
         try {
             const jqSelect = window.jQuery(select);
             jqSelect.val(null).trigger('change.select2').trigger('change');
-            await sleep(250);
+            await sleep(adminConfig.FastAutofillMode ? 70 : 250);
             jqSelect
                 .val(select.multiple ? [wantedId] : wantedId)
                 .trigger('change.select2')
@@ -1329,7 +1329,7 @@ async function selectOnlyProductAttribute(attributeId, expectedTitle = 'الحج
         200,
     );
 
-    await sleep(900);
+    await sleep(adminConfig.FastAutofillMode ? 100 : 900);
 
     return {
         success: Boolean(selectedCorrectly),
@@ -1966,12 +1966,31 @@ async function getPreparedProductById(productId) {
         );
     }
 
+    // Arabic: دمج سياق الدفعة وإعدادات السرعة المحفوظة في Chrome مع بيانات Flask.
+    // English: Merge batch context and fast-mode settings from Chrome with the Flask product.
+    const stored = await safeStorageGet([
+        'pendingSooqifyProduct',
+    ]);
+
+    const storedProduct = (
+        Number(stored.pendingSooqifyProduct?.local_id)
+        === wantedId
+    ) ? stored.pendingSooqifyProduct : null;
+
+    const preparedProduct = {
+        ...data.pending_product,
+        ...(storedProduct || {}),
+        settings: {
+            ...(data.pending_product?.settings || {}),
+            ...(storedProduct?.settings || {}),
+        },
+    };
+
     await safeStorageSet({
-        pendingSooqifyProduct:
-            data.pending_product,
+        pendingSooqifyProduct: preparedProduct,
     });
 
-    return data.pending_product;
+    return preparedProduct;
 }
 
 // Arabic: تحديث حالة المنتج في الأرشيف المحلي.
@@ -2892,7 +2911,7 @@ async function initializeAdminAutofill() {
         'admin_adapter_ready',
         'Sooqify admin adapter initialized.',
         {
-            version: '3.4.3-background-tab-submission',
+            version: '4.3.0-batch-queue-fast-autofill',
             target_store:
                 adminConfig.StoreProfileName,
             supplier_store:

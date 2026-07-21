@@ -340,3 +340,117 @@
     .alphacode-image-selector-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .alphacode-image-selector-heading { flex-direction: column; }
 }
+
+/* =========================================================
+   AlphaCode v4.3 - Batch Product Queue
+   ========================================================= */
+.alphacode-batch-select {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 5px !important;
+    margin: 0 7px !important;
+    padding: 5px 8px !important;
+    border: 1px solid #cbd5e1 !important;
+    border-radius: 7px !important;
+    background: #fff !important;
+    color: #172554 !important;
+    font: 700 11px/1.2 "Segoe UI", sans-serif !important;
+    cursor: pointer !important;
+    user-select: none !important;
+}
+.alphacode-batch-select input { accent-color: #172554 !important; }
+.alphacode-batch-selected-card {
+    outline: 3px solid #53f5ff !important;
+    outline-offset: 3px !important;
+    box-shadow: 0 0 0 6px rgba(83, 245, 255, .16) !important;
+}
+
+#alphacode-batch-toolbar {
+    position: fixed;
+    z-index: 2147483643;
+    right: 20px;
+    bottom: 20px;
+    min-width: 350px;
+    max-width: calc(100vw - 40px);
+    padding: 12px;
+    direction: rtl;
+    color: #fff;
+    background: linear-gradient(135deg, #07022a, #171052);
+    border: 1px solid rgba(255,255,255,.18);
+    border-radius: 16px;
+    box-shadow: 0 18px 44px rgba(7,2,42,.32);
+    font-family: "Segoe UI", Tahoma, sans-serif;
+    opacity: .94;
+}
+#alphacode-batch-toolbar.has-selection { opacity: 1; }
+.alphacode-batch-toolbar-main { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 9px; }
+.alphacode-batch-toolbar-main strong { font-size: 13px; }
+.alphacode-batch-toolbar-main span { color: #53f5ff; font-size: 12px; font-weight: 800; }
+.alphacode-batch-toolbar-actions { display: grid; grid-template-columns: 1fr 1.25fr .7fr; gap: 7px; }
+.alphacode-batch-toolbar-actions button {
+    border: 1px solid rgba(255,255,255,.2);
+    border-radius: 9px;
+    padding: 8px 9px;
+    background: rgba(255,255,255,.12);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 800;
+    cursor: pointer;
+}
+.alphacode-batch-toolbar-actions button.primary { background: #53f5ff; color: #07022a; }
+.alphacode-batch-toolbar-actions button:disabled { opacity: .45; cursor: default; }
+
+.alphacode-batch-modal-box { width: min(980px, calc(100vw - 28px)) !important; }
+.alphacode-batch-review-header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; padding:10px 12px; border-radius:10px; background:#effcff; color:#07143e; }
+.alphacode-batch-slide { display: none; }
+.alphacode-batch-slide.active { display: block; }
+.alphacode-batch-slide-top { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; }
+.alphacode-batch-slide-top label { font-size:12px; font-weight:800; }
+.batch-draft-status { padding:5px 8px; border-radius:999px; font-size:10px; background:#f1f5f9; }
+.batch-draft-status.generated { background:#dcfce7; color:#166534; }
+.batch-draft-status.fallback { background:#fef3c7; color:#92400e; }
+.batch-draft-status.archived { background:#dbeafe; color:#1e40af; }
+.alphacode-batch-preview-images { display:grid; grid-template-columns:repeat(6,1fr); gap:7px; margin-bottom:12px; }
+.alphacode-batch-preview-images img { width:100%; aspect-ratio:1; object-fit:cover; border-radius:9px; border:1px solid #dbe2ea; background:#f8fafc; }
+.alphacode-batch-navigation { display:grid; grid-template-columns:90px 1fr 90px; align-items:center; gap:10px; margin:14px 0 4px; }
+.alphacode-batch-navigation > button { border:0; border-radius:9px; padding:9px; background:#172554; color:#fff; cursor:pointer; }
+.alphacode-batch-navigation > button:disabled { opacity:.4; }
+.alphacode-batch-dots { display:flex; flex-wrap:wrap; justify-content:center; gap:6px; }
+.alphacode-batch-dots button { width:9px; height:9px; padding:0; border:0; border-radius:50%; background:#cbd5e1; cursor:pointer; }
+.alphacode-batch-dots button.active { background:#53f5ff; box-shadow:0 0 0 3px rgba(83,245,255,.22); }
+
+#alphacode-batch-progress-panel {
+    position: fixed;
+    z-index: 2147483644;
+    left: 20px;
+    bottom: 20px;
+    width: 340px;
+    max-width: calc(100vw - 40px);
+    padding: 12px;
+    direction: rtl;
+    background:#fff;
+    color:#07022a;
+    border:1px solid rgba(7,2,42,.15);
+    border-radius:15px;
+    box-shadow:0 18px 44px rgba(7,2,42,.28);
+    font-family:"Segoe UI",Tahoma,sans-serif;
+}
+.batch-progress-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+.batch-progress-header button { border:0; background:transparent; font-size:20px; cursor:pointer; }
+.batch-progress-summary,.batch-progress-current { font-size:11px; line-height:1.55; margin:4px 0; }
+.batch-progress-current { color:#475569; }
+.batch-progress-bar { height:8px; border-radius:999px; background:#e2e8f0; overflow:hidden; margin:10px 0; }
+.batch-progress-bar span { display:block; height:100%; width:0; background:linear-gradient(90deg,#172554,#53f5ff); transition:width .25s ease; }
+.batch-progress-actions { display:grid; grid-template-columns:1fr 1fr 1fr; gap:7px; }
+.batch-progress-actions button { border:0; border-radius:8px; padding:8px; background:#172554; color:#fff; font-size:10px; font-weight:800; cursor:pointer; }
+.batch-progress-actions .batch-cancel { background:#fee2e2; color:#991b1b; }
+#alphacode-batch-progress-panel.completed { border-color:#86efac; background:#f0fdf4; }
+#alphacode-batch-progress-panel.failed { border-color:#fecaca; background:#fff1f2; }
+
+@media (max-width: 720px) {
+    #alphacode-batch-toolbar { right:10px; left:10px; bottom:10px; min-width:0; }
+    #alphacode-batch-progress-panel { right:10px; left:10px; bottom:115px; width:auto; }
+    .alphacode-batch-preview-images { grid-template-columns:repeat(3,1fr); }
+}
+#alphacode-batch-progress-panel .batch-progress-actions { grid-template-columns: repeat(4, 1fr); }
+#alphacode-batch-progress-panel .batch-retry { background:#fef3c7; color:#92400e; }

@@ -33,6 +33,8 @@
         AddedFeeYuan: 250,
         Discount: 0,
         DiscountType: 'percent',
+        AvailableTimeStarts: '00:00',
+        AvailableTimeEnds: '23:59',
         MaximumCartQuantity: '',
         StoreId: 3,
         ModuleId: 2,
@@ -66,7 +68,7 @@
         // English: Switchable AI-provider settings.
         AIAutoGenerate: true,
         AIProvider: 'groq',
-        AIModel: 'openai/gpt-oss-20b',
+        AIModel: 'openai/gpt-oss-120b',
         AIBaseUrl: '',
         AIKeyEnv: 'GROQ_API_KEY',
         AIJsonRepairEnabled: true,
@@ -76,7 +78,18 @@
         // Arabic: التشغيل الآلي للمتجر.
         // English: Store automation.
         AutoAddProduct: false,
-        AutoSubmitDelaySeconds: 5,
+        AutoSubmitDelaySeconds: 0,
+        FastAutofillMode: true,
+
+        // Arabic: طابور الدفعات يجهز منتجاً واحداً في كل مرة افتراضياً لتفادي حدود Groq، ويرسل منتجاً واحداً فقط إلى المتجر.
+        // English: Batch preparation defaults to one AI task to avoid Groq limits, while store submission remains strictly sequential.
+        BatchModeEnabled: true,
+        BatchPreparationConcurrency: 1,
+        BatchMaximumProducts: 25,
+        BatchContinueOnFailure: true,
+        BatchNotifyEachProduct: true,
+        BatchMaxRetries: 1,
+        BatchDownloadSelectedImagesOnly: true,
         AdminPanelPosition: 'middle-left',
     };
 

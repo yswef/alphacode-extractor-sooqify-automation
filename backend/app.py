@@ -51,10 +51,10 @@ LOG_PATH = os.path.join(LOG_DIR, "alphacode.log")
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 DEFAULT_AI_PROVIDER = "groq"
-DEFAULT_AI_MODEL = "openai/gpt-oss-20b"
+DEFAULT_AI_MODEL = "openai/gpt-oss-120b"
 DEFAULT_OPENAI_MODEL = "gpt-5.2"
 GROQ_OFFICIAL_SEARCH_MODEL = "groq/compound-mini"
-AI_PROMPT_VERSION = "4.0-provider-switch-json-repair-contextual-arabic"
+AI_PROMPT_VERSION = "4.3-batch-official-brand-guard-fast-json"
 
 # Arabic: القفل يمنع تعارض طلبين أثناء تحديث الصور وExcel والأرشيف.
 # English: The lock prevents concurrent requests from corrupting images, Excel, or archive data.
@@ -317,6 +317,7 @@ def extract_settings(data):
         "Recommended": normalize_text(settings.get("Recommended")) or "yes",
         "BrandId": safe_int(settings.get("BrandId"), 6),
         "BrandName": normalize_text(settings.get("BrandName")) or "Air Jordan",
+        "BrandMapJson": normalize_text(settings.get("BrandMapJson")) or '{"Air Jordan":6}',
         "SizeAttributeId": max(1, safe_int(settings.get("SizeAttributeId"), 1)),
         "SizeChoiceNo": max(1, safe_int(
             settings.get("SizeChoiceNo", settings.get("SizeactualChoiceNo")),
@@ -534,28 +535,120 @@ def commit_transaction(temp_product_folder, final_product_folder, temp_excel, te
 
 
 def canonicalize_brand_name(value):
-    """Arabic: توحيد أسماء البراندات الشائعة. English: Canonicalize common brand names."""
-    brand = normalize_text(value)
-    if re.search(r"\b(?:air\s+jordan|jordan|aj\s*\d+)\b", brand, re.I):
+    """Arabic: توحيد اسم البراند دون قبول نصوص طويلة كاسم براند. English: Canonicalize a brand without accepting long product text as a brand name."""
+    brand = re.sub(r"\s+", " ", normalize_text(value)).strip(" -–—|,.;:")
+    if not brand or len(brand) > 80:
+        return ""
+    if re.search(r"\b(?:air\s+jordan|jordan\s+brand|jordan\s*\d+|aj\s*\d+)\b", brand, re.I) or brand.casefold() == "jordan":
         return "Air Jordan"
     if re.search(r"\bnike\b", brand, re.I):
         return "Nike"
     if re.search(r"\badidas\b", brand, re.I):
         return "Adidas"
+    if re.search(r"\bnew\s+balance\b", brand, re.I):
+        return "New Balance"
+    if re.search(r"\bpuma\b", brand, re.I):
+        return "Puma"
+    if re.search(r"\bconverse\b", brand, re.I):
+        return "Converse"
+    if re.search(r"\bvans\b", brand, re.I):
+        return "Vans"
+    if re.search(r"\basics\b", brand, re.I):
+        return "ASICS"
+    if re.search(r"\breebok\b", brand, re.I):
+        return "Reebok"
+    if re.search(r"\bunder\s+armour\b", brand, re.I):
+        return "Under Armour"
     return brand
 
 
-def enforce_product_name_rules(name, source_text, style_code):
-    """Arabic: تصحيح البراند والكود فقط دون إضافة عبارات عامة. English: Correct only brand and style code without adding generic filler."""
-    final_name = re.sub(r"\s+", " ", normalize_text(name)).strip(" -–—|")
-    source = normalize_text(source_text)
-    exact_style_code = normalize_text(style_code).upper()
-    is_air_jordan = bool(re.search(r"\b(?:AIR\s+JORDAN|JORDAN\s*\d+|AJ\s*\d+)\b", f"{source} {final_name}", re.I))
+def parse_brand_map_json(value):
+    """Arabic: قراءة خريطة البراندات الآمنة من الإعدادات. English: Parse the configured allow-list brand map safely."""
+    try:
+        parsed = json.loads(normalize_text(value) or "{}")
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    result = {}
+    for raw_name, raw_id in parsed.items():
+        name = canonicalize_brand_name(raw_name)
+        brand_id = safe_int(raw_id, 0)
+        if name and brand_id > 0:
+            result[name] = brand_id
+    return result
 
-    if is_air_jordan:
-        final_name = re.sub(r"^(?:NIKE\s+)?JORDAN(?=\s*\d)", "Air Jordan", final_name, flags=re.I)
-        final_name = re.sub(r"^AJ\s*(\d+)", r"Air Jordan \1", final_name, flags=re.I)
-        final_name = re.sub(r"^AIR\s+JORDAN\b", "Air Jordan", final_name, flags=re.I)
+
+def normalize_allowed_brands(values, configured_brand=""):
+    """Arabic: بناء قائمة براندات مسموحة فقط. English: Build a strict allow-list of configured brands."""
+    result = []
+    seen = set()
+    for value in list(values or []) + [configured_brand]:
+        brand = canonicalize_brand_name(value)
+        key = brand.casefold()
+        if brand and key not in seen:
+            seen.add(key)
+            result.append(brand)
+    return result
+
+
+def detect_allowed_brand_from_text(text, allowed_brands):
+    """Arabic: اكتشاف البراند من الدليل النصي ضمن القائمة المسموحة فقط. English: Detect a brand from evidence only when it is in the allow-list."""
+    evidence = normalize_text(text)
+    for brand in allowed_brands or []:
+        canonical = canonicalize_brand_name(brand)
+        if canonical == "Air Jordan":
+            pattern = r"\b(?:air\s+jordan|jordan\s*\d+|aj\s*\d+)\b"
+        else:
+            pattern = rf"\b{re.escape(canonical)}\b"
+        if re.search(pattern, evidence, re.I):
+            return canonical
+    return ""
+
+
+def resolve_allowed_brand(generated_brand, configured_brand, allowed_brands, evidence_text=""):
+    """Arabic: رفض أي براند يولده النموذج إذا لم يكن موجوداً في خريطة المتجر. English: Reject model-generated brands that are absent from the store allow-list."""
+    allowed = normalize_allowed_brands(allowed_brands, configured_brand)
+    generated = canonicalize_brand_name(generated_brand)
+    configured = canonicalize_brand_name(configured_brand)
+
+    for allowed_brand in allowed:
+        if generated and generated.casefold() == allowed_brand.casefold():
+            return allowed_brand
+
+    detected = detect_allowed_brand_from_text(evidence_text, allowed)
+    if detected:
+        return detected
+
+    for allowed_brand in allowed:
+        if configured and configured.casefold() == allowed_brand.casefold():
+            return allowed_brand
+
+    return allowed[0] if allowed else configured or generated
+
+
+def enforce_product_name_rules(name, source_text, style_code, brand_name=""):
+    """Arabic: توحيد البراند مرة واحدة وإضافة الكود مرة واحدة. English: Keep the selected brand and style code exactly once."""
+    final_name = re.sub(r"\s+", " ", normalize_text(name)).strip(" -–—|")
+    exact_style_code = normalize_text(style_code).upper()
+    selected_brand = canonicalize_brand_name(brand_name)
+    evidence = f"{normalize_text(source_text)} {final_name}"
+
+    if selected_brand == "Air Jordan" or re.search(r"\b(?:air\s+jordan|jordan\s+brand|jordan\s*\d+|aj\s*\d+)\b", evidence, re.I):
+        # Arabic: توحيد جميع صيغ البراند ثم حذف كل تكراراته وإضافته مرة واحدة في البداية.
+        # English: Normalize all brand aliases, remove every duplicate, and prefix it exactly once.
+        final_name = re.sub(r"(?<!Air )\b(?:Nike\s+)?Jordan(?=\s*\d)", "Air Jordan", final_name, flags=re.I)
+        final_name = re.sub(r"\bAJ\s*(?=\d)", "Air Jordan ", final_name, flags=re.I)
+        final_name = re.sub(r"\bJordan\s+Brand\b", "Air Jordan", final_name, flags=re.I)
+        final_name = re.sub(r"\bAir\s+Jordan\b", " ", final_name, flags=re.I)
+        final_name = re.sub(r"\s+", " ", final_name).strip(" -–—|")
+        final_name = f"Air Jordan {final_name}".strip()
+        final_name = re.sub(r"^Air\s+Jordan\s+(\d+)\s+\1\b", r"Air Jordan \1", final_name, flags=re.I)
+    elif selected_brand:
+        escaped = re.escape(selected_brand)
+        final_name = re.sub(rf"\b{escaped}\b", " ", final_name, flags=re.I)
+        final_name = re.sub(r"\s+", " ", final_name).strip(" -–—|")
+        final_name = f"{selected_brand} {final_name}".strip()
 
     if exact_style_code:
         final_name = re.sub(
@@ -568,23 +661,30 @@ def enforce_product_name_rules(name, source_text, style_code):
 
     return re.sub(r"\s+", " ", final_name).strip()[:190]
 
-def enforce_arabic_product_name(name, source_text, style_code):
-    """Arabic: تنسيق اسم عربي تجاري طبيعي دون ترجمة حرفية أو استخدام كلمة لو. English: Format a natural commercial Arabic title without literal translation or the word لو."""
+
+def enforce_arabic_product_name(name, source_text, style_code, brand_name=""):
+    """Arabic: منع تكرار البراند في الاسم العربي وتنسيق الارتفاع والكود. English: Prevent duplicated Arabic branding and normalize silhouette/style code."""
     final_name = re.sub(r"\s+", " ", normalize_text(name)).strip(" -–—|")
     exact_style_code = normalize_text(style_code).upper()
+    selected_brand = canonicalize_brand_name(brand_name)
 
     final_name = re.sub(r"\bAir\s+Jordan\b", "إير جوردن", final_name, flags=re.I)
     final_name = re.sub(r"\bJordan(?=\s*\d)", "إير جوردن", final_name, flags=re.I)
-    final_name = re.sub(r"\bAJ\s*(\d+)", r"إير جوردن \1", final_name, flags=re.I)
+    final_name = re.sub(r"\bAJ\s*(?=\d)", "إير جوردن ", final_name, flags=re.I)
+    final_name = re.sub(r"(?:إير\s+جوردن\s*){2,}", "إير جوردن ", final_name)
 
-    # Arabic: استبدال Low بصياغة عربية طبيعية ومنع كلمة لو في العنوان.
-    # English: Replace Low with natural Arabic wording and prevent the literal word لو.
     final_name = re.sub(r"\bLow(?:-Top)?\b", "منخفض", final_name, flags=re.I)
     final_name = re.sub(r"(?<![\u0600-\u06FF])لو(?![\u0600-\u06FF])", "منخفض", final_name)
     final_name = re.sub(r"\bMid(?:-Top)?\b", "متوسط الارتفاع", final_name, flags=re.I)
     final_name = re.sub(r"\bHigh(?:-Top)?\b", "مرتفع", final_name, flags=re.I)
 
-    if not final_name.startswith("حذاء"):
+    final_name = re.sub(r"^حذاء\s+", "", final_name).strip()
+
+    if selected_brand == "Air Jordan":
+        final_name = re.sub(r"(?:إير\s+جوردن\s*)+", "", final_name).strip()
+        final_name = f"حذاء إير جوردن {final_name}".strip()
+        final_name = re.sub(r"^حذاء\s+إير\s+جوردن\s+(\d+)\s+\1\b", r"حذاء إير جوردن \1", final_name)
+    else:
         final_name = f"حذاء {final_name}".strip()
 
     if exact_style_code:
@@ -786,7 +886,7 @@ def health_check():
     return jsonify({
         "success": True,
         "service": "AlphaCode Extractor",
-        "version": "4.0.0",
+        "version": "4.3.0",
         "ai_provider": default_provider,
         "ai_configured": provider_keys.get(default_provider, False),
         "ai_providers": provider_keys,
@@ -1190,7 +1290,7 @@ def resolve_ai_runtime(data):
     }
 
 
-def build_normal_ai_messages(source_text, original_product_name, style_code, search_code, sizes, configured_brand, arabic_style):
+def build_normal_ai_messages(source_text, original_product_name, style_code, search_code, sizes, configured_brand, allowed_brands, arabic_style):
     """Arabic: بناء تعليمات كتابة عادية دون بحث ويب. English: Build normal-generation messages without web research."""
     instructions = f"""
 You are a senior footwear e-commerce catalog writer fluent in English and Arabic.
@@ -1210,6 +1310,7 @@ ARABIC — STYLE: {arabic_style}:
 - Never promise comfort, durability, performance, originality, or quality unless explicitly verified.
 
 NEVER include supplier name, Search Code, price, shipping, Chinese text, emojis, replica/authenticity claims, or quality grades.
+BRAND SAFETY: brand_name must be one of the ALLOWED BRANDS supplied by the user. Never invent or infer an unlisted brand.
 Return exactly one JSON object with: name_en, description_en, name_ar, description_ar, brand_name.
 """.strip()
 
@@ -1223,6 +1324,7 @@ Return exactly one JSON object with: name_en, description_en, name_ar, descripti
         f"Internal Search Code — never include it: {compact_prompt_text(search_code, 80) or 'Not provided'}\n"
         f"Available sizes: {compact_sizes or 'Not provided'}\n"
         f"Configured brand hint: {compact_prompt_text(configured_brand, 100) or 'Not provided'}\n"
+        f"ALLOWED BRANDS: {', '.join(allowed_brands) or configured_brand or 'Not provided'}\n"
         "Write polished bilingual store copy now."
     )
     return [
@@ -1237,12 +1339,12 @@ def build_official_research_prompt(official_domain, original_product_name, style
 Search only the official domain {official_domain} for the exact footwear Style Code \"{compact_prompt_text(style_code, 80) or 'Not provided'}\".
 Optional supplier name: {compact_prompt_text(original_product_name, 260) or 'Not provided'}
 Use one search operation only. Reject mismatched products and all retailers, marketplaces, blogs, social media, and sneaker databases.
-Return a factual dossier under 280 words: verification status, canonical brand, exact model/silhouette, official name/edition, colorway, audience, materials, visible design details, footwear type, and uncertainties.
+Return a factual dossier under 180 words: verification status, canonical brand, exact model/silhouette, official name/edition, colorway, audience, materials, visible design details, footwear type, and uncertainties.
 If not found, state NOT FOUND OFFICIALLY. Do not write marketing copy.
 """.strip()
 
 
-def build_official_rewrite_messages(official_research, source_text, original_product_name, style_code, search_code, sizes, configured_brand, arabic_style):
+def build_official_rewrite_messages(official_research, source_text, original_product_name, style_code, search_code, sizes, configured_brand, allowed_brands, arabic_style):
     """Arabic: بناء صياغة نهائية بعد البحث الرسمي. English: Build final-copy messages after official research."""
     instructions = f"""
 You are the final catalog editor for a footwear e-commerce store.
@@ -1260,23 +1362,25 @@ ARABIC — STYLE: {arabic_style}:
 - Avoid generic filler and unsupported claims about comfort, quality, originality, performance, or durability.
 
 Put the exact Style Code once at the end of each title. Never include Search Code, price, supplier name, Chinese text, emojis, or authenticity/grade claims.
+BRAND SAFETY: brand_name must be one of the ALLOWED BRANDS supplied by the user. Never invent or infer an unlisted brand.
 Return exactly one JSON object with: name_en, description_en, name_ar, description_ar, brand_name.
 """.strip()
     compact_sizes = ", ".join(unique_text_values(sizes)[:40])[:300]
     user_input = f"""
 OFFICIAL RESEARCH:
-{compact_prompt_text(official_research, 2200)}
+{compact_prompt_text(official_research, 1400)}
 
 SUPPLIER NAME:
 {compact_prompt_text(original_product_name, 320) or 'Not provided'}
 
 SUPPLIER TEXT:
-{compact_prompt_text(source_text, 1500) or 'Not provided'}
+{compact_prompt_text(source_text, 1200) or 'Not provided'}
 
 STYLE CODE: {compact_prompt_text(style_code, 80) or 'Not provided'}
 INTERNAL SEARCH CODE — NEVER INCLUDE: {compact_prompt_text(search_code, 80) or 'Not provided'}
 AVAILABLE SIZES: {compact_sizes or 'Not provided'}
 BRAND HINT: {compact_prompt_text(configured_brand, 100) or 'Not provided'}
+ALLOWED BRANDS: {', '.join(allowed_brands) or configured_brand or 'Not provided'}
 """.strip()
     return [
         {"role": "system", "content": instructions},
@@ -1411,12 +1515,55 @@ def send_ai_request(runtime, payload, timeout_seconds, stage):
 
     if response.status_code >= 400:
         try:
-            message = response.json().get("error", {}).get("message")
+            error_body = response.json().get("error", {})
+            message = normalize_text(error_body.get("message"))
+            failed_generation = error_body.get("failed_generation")
         except Exception:
             message = ""
+            failed_generation = ""
+
+        # Arabic: بعض نماذج Groq ترفض JSON mode قبل إعادة المحتوى؛ نسمح بمحاولة نصية واحدة فقط.
+        # English: Some Groq models reject JSON mode before returning content; allow one plain-text fallback only.
+        if response.status_code == 400 and (
+            failed_generation
+            or re.search(r"(?:failed_generation|validate json|valid json|json object)", message, re.I)
+        ):
+            return None, {
+                "success": False,
+                "json_mode_failed": True,
+                "stage": stage,
+                "provider": runtime["provider"],
+                "error": message or "The provider rejected JSON mode.",
+            }, 400
+
         raise RuntimeError(message or f"AI provider HTTP {response.status_code}: {response.text[:500]}")
 
     return response, None, None
+
+
+def send_copy_generation(runtime, messages, max_tokens, stage):
+    """Arabic: طلب JSON ثم محاولة نصية واحدة إذا رفض المزود وضع JSON، دون تكرار البحث. English: Request JSON and use one plain-text fallback if the provider rejects JSON mode, without repeating research."""
+    payload = make_provider_payload(runtime, messages, max_tokens, json_output=True)
+    response, error, status = send_ai_request(runtime, payload, 100, stage)
+
+    if error is not None and error.get("json_mode_failed"):
+        fallback_messages = list(messages)
+        fallback_messages.append({
+            "role": "user",
+            "content": (
+                "Return exactly one complete JSON object now. Do not use Markdown or code fences. "
+                "Use only these keys: name_en, description_en, name_ar, description_ar, brand_name."
+            ),
+        })
+        fallback_payload = make_provider_payload(
+            runtime,
+            fallback_messages,
+            max_tokens,
+            json_output=False,
+        )
+        return send_ai_request(runtime, fallback_payload, 100, f"{stage}_plain_json_fallback")
+
+    return response, error, status
 
 
 def repair_json_once(runtime, malformed_text, original_messages=None):
@@ -1444,8 +1591,12 @@ def repair_json_once(runtime, malformed_text, original_messages=None):
                 "with name_en, description_en, name_ar, description_ar, and brand_name."
             ),
         })
-    payload = make_provider_payload(runtime, messages, 1200, json_output=True)
-    response, error, status = send_ai_request(runtime, payload, 75, "json_repair")
+    response, error, status = send_copy_generation(
+        runtime,
+        messages,
+        700,
+        "json_repair",
+    )
     if error is not None:
         raise AIProviderRequestError(error, status)
     return extract_ai_output_text(response.json())
@@ -1461,7 +1612,7 @@ def generate_official_research(runtime, official_domain, original_product_name, 
             "input": prompt,
             "tools": [{"type": "web_search", "filters": {"allowed_domains": [official_domain]}}],
             "max_tool_calls": 1,
-            "max_output_tokens": 700,
+            "max_output_tokens": 450,
             "store": False,
         }
         response, error, status = send_ai_request(runtime, payload, 90, "official_search")
@@ -1481,7 +1632,7 @@ def generate_official_research(runtime, official_domain, original_product_name, 
             "messages": [{"role": "user", "content": prompt}],
             "search_settings": {"include_domains": [official_domain]},
             "citation_options": "disabled",
-            "max_completion_tokens": 700,
+            "max_completion_tokens": 450,
         }
         response, error, status = send_ai_request(research_runtime, payload, 90, "official_search")
 
@@ -1503,6 +1654,16 @@ def generate_ai_copy():
     search_code = compact_prompt_text(data.get("SearchCode"), 80)
     sizes = unique_text_values(data.get("Sizes") if isinstance(data.get("Sizes"), list) else [])[:40]
     configured_brand = canonicalize_brand_name(compact_prompt_text(data.get("BrandName"), 100))
+    allowed_brands = normalize_allowed_brands(
+        data.get("AllowedBrands") if isinstance(data.get("AllowedBrands"), list) else [],
+        configured_brand,
+    )
+    configured_brand = resolve_allowed_brand(
+        configured_brand,
+        configured_brand,
+        allowed_brands,
+        f"{original_product_name} {source_text}",
+    )
     research_official = safe_bool(data.get("ResearchOfficial"), False)
     arabic_style = compact_prompt_text(data.get("ArabicCopyStyle"), 80) or "sales-natural"
     json_repair_enabled = safe_bool(data.get("AIJsonRepairEnabled"), True)
@@ -1537,6 +1698,7 @@ def generate_ai_copy():
                 search_code,
                 sizes,
                 configured_brand,
+                allowed_brands,
                 arabic_style,
             )
             stage = "official_rewrite"
@@ -1548,12 +1710,17 @@ def generate_ai_copy():
                 search_code,
                 sizes,
                 configured_brand,
+                allowed_brands,
                 arabic_style,
             )
             stage = "normal_generation"
 
-        payload = make_provider_payload(runtime, messages, 1800, json_output=True)
-        response, error_response, error_status = send_ai_request(runtime, payload, 100, stage)
+        response, error_response, error_status = send_copy_generation(
+            runtime,
+            messages,
+            1200,
+            stage,
+        )
         if error_response is not None:
             return jsonify(error_response), error_status
 
@@ -1567,11 +1734,20 @@ def generate_ai_copy():
             repaired_text = repair_json_once(runtime, raw_text, messages)
             generated = validate_generated_copy(extract_first_json_object(repaired_text))
 
-        name_en = enforce_product_name_rules(generated.get("name_en"), source_text, style_code)
+        brand_name = resolve_allowed_brand(
+            generated.get("brand_name"),
+            configured_brand,
+            allowed_brands,
+            f"{original_product_name} {source_text}",
+        )
+        name_en = enforce_product_name_rules(
+            generated.get("name_en"), source_text, style_code, brand_name
+        )
         description_en = re.sub(r"\s+", " ", normalize_text(generated.get("description_en")))[:1800]
-        name_ar = enforce_arabic_product_name(generated.get("name_ar"), source_text, style_code)
+        name_ar = enforce_arabic_product_name(
+            generated.get("name_ar"), source_text, style_code, brand_name
+        )
         description_ar = re.sub(r"\s+", " ", normalize_text(generated.get("description_ar")))[:2000]
-        brand_name = canonicalize_brand_name(generated.get("brand_name") or configured_brand)
 
         if len(name_en) < 8 or len(description_en) < 20 or len(name_ar) < 8 or len(description_ar) < 15:
             raise ValueError("The AI response did not contain complete bilingual product copy.")
@@ -1625,8 +1801,15 @@ def extract_product():
     description_en = normalize_text(data.get("DescriptionEN") or data.get("Description"))
     name_ar = normalize_text(data.get("NameAR")) or name_en
     description_ar = normalize_text(data.get("DescriptionAR")) or description_en
-    brand_name = canonicalize_brand_name(data.get("BrandName") or settings["BrandName"])
-    brand_id = safe_int(data.get("BrandId"), settings["BrandId"])
+    brand_map = parse_brand_map_json(settings.get("BrandMapJson"))
+    allowed_store_brands = list(brand_map.keys()) or [settings["BrandName"]]
+    brand_name = resolve_allowed_brand(
+        data.get("BrandName"),
+        settings["BrandName"],
+        allowed_store_brands,
+        f"{data.get('NameEN', '')} {data.get('NameAR', '')} {data.get('DescriptionEN', '')}",
+    )
+    brand_id = brand_map.get(brand_name, safe_int(data.get("BrandId"), settings["BrandId"]))
     sizes = unique_text_values(data.get("Sizes") if isinstance(data.get("Sizes"), list) else [])
     supplier_store_name = normalize_text(data.get("SupplierStoreName") or settings["SupplierStoreName"])
     supplier_store_id = normalize_text(data.get("SupplierStoreId") or settings["SupplierStoreId"])
@@ -1646,7 +1829,9 @@ def extract_product():
 
     # Arabic: ترتيب الصور المختارة مع دعم تنزيل المحدد فقط وعدم إضافة صور لم يخترها المستخدم.
     # English: Normalize selected images and optionally download only the exact user selection.
-    store_image_limit = max(1, min(safe_int(data.get("StoreImageLimit"), 6), 20))
+    # Arabic: المتجر الحالي يدعم ست صور إجمالاً: رئيسية وخمس صور معرض.
+    # English: The current store supports six total images: one main and five gallery images.
+    store_image_limit = max(1, min(safe_int(data.get("StoreImageLimit"), 6), 6))
     selected_indexes = []
     supplied_selection = data.get("SelectedImageIndexes") if isinstance(data.get("SelectedImageIndexes"), list) else []
     for value in supplied_selection:

@@ -1519,6 +1519,14 @@ async function fillSizeVariants(form, product) {
     let filledRows = 0;
     const missingRows = [];
 
+    // Arabic: خريطة سعر لكل صف (لون/مقاس) من البيانات القادمة من الخادم - تسمح بسعر مختلف لكل صف بدل سعر واحد للكل.
+    // English: A per-row (color/size) price map from the server data - allows a different price per row instead of one price for all.
+    const variantPriceByLabel = new Map(
+        (Array.isArray(product.variants) ? product.variants : [])
+            .filter(row => row && row.type !== undefined)
+            .map(row => [String(row.type), row.price]),
+    );
+
     for (const size of sizes) {
         const controls = await waitForCondition(
             () => {
@@ -1542,7 +1550,10 @@ async function fillSizeVariants(form, product) {
             continue;
         }
 
-        setElementValue(controls.price, product.price);
+        const rowPrice = variantPriceByLabel.has(String(size))
+            ? variantPriceByLabel.get(String(size))
+            : product.price;
+        setElementValue(controls.price, rowPrice);
         setElementValue(controls.stock, stockPerSize);
         filledRows += 1;
     }
@@ -2556,7 +2567,7 @@ async function injectAdminPanel() {
     panel.querySelector(
         '#alphacode-fill-product',
     ).onclick = async event => {
-        button.disabled = true;
+        event.currentTarget.disabled = true;
 
         try {
             await autofillLatestProduct(
@@ -2580,14 +2591,14 @@ async function injectAdminPanel() {
                 },
             );
         } finally {
-            button.disabled = false;
+            event.currentTarget.disabled = false;
         }
     };
 
     panel.querySelector(
         '#alphacode-fill-submit',
     ).onclick = async event => {
-        button.disabled = true;
+        event.currentTarget.disabled = true;
 
         try {
             await autofillLatestProduct(
@@ -2611,7 +2622,7 @@ async function injectAdminPanel() {
                 },
             );
 
-            button.disabled = false;
+            event.currentTarget.disabled = false;
         }
     };
 
@@ -2911,7 +2922,7 @@ async function initializeAdminAutofill() {
         'admin_adapter_ready',
         'Sooqify admin adapter initialized.',
         {
-            version: '4.5.0-reusable-batch-tab-json-template',
+            version: '4.4.0-reusable-batch-tab-json-template',
             target_store:
                 adminConfig.StoreProfileName,
             supplier_store:

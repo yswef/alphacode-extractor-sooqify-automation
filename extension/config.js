@@ -42,6 +42,14 @@
         Veg: 'no',
         Recommended: 'yes',
 
+        // Arabic: نوع المنتج الافتراضي وإعدادات فئة الساعات الخاصة (بدون فئة فرعية، رسم ثابت بدل فكرة الدرجة).
+        // English: Default product type and watch-only category settings (no subcategory, flat fee instead of a grade concept).
+        ProductType: 'shoes',
+        WatchCategoryId: 46,
+        WatchFlatFeeYuan: 600,
+        WatchColorAttributeId: 2,
+        WatchColorTitle: 'اللون',
+
         // Arabic: البراند والمقاسات.
         // English: Brand and size variants.
         BrandName: 'Air Jordan',
@@ -66,7 +74,7 @@
 
         // Arabic: عند التفعيل يُرفع للمتجر الصورة الرئيسية فقط، وتُحفظ كل الصور محلياً بجودتها الأصلية دون أي تعديل.
         // English: When enabled, only the main image is submitted to the store, and every image is saved locally at full original quality with no edits.
-        UploadMainImageOnly: true,
+        UploadMainImageOnly: false,
 
         // Arabic: إعدادات الذكاء الاصطناعي القابلة للتبديل.
         // English: Switchable AI-provider settings.

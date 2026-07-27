@@ -455,11 +455,12 @@ function bindExternalCopyTemplateControls({
 // English: Prioritize explicit Item No/Style Code labels and never use a generic Code token.
 function extractStyleCode(sourceText) {
     const patterns = [
-        /(?:Product\s*(?:No\.?|Number)|Product\s*#)[\s.:：#]*([A-Z0-9][A-Z0-9._/-]{2,})/i,
-        /(?:Item\s*(?:No\.?|Number)|Item\s*#)[\s.:：#]*([A-Z0-9][A-Z0-9._/-]{2,})/i,
-        /Style\s*Code[\s.:：#]*([A-Z0-9][A-Z0-9._/-]{2,})/i,
-        /(?:货号|款号|型号|商品编号)[\s.:：#]*([A-Z0-9][A-Z0-9._/-]{2,})/i,
-        /(?:Model\s*(?:No\.?|Number)?)[\s.:：#]*([A-Z0-9][A-Z0-9._/-]{2,})/i
+        /(?:Product\s*(?:No\.?|Number)|Product\s*#)\s*[:：#]?\s*([A-Z0-9][A-Z0-9._/-]{2,})/i, // تم الإضافة هنا
+        /(?:Item\s*(?:No\.?|Number)|Item\s*#)\s*[:：#]?\s*([A-Z0-9][A-Z0-9._/-]{2,})/i,
+        /Style\s*Code\s*[:：#]?\s*([A-Z0-9][A-Z0-9._/-]{2,})/i,
+        /(?:SKU|Ref(?:erence)?\.?\s*(?:No\.?)?)\s*[:：#]?\s*([A-Z0-9][A-Z0-9._/-]{2,})/i,
+        /(?:货号|款号|型号|商品编号|参考编号)\s*[:：#]?\s*([A-Z0-9][A-Z0-9._/-]{2,})/i,
+        /(?:Model\s*(?:No\.?|Number)?)\s*[:：#]?\s*([A-Z0-9][A-Z0-9._/-]{2,})/i
     ];
 
     for (const pattern of patterns) {
@@ -467,6 +468,58 @@ function extractStyleCode(sourceText) {
         if (match) return match[1].replace(/[.,;:]+$/g, '').trim();
     }
     return 'غير محدد';
+}
+
+// Arabic: تحديد نوع المنتج (حذاء/ساعة) من نص الصفحة أو مسار التصنيف (Breadcrumb)؛ يبقى قابلاً للتجاوز يدوياً من واجهة الاستخراج.
+// English: Detect the product type (shoe/watch) from the page text or the category breadcrumb; still meant to be manually overridable from the extraction UI.
+function detectProductType(sourceText, breadcrumbText = '') {
+    const haystack = `${breadcrumbText} ${sourceText}`;
+    if (/\b(watch|watches|timepiece)\b/i.test(haystack) || /手表|腕表|钟表/.test(haystack)) {
+        return 'watches';
+    }
+    return 'shoes';
+}
+
+// Arabic: اقتراح مبدئي (غير نهائي) لفروقات سعر الألوان من نص وصف الساعة، لعرضه قابلاً للتعديل في شاشة المراجعة
+// قبل الإرسال - لا يُستخدم كسعر نهائي تلقائياً لأن صياغة البائعين تختلف كثيراً بلا نمط ثابت واحد.
+// English: A best-effort (non-final) suggestion for watch color price deltas parsed from the description,
+// meant to be shown editable in the review screen before submission - never applied silently as a final
+// price, since seller phrasing varies too much to trust blindly.
+function extractWatchColorDeltas(sourceText) {
+    const text = normalizeText(sourceText);
+    const colorWords = {
+        '白壳': 'White', '白': 'White', '银': 'Silver',
+        '金壳': 'Gold', '金玫': 'Rose Gold', '玫瑰金': 'Rose Gold', '金': 'Gold',
+        '黑壳': 'Black', '黑': 'Black',
+    };
+    const results = [];
+    const seenLabels = new Set();
+
+    // نمط: <لون>💰<رقم> يُعتبر السعر الأساسي (فرق = 0).
+    const baseMatch = text.match(/([\u4e00-\u9fa5]{1,3})\s*(?:壳)?\s*💰\s*(\d+)/);
+    if (baseMatch) {
+        const label = colorWords[baseMatch[1] + (text[baseMatch.index + baseMatch[1].length] === '壳' ? '壳' : '')] || colorWords[baseMatch[1]] || baseMatch[1];
+        if (!seenLabels.has(label)) {
+            seenLabels.add(label);
+            results.push({ label, delta_yuan: 0, base_price_yuan: parseInt(baseMatch[2], 10) });
+        }
+    }
+
+    // نمط: <لون>+<رقم> يُعتبر فرقاً عن السعر الأساسي.
+    const deltaPattern = /([\u4e00-\u9fa5]{1,3})\s*(?:壳)?\s*\+\s*(\d+)/g;
+    let deltaMatch;
+    while ((deltaMatch = deltaPattern.exec(text)) !== null) {
+        const raw = deltaMatch[1] + (text[deltaMatch.index + deltaMatch[1].length] === '壳' ? '壳' : '');
+        const label = colorWords[raw] || colorWords[deltaMatch[1]] || deltaMatch[1];
+        if (!seenLabels.has(label)) {
+            seenLabels.add(label);
+            results.push({ label, delta_yuan: parseInt(deltaMatch[2], 10) });
+        }
+    }
+
+    // Arabic: لو ما انلقى أي نمط واضح، نرجّع مصفوفة فاضية بدل تخمين غير موثوق - المستخدم يعبيها يدوياً بالمراجعة.
+    // English: If nothing clear was found, return an empty array instead of an unreliable guess - the operator fills it in manually during review.
+    return results;
 }
 
 // Arabic: منطق السعر محفوظ كما كان، حسب طلب المستخدم.

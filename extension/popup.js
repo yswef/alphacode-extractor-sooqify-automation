@@ -32,6 +32,9 @@ const NUMBER_FIELDS = new Set([
     'BatchPreparationConcurrency',
     'BatchMaximumProducts',
     'BatchMaxRetries',
+    'WatchCategoryId',
+    'WatchFlatFeeYuan',
+    'WatchColorAttributeId',
 ]);
 
 const BOOLEAN_FIELDS = new Set([
@@ -43,7 +46,6 @@ const BOOLEAN_FIELDS = new Set([
     'AIJsonRepairEnabled',
     'OfficialResearchOnRegenerate',
     'OpenSupplierAtLastProduct',
-    'UploadMainImageOnly',
     'FastAutofillMode',
     'BatchModeEnabled',
     'BatchContinueOnFailure',
@@ -83,6 +85,10 @@ function activateTab(tabName) {
         loadSyncSettings();
         refreshSyncStatus();
         refreshRecentProducts();
+    }
+
+    if (tabName === 'reports' && byId('reportDate') && !byId('reportDate').value) {
+        byId('reportDate').value = new Date().toISOString().slice(0, 10);
     }
 
     if (tabName === 'diagnostics') {
@@ -1191,6 +1197,31 @@ function escapeHtmlForPopup(value) {
     }[char]));
 }
 
+// Arabic: توليد تقرير PDF (يومي/شهري) وفتح رابط التنزيل مباشرة.
+// English: Generate a PDF report (daily/monthly) and open the download link directly.
+async function generateReport() {
+    const resultBox = byId('reportResult');
+    const scope = byId('reportScope')?.value || 'daily';
+    const date = byId('reportDate')?.value || '';
+
+    const response = await fetch(`${API_BASE}/api/reports/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope, date }),
+    });
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+        throw new Error(data.error || 'تعذر توليد التقرير.');
+    }
+
+    if (resultBox) {
+        resultBox.className = 'result-box success';
+        resultBox.innerHTML = `تم التوليد: <a href="${data.download_url}" target="_blank">${data.filename}</a>`;
+    }
+    chrome.tabs.create({ url: data.download_url });
+}
+
 // Arabic: ربط حدث بأمان حتى لا تتعطل اللوحة إذا غاب عنصر اختياري.
 // English: Safely bind an event so optional missing controls cannot break the popup.
 function bindClick(id, handler) {
@@ -1260,6 +1291,7 @@ async function initializePopup() {
     bindClick('saveSyncBtn', saveSyncSettings);
     bindClick('syncNowBtn', triggerSyncNow);
     bindClick('refreshRecentBtn', refreshRecentProducts);
+    bindClick('generateReportBtn', generateReport);
 
     byId('AIProvider')?.addEventListener('change', handleAiProviderChange);
 

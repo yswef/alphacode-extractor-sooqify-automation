@@ -21,6 +21,7 @@ backend/images/
 backend/downloads/
 backend/tmp/
 backend/.env
+Build_history.sh
 .env
 *.log
 

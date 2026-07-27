@@ -21,6 +21,18 @@ from flask import Flask, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
 from PIL import Image, ImageOps
 
+# Arabic: تقارير PDF اختيارية - الوحدة بملف منفصل (reports.py) حتى لا يكبر هذا الملف أكثر.
+# لو reportlab غير مثبّت بعد، التطبيق يستمر بالعمل بشكل طبيعي وتُرجع مسارات /api/reports خطأ واضحاً بدل تعطّل السيرفر.
+# English: Optional PDF reports - kept in a separate module (reports.py) so this file doesn't grow further.
+# If reportlab isn't installed yet, the app keeps running normally and /api/reports routes return a clear
+# error instead of crashing the server.
+try:
+    import reports as reports_module
+    REPORTS_AVAILABLE = True
+except ImportError:
+    reports_module = None
+    REPORTS_AVAILABLE = False
+
 app = Flask(__name__)
 
 # Arabic: حد وقائي لطلبات الواجهة المحلية مع رسالة JSON مفهومة عند تجاوزه.
@@ -66,66 +78,22 @@ DEFAULT_AI_PROVIDER = "groq"
 DEFAULT_AI_MODEL = "openai/gpt-oss-120b"
 DEFAULT_OPENAI_MODEL = "gpt-5.2"
 GROQ_OFFICIAL_SEARCH_MODEL = "groq/compound-mini"
-AI_PROMPT_VERSION = "4.6-batch-official-brand-guard-fast-json"
+AI_PROMPT_VERSION = "4.5-batch-official-brand-guard-fast-json"
 
 # Arabic: القفل يمنع تعارض طلبين أثناء تحديث الصور وExcel والأرشيف.
 # English: The lock prevents concurrent requests from corrupting images, Excel, or archive data.
 SAVE_LOCK = threading.RLock()
 AI_CACHE_LOCK = threading.RLock()
-class AnsiColors:
-    RESET = "\033[0m"
-    BOLD = "\033[1m"
-    DIM = "\033[2m"
-    GREEN = "\033[92m"
-    CYAN = "\033[96m"
-    YELLOW = "\033[93m"
-    RED = "\033[91m"
-    MAGENTA = "\033[95m"
-    GRAY = "\033[90m"
-    WHITE = "\033[97m"
 
-
-def enable_windows_ansi_support():
-    """Arabic: تفعيل معالجة ألوان ANSI على cmd/PowerShell القديمة في ويندوز. English: Enable ANSI color processing on older Windows cmd/PowerShell consoles."""
-    if os.name == "nt":
-        os.system("")  # Arabic: خدعة بسيطة تُفعّل وضع VT100 في الطرفية الحالية. English: A simple trick that turns on VT100 mode for the current console.
-
-
-enable_windows_ansi_support()
-
-
-class HackerConsoleFormatter(logging.Formatter):
-    """Arabic: تنسيق ملوّن ومرتّب لمخرجات الطرفية فقط؛ ملف السجل الخارجي يبقى نصاً عادياً. English: A colorized, organized format for the console only; the external log file stays plain text."""
-
-    LEVEL_STYLE = {
-        "DEBUG": (AnsiColors.GRAY, "·"),
-        "INFO": (AnsiColors.CYAN, "*"),
-        "WARNING": (AnsiColors.YELLOW, "!"),
-        "ERROR": (AnsiColors.RED, "x"),
-        "CRITICAL": (AnsiColors.RED + AnsiColors.BOLD, "X"),
-    }
-
-    def format(self, record):
-        color, symbol = self.LEVEL_STYLE.get(record.levelname, (AnsiColors.WHITE, "*"))
-        timestamp = self.formatTime(record, "%H:%M:%S")
-        source_tag = record.name.upper()[:10].ljust(10)
-        message = record.getMessage()
-        return (
-            f"{AnsiColors.GRAY}{timestamp}{AnsiColors.RESET} "
-            f"{color}[{symbol}]{AnsiColors.RESET} "
-            f"{AnsiColors.DIM}{source_tag}{AnsiColors.RESET} "
-            f"{color}{message}{AnsiColors.RESET}"
-        )
 def configure_application_logging():
-    """Arabic: تهيئة سجل خارجي دوّار (نص عادي) وطرفية ملوّنة منظمة. English: Configure a rotating plain-text external log and an organized, colorized console."""
-    file_format = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
-    console_format = HackerConsoleFormatter()
+    """Arabic: تهيئة سجل خارجي دوّار مع استمرار الطباعة في الطرفية. English: Configure rotating external logs while preserving console output."""
+    log_format = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
 
     if not any(getattr(handler, "_alphacode_console", False) for handler in root_logger.handlers):
         console_handler = logging.StreamHandler()
-        console_handler.setFormatter(console_format)
+        console_handler.setFormatter(log_format)
         console_handler._alphacode_console = True
         root_logger.addHandler(console_handler)
 
@@ -138,7 +106,7 @@ def configure_application_logging():
                 backupCount=5,
                 encoding="utf-8",
             )
-            file_handler.setFormatter(file_format)
+            file_handler.setFormatter(log_format)
             file_handler._alphacode_file = True
             root_logger.addHandler(file_handler)
     except OSError as exc:
@@ -418,13 +386,17 @@ def get_brand_dir(brand_name):
 
 
 def get_product_image_dir(product):
+    """
+    Arabic: إعادة بناء مسار مجلد منتج موجود، متوافق مع كل الأنماط السابقة: بمجلد تاريخ (الحالي)،
+    أو بمجلد براند (نمط سابق)، أو مباشرة داخل مجلد الصور (أقدم نمط).
+    English: Rebuild an existing product's folder location, compatible with every previous scheme:
+    date-folder (current), brand-folder (previous), or directly under the images root (oldest).
+    """
     folder_name = normalize_text(product.get("folder"))
     date_folder = normalize_text(product.get("date_folder"))
-    brand_folder = normalize_text(product.get("brand_folder"))
-    if brand_folder and date_folder:
-        return os.path.join(BASE_DIR, brand_folder, date_folder, folder_name)
     if date_folder:
         return os.path.join(BASE_DIR, date_folder, folder_name)
+    brand_folder = normalize_text(product.get("brand_folder"))
     if brand_folder:
         return os.path.join(BASE_DIR, brand_folder, folder_name)
     return os.path.join(BASE_DIR, folder_name)
@@ -678,8 +650,15 @@ def extract_settings(data):
     """Arabic: قراءة جميع الإعدادات مع قيم آمنة للمتاجر المستقبلية. English: Read all settings with safe defaults for future stores."""
     settings = data.get("Settings") if isinstance(data.get("Settings"), dict) else data
     return {
+        "ProductType": (normalize_text(settings.get("ProductType")).lower() or "shoes"),
         "CategoryId": safe_int(settings.get("CategoryId"), 41),
         "SubCategoryId": safe_int(settings.get("SubCategoryId"), 42),
+        # Arabic: فئة الساعات (Timepieces) بدون فئة فرعية. English: The watches category (Timepieces), with no subcategory.
+        "WatchCategoryId": safe_int(settings.get("WatchCategoryId"), 46),
+        # Arabic: رسم ثابت باليوان يُضاف لكل ساعة بلا استثناء (يحل محل فكرة الدرجة الأولى/الثانية). English: A flat CNY fee added to every watch with no exception (replaces the earlier grade-1/grade-2 idea).
+        "WatchFlatFeeYuan": safe_float(settings.get("WatchFlatFeeYuan"), 600),
+        "WatchColorAttributeId": safe_int(settings.get("WatchColorAttributeId"), 2),
+        "WatchColorTitle": normalize_text(settings.get("WatchColorTitle")) or "اللون",
         "UnitId": safe_int(settings.get("UnitId"), 1),
         "Stock": max(0, safe_int(settings.get("Stock"), 100)),
         "ExchangeRate": safe_float(settings.get("ExchangeRate"), 0.5),
@@ -727,7 +706,7 @@ def extract_settings(data):
         "DownloadSelectedImagesOnly": safe_bool(settings.get("DownloadSelectedImagesOnly"), False),
         # Arabic: عند التفعيل - يُرفع للمتجر الصورة الرئيسية فقط، وتُحفظ كل الصور محلياً كما هي (دون تصغير أو تربيع أو ضغط).
         # English: When enabled - only the main image is submitted to the store, and every image is saved locally untouched (no resize/square/compression).
-        "UploadMainImageOnly": safe_bool(settings.get("UploadMainImageOnly"), True),
+        "UploadMainImageOnly": safe_bool(settings.get("UploadMainImageOnly"), False),
     }
 
 
@@ -917,8 +896,46 @@ def json_cell(value):
     return json.dumps(value, ensure_ascii=True, separators=(",", ":"))
 
 
-def build_size_variant_fields(sizes, price, stock, settings):
-    """Arabic: إنشاء المقاسات بنفس السعر ونفس الكمية لكل مقاس. English: Build size variants with identical price and stock for every size."""
+def build_variant_fields(sizes, colors, price, stock, settings, product_type, base_price_yuan):
+    """
+    Arabic: يبني صفوف Variations لسوقيفاي. للأحذية: مقاسات بنفس السعر لكل واحد (سلوك أصلي بلا أي تغيير).
+    للساعات: ألوان، كل لون بسعره الخاص = السعر الأساسي باليوان + فرق سعر اللون + رسم الساعات الثابت،
+    محوّلاً بنفس سعر الصرف. لو ما وصلت أي ألوان (لم تُستخرج أو لم تُعدَّل يدوياً)، يُنشأ لون واحد
+    افتراضي بالسعر الأساسي + الرسم الثابت فقط، حتى لا يبقى المنتج بلا سعر قابل للبيع.
+    English: Builds Sooqify variation rows. Shoes: sizes, all at the identical price (original,
+    unchanged behavior). Watches: colors, each with its own price = base CNY price + that color's
+    delta + the flat watch fee, converted with the same exchange rate. If no colors were supplied
+    (not extracted or not edited by the operator), a single default color is created at the base
+    price plus the flat fee, so the product is never left without a sellable price.
+    """
+    if product_type == "watches":
+        variations = []
+        for color in (colors or []):
+            label = normalize_text(color.get("label")) if isinstance(color, dict) else ""
+            if not label:
+                continue
+            delta_yuan = safe_float(color.get("delta_yuan"), 0) if isinstance(color, dict) else 0
+            color_price_yuan = safe_float(base_price_yuan, 0) + delta_yuan + settings["WatchFlatFeeYuan"]
+            color_price_sar = round(color_price_yuan * settings["ExchangeRate"])
+            variations.append({"type": label, "price": color_price_sar, "stock": settings["Stock"]})
+        if not variations:
+            default_price_yuan = safe_float(base_price_yuan, 0) + settings["WatchFlatFeeYuan"]
+            variations = [{
+                "type": "Default",
+                "price": round(default_price_yuan * settings["ExchangeRate"]),
+                "stock": settings["Stock"],
+            }]
+        attribute_id = str(settings["WatchColorAttributeId"])
+        choice_options = [{
+            "name": f"choice_{attribute_id}",
+            "title": settings["WatchColorTitle"],
+            "options": [item["type"] for item in variations],
+        }]
+        attributes = [attribute_id]
+        total_stock = settings["Stock"] * len(variations)
+        return json_cell(variations), json_cell(choice_options), json_cell(attributes), total_stock
+
+    # Arabic: سلوك الأحذية الأصلي بدون أي تغيير. English: Original shoe behavior, unchanged.
     normalized_sizes = unique_text_values(sizes)
     if not normalized_sizes:
         return "[]", "[]", "[]", settings["Stock"]
@@ -1130,11 +1147,34 @@ def enforce_product_name_rules(name, source_text, style_code, brand_name=""):
     return re.sub(r"\s+", " ", final_name).strip()[:190]
 
 
-def enforce_arabic_product_name(name, source_text, style_code, brand_name=""):
-    """Arabic: منع تكرار البراند في الاسم العربي وتنسيق الارتفاع والكود. English: Prevent duplicated Arabic branding and normalize silhouette/style code."""
+def enforce_arabic_product_name(name, source_text, style_code, brand_name="", product_type="shoes"):
+    """Arabic: منع تكرار البراند في الاسم العربي وتنسيق الارتفاع والكود؛ يتفرّع حسب نوع المنتج. English: Prevent duplicated Arabic branding and normalize silhouette/style code; branches by product type."""
     final_name = re.sub(r"\s+", " ", normalize_text(name)).strip(" -–—|")
     exact_style_code = normalize_text(style_code).upper()
     selected_brand = canonicalize_brand_name(brand_name)
+
+    if product_type == "watches":
+        # Arabic: بدون أي تحويل لمصطلحات الارتفاع (خاصة بالأحذية فقط)؛ فقط بادئة "ساعة" وكود الستايل إن وُجد.
+        # English: No silhouette-word translation (shoes-only); just a "ساعة" prefix and the style code if present.
+        final_name = re.sub(r"^ساعة\s+", "", final_name).strip()
+        if selected_brand:
+            escaped = re.escape(selected_brand)
+            final_name = re.sub(rf"\b{escaped}\b", " ", final_name, flags=re.I)
+            final_name = re.sub(r"\s+", " ", final_name).strip(" -–—|")
+            final_name = f"ساعة {selected_brand} {final_name}".strip()
+        else:
+            final_name = f"ساعة {final_name}".strip()
+
+        if exact_style_code:
+            final_name = re.sub(
+                rf"\s*[-–—|]?\s*{re.escape(exact_style_code)}\b",
+                "",
+                final_name,
+                flags=re.I,
+            ).strip(" -–—|")
+            final_name = f"{final_name} - {exact_style_code}"
+
+        return re.sub(r"\s+", " ", final_name).strip()[:210]
 
     final_name = re.sub(r"\bAir\s+Jordan\b", "إير جوردن", final_name, flags=re.I)
     final_name = re.sub(r"\bJordan(?=\s*\d)", "إير جوردن", final_name, flags=re.I)
@@ -1190,6 +1230,7 @@ def build_pending_product(product_id, archive_item):
         "brand_name": archive_item.get("brand_name"),
         "brand_id": archive_item.get("brand_id"),
         "price": archive_item.get("price"),
+        "variants": archive_item.get("variants") or [],
         "sizes": archive_item.get("sizes") or [],
         "settings": archive_item.get("settings") or {},
         "style_code": archive_item.get("style_code"),
@@ -1355,7 +1396,7 @@ def health_check():
     return jsonify({
         "success": True,
         "service": "AlphaCode Extractor",
-        "version": "4.6.0",
+        "version": "4.5.0",
         "ai_provider": default_provider,
         "ai_configured": provider_keys.get(default_provider, False),
         "ai_providers": provider_keys,
@@ -1456,6 +1497,59 @@ def trigger_sync_now():
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
     return jsonify({"success": True, "status": load_sync_state(), "pending_queue": len(load_sync_queue())})
+
+
+@app.route("/api/reports/generate", methods=["POST"])
+def generate_pdf_report():
+    """Arabic: توليد تقرير PDF يومي أو شهري من الأرشيف. English: Generate a daily or monthly PDF report from the archive."""
+    if not REPORTS_AVAILABLE:
+        return jsonify({
+            "success": False,
+            "error": "Reports module unavailable. Run: pip install reportlab --break-system-packages",
+        }), 501
+    if not ROOT_DIR_CONFIGURED:
+        return jsonify({"success": False, "needs_folder_setup": True, "error": "No save folder is configured yet."}), 409
+
+    data = request.get_json(silent=True) or {}
+    scope = normalize_text(data.get("scope")).lower()
+    if scope not in ("daily", "monthly"):
+        scope = "daily"
+
+    date_str = normalize_text(data.get("date"))
+    try:
+        target_date = datetime.strptime(date_str, "%Y-%m-%d") if date_str else datetime.now()
+    except ValueError:
+        return jsonify({"success": False, "error": "date must be in YYYY-MM-DD format."}), 400
+
+    reports_dir = os.path.join(ROOT_DIR, "reports")
+    period_label = target_date.strftime("%Y-%m") if scope == "monthly" else target_date.strftime("%Y-%m-%d")
+    filename = f"alphacode_{scope}_report_{period_label}.pdf"
+    output_path = os.path.join(reports_dir, filename)
+
+    try:
+        archive = load_archive()
+        reports_module.generate_report(archive_entries(archive), scope, output_path, target_date)
+    except Exception as exc:
+        logger.error("Report generation failed: %s", exc)
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+    logger.info("Generated %s report for %s -> %s", scope, period_label, filename)
+    return jsonify({
+        "success": True,
+        "filename": filename,
+        "download_url": f"http://127.0.0.1:5000/api/reports/download/{filename}",
+    })
+
+
+@app.route("/api/reports/download/<path:filename>", methods=["GET"])
+def download_pdf_report(filename):
+    """Arabic: تنزيل تقرير PDF مولّد مسبقاً. English: Download a previously generated PDF report."""
+    safe_filename = os.path.basename(unquote(filename))
+    reports_dir = os.path.join(ROOT_DIR, "reports")
+    file_path = os.path.join(reports_dir, safe_filename)
+    if not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "Report not found. Generate it first."}), 404
+    return send_from_directory(reports_dir, safe_filename, as_attachment=True)
 
 
 @app.route("/api/log/client", methods=["POST"])
@@ -1880,39 +1974,59 @@ def resolve_ai_runtime(data):
     }
 
 
-def build_normal_ai_messages(source_text, original_product_name, style_code, search_code, sizes, configured_brand, allowed_brands, arabic_style):
+def build_normal_ai_messages(source_text, original_product_name, style_code, search_code, sizes, configured_brand, allowed_brands, arabic_style, product_type="shoes"):
     """Arabic: بناء تعليمات كتابة عادية دون بحث ويب. English: Build normal-generation messages without web research."""
+    if product_type == "watches":
+        role_line = "You are a senior luxury-watch e-commerce catalog writer fluent in English and Arabic."
+        english_bullets = (
+            "- Use the canonical brand and exact model/collection when supported.\n"
+            "- Write a concise title with model/collection name, case material or dial color when verified, "
+            "and the exact reference/style code once at the end only if one was supplied.\n"
+            "- Write 2–3 factual commercial sentences about the movement, case, or design details actually present in the evidence."
+        )
+        arabic_open_line = "- Begin with ساعة and keep the configured brand name as written."
+        never_line = "NEVER include supplier name, Search Code, price, shipping, Chinese text, emojis, authenticity/grade claims, or invented available colors/sizes."
+        available_line = f"Reference/style code (only if supplied): {compact_prompt_text(style_code, 80) or 'Not provided'}\n"
+    else:
+        role_line = "You are a senior footwear e-commerce catalog writer fluent in English and Arabic."
+        english_bullets = (
+            "- Use the canonical brand and exact model when supported.\n"
+            "- Write a concise title with model, silhouette/type, verified colorway or nickname when present, "
+            "and the exact Style Code once at the end.\n"
+            "- Write 2–3 factual commercial sentences and mention the available size range in the final sentence."
+        )
+        arabic_open_line = "- Begin with حذاء and write Air Jordan as إير جوردن."
+        never_line = "NEVER include supplier name, Search Code, price, shipping, Chinese text, emojis, replica/authenticity claims, or quality grades."
+        available_line = f"Available sizes: {', '.join(unique_text_values(sizes)[:40])[:300] or 'Not provided'}\n"
+
     instructions = f"""
-You are a senior footwear e-commerce catalog writer fluent in English and Arabic.
+{role_line}
 Use only the supplied evidence. Never browse during this first generation and never invent colors, materials, gender, edition, technology, collaboration, authenticity, or performance benefits.
 
 ENGLISH:
-- Use the canonical brand and exact model when supported.
-- Write a concise title with model, silhouette/type, verified colorway or nickname when present, and the exact Style Code once at the end.
-- Write 2–3 factual commercial sentences and mention the available size range in the final sentence.
+{english_bullets}
 
 ARABIC — STYLE: {arabic_style}:
 - Create an original Arabic sales title, not a word-for-word translation and not necessarily in the English order.
-- Begin with حذاء and write Air Jordan as إير جوردن.
-- Lead with the strongest useful verified identity: model, attractive color combination, edition, or silhouette.
-- Use natural Arabic suitable for an online store. Avoid awkward transliteration, mixed English filler, and the word لو; use منخفض only when it improves clarity.
+{arabic_open_line}
+- Lead with the strongest useful verified identity: model, attractive color combination, edition, or design character.
+- Use natural Arabic suitable for an online store. Avoid awkward transliteration and mixed English filler.
 - The Arabic description may reorder facts and use a warmer, more persuasive tone than English, but it must remain accurate.
 - Never promise comfort, durability, performance, originality, or quality unless explicitly verified.
 
-NEVER include supplier name, Search Code, price, shipping, Chinese text, emojis, replica/authenticity claims, or quality grades.
+{never_line}
 BRAND SAFETY: brand_name must be one of the ALLOWED BRANDS supplied by the user. Never invent or infer an unlisted brand.
 Return exactly one JSON object with: name_en, description_en, name_ar, description_ar, brand_name.
 """.strip()
 
     compact_source = compact_prompt_text(source_text, 3200)
     compact_original = compact_prompt_text(original_product_name, 320)
-    compact_sizes = ", ".join(unique_text_values(sizes)[:40])[:300]
     user_input = (
         f"Original supplier name:\n{compact_original or 'Not provided'}\n\n"
         f"Supplier product text:\n{compact_source or 'Not provided'}\n\n"
         f"Exact Style Code: {compact_prompt_text(style_code, 80) or 'Not provided'}\n"
         f"Internal Search Code — never include it: {compact_prompt_text(search_code, 80) or 'Not provided'}\n"
-        f"Available sizes: {compact_sizes or 'Not provided'}\n"
+        f"{available_line}"
         f"Configured brand hint: {compact_prompt_text(configured_brand, 100) or 'Not provided'}\n"
         f"ALLOWED BRANDS: {', '.join(allowed_brands) or configured_brand or 'Not provided'}\n"
         "Write polished bilingual store copy now."
@@ -1923,39 +2037,64 @@ Return exactly one JSON object with: name_en, description_en, name_ar, descripti
     ]
 
 
-def build_official_research_prompt(official_domain, original_product_name, style_code):
+def build_official_research_prompt(official_domain, original_product_name, style_code, product_type="shoes"):
     """Arabic: برومبت بحث رسمي صغير للمنتج الحالي فقط. English: Build a compact official-domain research prompt for the current product only."""
+    if product_type == "watches":
+        subject_line = (
+            f'Search only the official domain {official_domain} for this exact watch, '
+            f'reference/style code if provided: "{compact_prompt_text(style_code, 80) or "Not provided"}".'
+        )
+        fields_line = (
+            "Return a factual dossier under 180 words: verification status, canonical brand, exact model/collection, "
+            "official name/reference, case material, dial color, movement type if stated, and uncertainties."
+        )
+    else:
+        subject_line = (
+            f'Search only the official domain {official_domain} for the exact footwear Style Code '
+            f'"{compact_prompt_text(style_code, 80) or "Not provided"}".'
+        )
+        fields_line = (
+            "Return a factual dossier under 180 words: verification status, canonical brand, exact model/silhouette, "
+            "official name/edition, colorway, audience, materials, visible design details, footwear type, and uncertainties."
+        )
     return f"""
-Search only the official domain {official_domain} for the exact footwear Style Code \"{compact_prompt_text(style_code, 80) or 'Not provided'}\".
+{subject_line}
 Optional supplier name: {compact_prompt_text(original_product_name, 260) or 'Not provided'}
-Use one search operation only. Reject mismatched products and all retailers, marketplaces, blogs, social media, and sneaker databases.
-Return a factual dossier under 180 words: verification status, canonical brand, exact model/silhouette, official name/edition, colorway, audience, materials, visible design details, footwear type, and uncertainties.
+Use one search operation only. Reject mismatched products and all retailers, marketplaces, blogs, social media, and reseller databases.
+{fields_line}
 If not found, state NOT FOUND OFFICIALLY. Do not write marketing copy.
 """.strip()
 
 
-def build_official_rewrite_messages(official_research, source_text, original_product_name, style_code, search_code, sizes, configured_brand, allowed_brands, arabic_style):
+def build_official_rewrite_messages(official_research, source_text, original_product_name, style_code, search_code, sizes, configured_brand, allowed_brands, arabic_style, product_type="shoes"):
     """Arabic: بناء صياغة نهائية بعد البحث الرسمي. English: Build final-copy messages after official research."""
+    if product_type == "watches":
+        role_line = "You are the final catalog editor for a luxury-watch e-commerce store."
+        arabic_open_line = "- Begin the title with ساعة and keep the configured brand name as written."
+        available_line = f"REFERENCE/STYLE CODE (only if supplied): {compact_prompt_text(style_code, 80) or 'Not provided'}\n"
+    else:
+        role_line = "You are the final catalog editor for a footwear e-commerce store."
+        arabic_open_line = "- Begin the title with حذاء and use إير جوردن when applicable."
+        available_line = f"AVAILABLE SIZES: {', '.join(unique_text_values(sizes)[:40])[:300] or 'Not provided'}\n"
+
     instructions = f"""
-You are the final catalog editor for a footwear e-commerce store.
+{role_line}
 Use official facts first; use supplier facts only when they do not conflict. Omit uncertainty.
 
 ENGLISH: create a precise catalog title and 2–3 factual commercial sentences.
 
 ARABIC — STYLE: {arabic_style}:
 - Create a compelling Arabic product identity independently from the English syntax.
-- Begin the title with حذاء and use إير جوردن when applicable.
+{arabic_open_line}
 - Highlight the strongest verified reason to notice the product: model, color combination, edition, or design character.
 - Use fluent modern Arabic suitable for Gulf e-commerce customers without exaggeration.
-- Do not transliterate Low as لو; use منخفض only if useful.
 - The Arabic description may use a different sentence order and a warmer selling tone, while keeping all facts verified.
 - Avoid generic filler and unsupported claims about comfort, quality, originality, performance, or durability.
 
-Put the exact Style Code once at the end of each title. Never include Search Code, price, supplier name, Chinese text, emojis, or authenticity/grade claims.
+Put the exact Style Code once at the end of each title only if one was supplied. Never include Search Code, price, supplier name, Chinese text, emojis, or authenticity/grade claims.
 BRAND SAFETY: brand_name must be one of the ALLOWED BRANDS supplied by the user. Never invent or infer an unlisted brand.
 Return exactly one JSON object with: name_en, description_en, name_ar, description_ar, brand_name.
 """.strip()
-    compact_sizes = ", ".join(unique_text_values(sizes)[:40])[:300]
     user_input = f"""
 OFFICIAL RESEARCH:
 {compact_prompt_text(official_research, 1400)}
@@ -1968,8 +2107,7 @@ SUPPLIER TEXT:
 
 STYLE CODE: {compact_prompt_text(style_code, 80) or 'Not provided'}
 INTERNAL SEARCH CODE — NEVER INCLUDE: {compact_prompt_text(search_code, 80) or 'Not provided'}
-AVAILABLE SIZES: {compact_sizes or 'Not provided'}
-BRAND HINT: {compact_prompt_text(configured_brand, 100) or 'Not provided'}
+{available_line}BRAND HINT: {compact_prompt_text(configured_brand, 100) or 'Not provided'}
 ALLOWED BRANDS: {', '.join(allowed_brands) or configured_brand or 'Not provided'}
 """.strip()
     return [
@@ -2192,9 +2330,9 @@ def repair_json_once(runtime, malformed_text, original_messages=None):
     return extract_ai_output_text(response.json())
 
 
-def generate_official_research(runtime, official_domain, original_product_name, style_code):
+def generate_official_research(runtime, official_domain, original_product_name, style_code, product_type="shoes"):
     """Arabic: تنفيذ بحث رسمي واحد عبر Groq أو OpenAI. English: Run one official-domain research operation through Groq or OpenAI."""
-    prompt = build_official_research_prompt(official_domain, original_product_name, style_code)
+    prompt = build_official_research_prompt(official_domain, original_product_name, style_code, product_type)
 
     if runtime["provider"] == "openai" and runtime["api_mode"] == "responses":
         payload = {
@@ -2255,6 +2393,7 @@ def generate_ai_copy():
         f"{original_product_name} {source_text}",
     )
     research_official = safe_bool(data.get("ResearchOfficial"), False)
+    product_type = (compact_prompt_text(data.get("ProductType"), 20) or "shoes").lower()
     arabic_style = compact_prompt_text(data.get("ArabicCopyStyle"), 80) or "sales-natural"
     json_repair_enabled = safe_bool(data.get("AIJsonRepairEnabled"), True)
 
@@ -2279,6 +2418,7 @@ def generate_ai_copy():
                 official_domain,
                 original_product_name,
                 style_code,
+                product_type,
             )
             messages = build_official_rewrite_messages(
                 official_research,
@@ -2290,6 +2430,7 @@ def generate_ai_copy():
                 configured_brand,
                 allowed_brands,
                 arabic_style,
+                product_type,
             )
             stage = "official_rewrite"
         else:
@@ -2302,6 +2443,7 @@ def generate_ai_copy():
                 configured_brand,
                 allowed_brands,
                 arabic_style,
+                product_type,
             )
             stage = "normal_generation"
 
@@ -2335,7 +2477,7 @@ def generate_ai_copy():
         )
         description_en = re.sub(r"\s+", " ", normalize_text(generated.get("description_en")))[:1800]
         name_ar = enforce_arabic_product_name(
-            generated.get("name_ar"), source_text, style_code, brand_name
+            generated.get("name_ar"), source_text, style_code, brand_name, product_type
         )
         description_ar = re.sub(r"\s+", " ", normalize_text(generated.get("description_ar")))[:2000]
 
@@ -2499,7 +2641,7 @@ def extract_product():
         # English: The product folder sits directly inside a folder named for today's date, under the chosen images root.
         brand_folder_name = get_brand_folder_name(brand_name)  # Arabic: يُحفظ كمعلومة إضافية فقط، لا يُستخدم كمسار. English: Kept only as metadata now, not used for the path.
         date_folder_name = today_str
-        date_dir = os.path.join(BASE_DIR, brand_folder_name, date_folder_name)
+        date_dir = os.path.join(BASE_DIR, date_folder_name)
         final_product_folder = os.path.join(date_dir, final_folder_name)
         os.makedirs(date_dir, exist_ok=True)
         temp_root = os.path.join(BASE_DIR, ".alphacode_tmp")
@@ -2547,16 +2689,12 @@ def extract_product():
 
             # Arabic: ملف نصي بكود الستايل داخل مجلد المنتج كما طُلب.
             # English: A text file with the style code inside the product folder, as requested.
-            product_info_txt_path = os.path.join(temp_product_folder, "product_info.txt")
-            with open(product_info_txt_path, "w", encoding="utf-8") as info_file:
-                info_file.write(f"-"*10 + "[Name]" + "-"*10 + "\n")
-                info_file.write(f"Name: {name_en or '-'}\n")
-                info_file.write(f"Name: {name_ar or '-'}\n")
-                info_file.write(f"-"*10 + "[Style Code]" + "-"*10 + "\n")
-                info_file.write(f"Style Code: {style_code or '-'}\n")
-                info_file.write(f"-"*10 + "[Date Added]" + "-"*10 + "\n")
-                info_file.write(f"Date Added: {today_str}\n")
-                info_file.write(f"Added By: {added_by}\n")
+            style_code_txt_path = os.path.join(temp_product_folder, "style_code.txt")
+            with open(style_code_txt_path, "w", encoding="utf-8") as style_file:
+                style_file.write(f"Style Code: {style_code or '-'}\n")
+                style_file.write(f"Search Code: {search_code or '-'}\n")
+                style_file.write(f"Product ID: {next_id}\n")
+
             downloaded_by_index = {item["source_index"]: item["name"] for item in downloaded_image_records}
             store_images = [downloaded_by_index[index] for index in selected_indexes if index in downloaded_by_index]
             if not store_images:
@@ -2573,16 +2711,30 @@ def extract_product():
                 next_id, store_images, store_main_image, len(local_images),
             )
 
-            variations, choice_options, attributes, total_stock = build_size_variant_fields(
-                sizes, data.get("PriceSAR"), settings["Stock"], settings
+            variations, choice_options, attributes, total_stock = build_variant_fields(
+                sizes,
+                data.get("WatchColors"),
+                data.get("PriceSAR"),
+                settings["Stock"],
+                settings,
+                settings["ProductType"],
+                data.get("OriginalPrice"),
             )
+            # Arabic: نسخة Python من صفوف الأسعار لحفظها بالأرشيف - سوقيفاي تحتاجها كـ JSON نصي، لكن لوحة الأدمن تحتاج القائمة نفسها لتعبئة كل صف بسعره الصحيح بدل سعر واحد للكل.
+            # English: A plain Python copy of the price rows to persist in the archive - Sooqify needs it as a JSON string, but the admin panel needs the raw list to fill each row with its own price instead of one price for all.
+            variant_price_rows = json.loads(variations)
+            effective_category_id = (
+                settings["WatchCategoryId"] if settings["ProductType"] == "watches" else settings["CategoryId"]
+            )
+            # Arabic: الساعات بدون فئة فرعية بينما الأحذية تحتفظ بسلوكها الأصلي. English: Watches have no subcategory; shoes keep their original behavior.
+            effective_subcategory_id = None if settings["ProductType"] == "watches" else settings["SubCategoryId"]
             new_row = {
                 "Id": next_id,
                 "Name": name_en,
                 "Description": description_en,
                 "Image": store_main_image,
-                "CategoryId": settings["CategoryId"],
-                "SubCategoryId": settings["SubCategoryId"],
+                "CategoryId": effective_category_id,
+                "SubCategoryId": effective_subcategory_id,
                 "UnitId": settings["UnitId"],
                 "Stock": total_stock,
                 "Price": data.get("PriceSAR"),
@@ -2603,8 +2755,8 @@ def extract_product():
             archive_key = dedup_key or f"ID_{next_id}"
             settings_for_store = {
                 "StoreId": settings["StoreId"],
-                "CategoryId": settings["CategoryId"],
-                "SubCategoryId": settings["SubCategoryId"],
+                "CategoryId": effective_category_id,
+                "SubCategoryId": effective_subcategory_id,
                 "UnitId": settings["UnitId"],
                 "Stock": settings["Stock"],
                 "Discount": settings["Discount"],
@@ -2617,11 +2769,15 @@ def extract_product():
                 "SizeChoiceNo": settings["SizeChoiceNo"],
                 "SizeactualChoiceNo": settings["SizeactualChoiceNo"],
                 "SizeTitle": settings["SizeTitle"],
+                "WatchColorAttributeId": settings["WatchColorAttributeId"],
+                "WatchColorTitle": settings["WatchColorTitle"],
+                "ProductType": settings["ProductType"],
                 "DefaultLanguage": settings["DefaultLanguage"],
                 "DownloadSelectedImagesOnly": download_selected_only,
             }
             archive_item = {
                 "id": next_id,
+                "product_type": settings["ProductType"],
                 "name": name_en,
                 "description": description_en,
                 "name_en": name_en,
@@ -2633,7 +2789,12 @@ def extract_product():
                 "style_code": style_code,
                 "search_code": search_code,
                 "price": data.get("PriceSAR"),
-                "sizes": sizes,
+                "variants": variant_price_rows,
+                "sizes": (
+                    [row["type"] for row in variant_price_rows]
+                    if settings["ProductType"] == "watches"
+                    else sizes
+                ),
                 "date": today_str,
                 "created_at": datetime.now().isoformat(timespec="seconds"),
                 "workflow_status": "prepared",
@@ -2697,56 +2858,9 @@ def extract_product():
             shutil.rmtree(temp_product_folder, ignore_errors=True)
             return jsonify({"success": False, "error": str(exc), "failed_images": failed_images}), 500
 
-def print_startup_banner():
-    """Arabic: طباعة شعار ترحيبي عند تشغيل السيرفر. English: Print a welcome banner when the server starts."""
-    os.system("cls" if os.name == "nt" else "clear")
-    banner = r"""
-****************************************************************************************
-****************************************************************************************
-**                                                                                    **
-**  ███████╗███╗   ██╗██████╗      ██╗██╗██╗   ██╗███████╗███████╗███████╗             **
-**  ██╔════╝████╗  ██║██╔════╝    ╚██╗██║██║   ██║██╔════╝██╔════╝██╔════╝             **
-**  █████╗  ██╔██╗ ██║██║  ███╗    ╚████║██║   ██║███████╗█████╗  █████╗               **
-**  ██╔══╝  ██║╚██╗██║██║   ██║     ╚██╔╝██║   ██║╚════██║██╔══╝  ██╔══╝               **
-**  ███████╗██║ ╚████║╚██████╔╝      ██║ ╚██████╔╝███████║███████╗██║                  **
-**  ╚══════╝╚═╝  ╚═══╝ ╚═════╝       ╚═╝  ╚═════╝ ╚══════╝╚══════╝╚═╝                  **
-**                                                                                    **
-**                              --->  ENG.Yousef  <---                                **
-**                                                                                    **
-****************************************************************************************
-****************************************************************************************
-"""
-    print(f"{AnsiColors.GREEN}{AnsiColors.BOLD}{banner}{AnsiColors.RESET}")
-def print_startup_status():
-    """Arabic: لوحة حالة مختصرة وملوّنة بعد شعار البدء. English: A short colorized status panel printed right after the startup banner."""
-    def status_line(label, value, ok=True):
-        tag_color = AnsiColors.GREEN if ok else AnsiColors.YELLOW
-        tag = "OK" if ok else "!!"
-        print(
-            f"  {tag_color}[{tag}]{AnsiColors.RESET} "
-            f"{AnsiColors.WHITE}{label:<18}{AnsiColors.RESET} "
-            f"{tag_color}{value}{AnsiColors.RESET}"
-        )
-
-    sync_cfg = load_sync_config()
-    groq_ok = bool(os.getenv("GROQ_API_KEY"))
-    openai_ok = bool(os.getenv("OPENAI_API_KEY"))
-
-    print(f"{AnsiColors.CYAN}{'─' * 70}{AnsiColors.RESET}")
-    print(f"{AnsiColors.CYAN}{AnsiColors.BOLD}  SYSTEM STATUS{AnsiColors.RESET}")
-    print(f"{AnsiColors.CYAN}{'─' * 70}{AnsiColors.RESET}")
-    status_line("Server", "http://127.0.0.1:5000", True)
-    status_line("Save Folder", ROOT_DIR if ROOT_DIR_CONFIGURED else "Not configured", ROOT_DIR_CONFIGURED)
-    status_line("Groq API Key", "Configured" if groq_ok else "Missing", groq_ok)
-    status_line("OpenAI API Key", "Configured" if openai_ok else "Missing", openai_ok)
-    status_line("Two-User Sync", sync_cfg["ServerUrl"] if sync_cfg["Enabled"] else "Disabled", sync_cfg["Enabled"])
-    status_line("External Log", LOG_PATH, True)
-    print(f"{AnsiColors.CYAN}{'─' * 70}{AnsiColors.RESET}\n")
 
 if __name__ == "__main__":
     """Arabic: تشغيل خادم Flask محلياً دون وضع Debug. English: Run the local Flask server without debug mode."""
-    print_startup_banner()
-    print_startup_status()
     logger.info("AlphaCode Extractor server is ready on http://127.0.0.1:5000")
     logger.info("AI keys configured. Groq=%s OpenAI=%s", bool(os.getenv("GROQ_API_KEY")), bool(os.getenv("OPENAI_API_KEY")))
     logger.info("External log file: %s", LOG_PATH)

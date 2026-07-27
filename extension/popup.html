@@ -110,7 +110,7 @@
 <header class="app-header">
     <div class="brand-row">
         <div>
-            <h1 class="brand-title">AlphaCode Extractor 4.6</h1>
+            <h1 class="brand-title">AlphaCode Extractor 4.5</h1>
             <div class="brand-subtitle">SZWEGO → Python → Sooqify</div>
         </div>
         <div class="profile-chip" id="profileChip">Sooqify Online</div>
@@ -124,10 +124,12 @@
 <nav class="tabs">
     <button class="tab-button active" data-tab="settings">الإعدادات</button>
     <button class="tab-button" data-tab="ai">الذكاء</button>
+    <button class="tab-button" data-tab="product-type">نوع المنتج</button>
     <button class="tab-button" data-tab="stores">المتاجر</button>
     <button class="tab-button" data-tab="search">البحث</button>
     <button class="tab-button" data-tab="data">البيانات</button>
     <button class="tab-button" data-tab="sync">المزامنة والمجلد</button>
+    <button class="tab-button" data-tab="reports">التقارير</button>
     <button class="tab-button" data-tab="diagnostics">التشخيص</button>
 </nav>
 
@@ -213,6 +215,43 @@
                 <div class="field"><label for="Discount">الخصم</label><input id="Discount" type="number" step="0.01"></div>
                 <div class="field"><label for="DiscountType">نوع الخصم</label><select id="DiscountType"><option value="percent">percent</option><option value="amount">amount</option></select></div>
             </div>
+            <div class="field"><label for="DefaultLanguage">اللغة الافتراضية للمتجر</label><select id="DefaultLanguage"><option value="en">English</option><option value="ar">العربية</option></select></div>
+        </article>
+
+        <article class="card">
+            <h2>إعدادات متقدمة</h2>
+            <p class="hint">قيم نادراً ما تحتاج تغييرها — موجودة هنا للاكتمال فقط.</p>
+            <div class="grid-3">
+                <div class="field"><label for="Status">الحالة</label><select id="Status"><option value="active">active</option><option value="inactive">inactive</option></select></div>
+                <div class="field"><label for="Veg">Veg</label><select id="Veg"><option value="no">no</option><option value="yes">yes</option></select></div>
+                <div class="field"><label for="Recommended">مُوصى به</label><select id="Recommended"><option value="yes">yes</option><option value="no">no</option></select></div>
+            </div>
+            <div class="grid-3">
+                <div class="field"><label for="AvailableTimeStarts">وقت التوفر - من</label><input id="AvailableTimeStarts" type="time"></div>
+                <div class="field"><label for="AvailableTimeEnds">وقت التوفر - إلى</label><input id="AvailableTimeEnds" type="time"></div>
+                <div class="field"><label for="MaximumCartQuantity">أقصى كمية بالسلة — اختياري</label><input id="MaximumCartQuantity" type="text"></div>
+            </div>
+        </article>
+    </section>
+
+    <section class="tab-panel" id="tab-product-type">
+        <article class="card">
+            <h2>نوع المنتج</h2>
+            <p class="hint">يُستخدم كافتراض عند تعذّر تحديد النوع تلقائياً من صفحة المورد؛ تقدر تتجاوزه لكل منتج من شاشة الاستخراج نفسها.</p>
+            <div class="field"><label for="ProductType">النوع الافتراضي</label><select id="ProductType"><option value="shoes">أحذية</option><option value="watches">ساعات</option></select></div>
+        </article>
+
+        <article class="card">
+            <h2>إعدادات الساعات</h2>
+            <p class="hint">الساعات بدون مقاسات وبدون فئة فرعية؛ كل لون يُضاف كخيار بسعره الخاص، ويُضاف رسم ثابت على كل ساعة بدل فكرة الدرجة الأولى/الثانية.</p>
+            <div class="grid-2">
+                <div class="field"><label for="WatchCategoryId">Category ID (Timepieces)</label><input id="WatchCategoryId" type="number"></div>
+                <div class="field"><label for="WatchFlatFeeYuan">رسم ثابت باليوان لكل ساعة</label><input id="WatchFlatFeeYuan" type="number" step="1"></div>
+            </div>
+            <div class="grid-2">
+                <div class="field"><label for="WatchColorAttributeId">Color Attribute ID</label><input id="WatchColorAttributeId" type="number"></div>
+                <div class="field"><label for="WatchColorTitle">عنوان الخاصية</label><input id="WatchColorTitle" type="text"></div>
+            </div>
         </article>
     </section>
 
@@ -268,6 +307,10 @@
             <div class="field"><label for="SupplierHomeUrl">رابط المورد الاحتياطي</label><input id="SupplierHomeUrl" dir="ltr" type="url" placeholder="يُحفظ آخر رابط SZWEGO تلقائياً"></div>
             <div class="field"><label for="SupplierSearchSelector">محدد CSS لخانة البحث — اختياري</label><input id="SupplierSearchSelector" dir="ltr" type="text" placeholder="اتركه فارغاً للاكتشاف التلقائي"></div>
             <div class="field"><label for="SupplierAutoScrollRounds">أقصى جولات النزول للمنتج الأخير</label><input id="SupplierAutoScrollRounds" type="number" min="5" max="300"></div>
+            <div class="toggle-row">
+                <div class="toggle-copy"><strong>فتح المورد عند آخر منتج</strong><small>يمرّر تلقائياً لآخر منتج تمت إضافته عند فتح صفحة المورد.</small></div>
+                <label class="switch"><input id="OpenSupplierAtLastProduct" type="checkbox"><span class="slider"></span></label>
+            </div>
         </article>
         <article class="card">
             <h2>إعدادات Sooqify</h2>
@@ -348,6 +391,19 @@
             <h2>آخر المنتجات المضافة (من الطرفين)</h2>
             <button class="btn btn-outline btn-block" id="refreshRecentBtn" type="button">تحديث القائمة</button>
             <div id="recentProductsBox" style="margin-top:10px;"></div>
+        </article>
+    </section>
+
+    <section class="tab-panel" id="tab-reports">
+        <article class="card">
+            <h2>تقرير PDF احترافي</h2>
+            <p class="hint">تقرير يومي أو شهري: إجمالي المنتجات، أحذية مقابل ساعات، وتفصيل كامل لكل مستخدم أضاف منتجات.</p>
+            <div class="grid-2">
+                <div class="field"><label for="reportScope">النطاق</label><select id="reportScope"><option value="daily">يومي</option><option value="monthly">شهري</option></select></div>
+                <div class="field"><label for="reportDate">التاريخ</label><input id="reportDate" type="date"></div>
+            </div>
+            <button class="btn btn-accent btn-block" id="generateReportBtn" type="button">توليد التقرير</button>
+            <div class="result-box" id="reportResult"></div>
         </article>
     </section>
 

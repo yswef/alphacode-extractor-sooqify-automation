@@ -110,7 +110,7 @@
 <header class="app-header">
     <div class="brand-row">
         <div>
-            <h1 class="brand-title">AlphaCode Extractor 4.4</h1>
+            <h1 class="brand-title">AlphaCode Extractor 4.5</h1>
             <div class="brand-subtitle">SZWEGO → Python → Sooqify</div>
         </div>
         <div class="profile-chip" id="profileChip">Sooqify Online</div>
@@ -127,8 +127,14 @@
     <button class="tab-button" data-tab="stores">المتاجر</button>
     <button class="tab-button" data-tab="search">البحث</button>
     <button class="tab-button" data-tab="data">البيانات</button>
+    <button class="tab-button" data-tab="sync">المزامنة والمجلد</button>
     <button class="tab-button" data-tab="diagnostics">التشخيص</button>
 </nav>
+
+<div id="folderSetupBanner" class="result-box warning" style="display:none; margin:10px 14px 0;">
+    لم يتم اختيار مجلد حفظ المنتجات والصور بعد.
+    <button class="btn btn-primary btn-block" id="folderSetupBannerBtn" type="button" style="margin-top:8px;">اختيار مجلد الحفظ الآن</button>
+</div>
 
 <main>
     <section class="tab-panel active" id="tab-settings">
@@ -301,6 +307,43 @@
             <div class="toggle-row"><div class="toggle-copy"><strong>مسح Cache الذكاء الاصطناعي القديم</strong></div><label class="switch"><input id="ClearAiCache" type="checkbox"><span class="slider"></span></label></div>
             <button class="btn btn-danger btn-block" id="clearAllBtn" type="button">مسح جميع السجلات</button>
             <div class="result-box" id="clearResult"></div>
+        </article>
+    </section>
+
+    <section class="tab-panel" id="tab-sync">
+        <article class="card">
+            <h2>مجلد الحفظ</h2>
+            <p class="hint">مجلد واحد يخزن فيه هذا الجهاز صور المنتجات وملفي Excel/JSON، ويُنشئ تلقائياً مجلداً فرعياً لكل براند (مثلاً Nike بمجلد مستقل عن Air Jordan).</p>
+            <div class="result-box" id="folderStatusBox">جارِ التحقق...</div>
+            <button class="btn btn-primary btn-block" id="chooseFolderBtn" type="button" style="margin-top:9px;">اختيار / تغيير مجلد الحفظ</button>
+        </article>
+
+        <article class="card">
+            <h2>مزامنة بين مستخدمين (Hostinger)</h2>
+            <p class="hint">تمنع تكرار أرقام ID وتكرار إضافة نفس المنتج عندما يعمل شخصان على نفس المتجر، كل واحد من جهازه. يتطلب رفع مجلد alphacode_storage (ويتضمن sync.php) على استضافتك.</p>
+            <div class="toggle-row">
+                <div class="toggle-copy"><strong>تفعيل المزامنة</strong><small>يشترط ضبط الرابط والمفتاح السري أدناه.</small></div>
+                <label class="switch"><input id="SyncEnabled" type="checkbox"><span class="slider"></span></label>
+            </div>
+            <div class="field"><label for="SyncServerUrl">رابط مجلد المزامنة</label><input id="SyncServerUrl" dir="ltr" type="url" placeholder="https://engyusef.alpha-code.net/alphacode_storage"></div>
+            <div class="field"><label for="SyncToken">المفتاح السري</label><input id="SyncToken" dir="ltr" type="text" placeholder="اتركه فارغاً للإبقاء على المفتاح المحفوظ"></div>
+            <div class="field"><label for="AddedByName">اسمك (يظهر في شاشة التشخيص)</label><input id="AddedByName" type="text" placeholder="مثال: يوسف"></div>
+            <button class="btn btn-accent btn-block" id="saveSyncBtn" type="button">حفظ إعدادات المزامنة</button>
+            <div class="result-box" id="syncSettingsResult"></div>
+            <h3>حالة المزامنة</h3>
+            <div class="stats">
+                <div class="stat"><b id="syncPendingCount">—</b><span>بالطابور</span></div>
+                <div class="stat"><b id="syncLastPull">—</b><span>آخر سحب</span></div>
+                <div class="stat"><b id="syncLastPush">—</b><span>آخر رفع</span></div>
+            </div>
+            <button class="btn btn-outline btn-block" id="syncNowBtn" type="button" style="margin-top:10px;">مزامنة الآن</button>
+            <div class="result-box" id="syncStatusResult"></div>
+        </article>
+
+        <article class="card">
+            <h2>آخر المنتجات المضافة (من الطرفين)</h2>
+            <button class="btn btn-outline btn-block" id="refreshRecentBtn" type="button">تحديث القائمة</button>
+            <div id="recentProductsBox" style="margin-top:10px;"></div>
         </article>
     </section>
 

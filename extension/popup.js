@@ -71,6 +71,19 @@ function activateTab(tabName) {
         refreshArchiveStats();
     }
 
+    if (tabName === 'sync') {
+        refreshFolderStatus();
+        refreshSyncStatus();
+        refreshRecentProducts();
+    }
+
+    if (tabName === 'sync') {
+        refreshFolderStatus();
+        loadSyncSettings();
+        refreshSyncStatus();
+        refreshRecentProducts();
+    }
+
     if (tabName === 'diagnostics') {
         refreshLogs();
     }
@@ -222,6 +235,13 @@ function formatAiProvider(data) {
         : `${provider} يحتاج مفتاح API`;
 }
 
+// Arabic: إظهار/إخفاء بانر إعداد المجلد أعلى اللوحة.
+// English: Show/hide the folder-setup banner at the top of the popup.
+function setFolderBannerVisible(visible) {
+    const banner = byId('folderSetupBanner');
+    if (banner) banner.style.display = visible ? 'block' : 'none';
+}
+
 // Arabic: فحص Flask ومزود الذكاء الاصطناعي.
 // English: Check Flask and AI-provider readiness.
 async function checkServer() {
@@ -242,10 +262,12 @@ async function checkServer() {
         if (dot) dot.className = 'status-dot ok';
         if (serverText) serverText.textContent = `Python ${data.version || ''} متصل`;
         if (aiText) aiText.textContent = formatAiProvider(data);
+        setFolderBannerVisible(Boolean(data.needs_folder_setup));
     } catch (_) {
         if (dot) dot.className = 'status-dot bad';
         if (serverText) serverText.textContent = 'خادم Python غير متصل';
         if (aiText) aiText.textContent = 'مزود الذكاء الاصطناعي غير متاح';
+        setFolderBannerVisible(false);
     }
 }
 
@@ -684,6 +706,229 @@ async function clearAllData() {
     }
 }
 
+// =========================================================
+// Arabic: مجلد الحفظ - عرض الحالة واختيار مجلد جديد.
+// English: Save folder - status display and choosing a new folder.
+// =========================================================
+async function refreshFolderStatus() {
+    const box = byId('folderStatusBox');
+    if (box) {
+        box.className = 'result-box';
+        box.textContent = 'جارِ التحقق...';
+    }
+
+    try {
+        const response = await fetch(`${API_BASE}/api/paths/status`, { cache: 'no-store' });
+        const data = await response.json();
+
+        if (!response.ok || !data.success) {
+            throw new Error(data.error || 'تعذر قراءة حالة المجلد.');
+        }
+
+        if (box) {
+            if (data.configured) {
+                box.className = 'result-box success';
+                box.textContent = `المجلد الحالي: ${data.root_dir}`;
+            } else {
+                box.className = 'result-box warning';
+                box.textContent = 'لم يتم اختيار مجلد حفظ بعد. اضغط الزر أدناه لاختيار مجلد.';
+            }
+        }
+
+        setFolderBannerVisible(!data.configured);
+    } catch (error) {
+        if (box) {
+            box.className = 'result-box error';
+            box.textContent = error.message;
+        }
+    }
+}
+
+// Arabic: يفتح نافذة اختيار مجلد أصلية على جهاز المستخدم عبر خادم Python.
+// English: Opens a native folder picker on the user's machine via the Python server.
+async function chooseFolder() {
+    const box = byId('folderStatusBox');
+    if (box) {
+        box.className = 'result-box';
+        box.textContent = 'افتح نافذة اختيار المجلد على سطح المكتب (قد تكون خلف نافذة المتصفح)...';
+    }
+
+    const response = await fetch(`${API_BASE}/api/paths/choose-folder`, { method: 'POST' });
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+        if (data.cancelled) {
+            if (box) {
+                box.className = 'result-box warning';
+                box.textContent = 'تم إلغاء اختيار المجلد.';
+            }
+            return;
+        }
+        throw new Error(data.error || 'تعذر اختيار المجلد.');
+    }
+
+    if (box) {
+        box.className = 'result-box success';
+        box.textContent = `تم ضبط مجلد الحفظ: ${data.root_dir}`;
+    }
+    setFolderBannerVisible(false);
+    showStatus('تم ضبط مجلد الحفظ بنجاح.', 'success');
+    await refreshArchiveStats();
+}
+
+// =========================================================
+// Arabic: المزامنة بين مستخدمين.
+// English: Two-user sync.
+// =========================================================
+async function loadSyncSettings() {
+    try {
+        const response = await fetch(`${API_BASE}/api/sync/config`, { cache: 'no-store' });
+        const data = await response.json();
+        if (!response.ok || !data.success) return;
+
+        if (byId('SyncEnabled')) byId('SyncEnabled').checked = Boolean(data.Enabled);
+        if (byId('SyncServerUrl')) byId('SyncServerUrl').value = data.ServerUrl || '';
+        if (byId('AddedByName')) byId('AddedByName').value = data.AddedByName || '';
+        if (byId('SyncToken')) {
+            byId('SyncToken').placeholder = data.TokenSet
+                ? `مفتاح محفوظ (${data.TokenPreview}) — اتركه فارغاً للإبقاء عليه`
+                : 'أدخل المفتاح السري من sync.php';
+        }
+    } catch (_) {
+        // Arabic: عدم توفر الخادم عند فتح اللوحة لا يجب أن يمنع بقية الوظائف.
+        // English: The server being unavailable when the popup opens should not block the rest of the UI.
+    }
+}
+
+async function saveSyncSettings() {
+    const resultBox = byId('syncSettingsResult');
+    const payload = {
+        Enabled: Boolean(byId('SyncEnabled')?.checked),
+        ServerUrl: (byId('SyncServerUrl')?.value || '').trim(),
+        Token: (byId('SyncToken')?.value || '').trim(),
+        AddedByName: (byId('AddedByName')?.value || '').trim(),
+    };
+
+    try {
+        const response = await fetch(`${API_BASE}/api/sync/config`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+
+        if (!response.ok || !data.success) {
+            throw new Error(data.error || 'تعذر حفظ إعدادات المزامنة.');
+        }
+
+        if (byId('SyncToken')) byId('SyncToken').value = '';
+        if (resultBox) {
+            resultBox.className = 'result-box success';
+            resultBox.textContent = 'تم حفظ إعدادات المزامنة.';
+        }
+        await loadSyncSettings();
+        await refreshSyncStatus();
+    } catch (error) {
+        if (resultBox) {
+            resultBox.className = 'result-box error';
+            resultBox.textContent = error.message;
+        }
+    }
+}
+
+function formatSyncTimestamp(value) {
+    if (!value) return '—';
+    try {
+        return new Date(value).toLocaleString('ar-SA', { hour12: false });
+    } catch (_) {
+        return value;
+    }
+}
+
+async function refreshSyncStatus() {
+    try {
+        const response = await fetch(`${API_BASE}/api/sync/status`, { cache: 'no-store' });
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.error || 'تعذر قراءة حالة المزامنة.');
+
+        if (byId('syncPendingCount')) byId('syncPendingCount').textContent = data.pending_queue;
+        if (byId('syncLastPull')) byId('syncLastPull').textContent = formatSyncTimestamp(data.last_pull_at);
+        if (byId('syncLastPush')) byId('syncLastPush').textContent = formatSyncTimestamp(data.last_push_at);
+
+        const statusBox = byId('syncStatusResult');
+        if (statusBox) {
+            if (!data.enabled) {
+                statusBox.className = 'result-box warning';
+                statusBox.textContent = 'المزامنة معطّلة حالياً.';
+            } else if (data.last_error) {
+                statusBox.className = 'result-box error';
+                statusBox.textContent = `آخر خطأ: ${data.last_error}`;
+            } else {
+                statusBox.className = 'result-box success';
+                statusBox.textContent = 'المزامنة تعمل بشكل طبيعي.';
+            }
+        }
+    } catch (error) {
+        const statusBox = byId('syncStatusResult');
+        if (statusBox) {
+            statusBox.className = 'result-box error';
+            statusBox.textContent = error.message;
+        }
+    }
+}
+
+async function triggerSyncNow() {
+    const statusBox = byId('syncStatusResult');
+    const response = await fetch(`${API_BASE}/api/sync/now`, { method: 'POST' });
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+        throw new Error(data.error || 'تعذر تشغيل المزامنة الآن.');
+    }
+
+    if (statusBox) {
+        statusBox.className = 'result-box success';
+        statusBox.textContent = 'تمت المزامنة الآن.';
+    }
+    await refreshSyncStatus();
+    await refreshRecentProducts();
+}
+
+// Arabic: شاشة تشخيص صغيرة - آخر المنتجات المضافة من الطرفين مع اسم من أضافها.
+// English: A small diagnostics view - the latest products added by either side, with who added them.
+async function refreshRecentProducts() {
+    const box = byId('recentProductsBox');
+    if (box) box.textContent = 'جارِ التحميل...';
+
+    try {
+        const response = await fetch(`${API_BASE}/api/archive/recent?limit=15`, { cache: 'no-store' });
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.error || 'تعذر تحميل القائمة.');
+
+        if (!box) return;
+        if (!data.products.length) {
+            box.textContent = 'لا توجد منتجات مضافة بعد.';
+            return;
+        }
+
+        box.innerHTML = '';
+        for (const product of data.products) {
+            const row = document.createElement('div');
+            row.className = 'store-card';
+            row.innerHTML = `
+                <div>
+                    <strong>#${product.id} — ${product.name_en || 'بدون اسم'}</strong>
+                    <span>${product.brand_name || ''} · بواسطة ${product.added_by || 'غير محدد'}${product.id_source === 'local_fallback' ? ' · ID محلي (بدون اتصال)' : ''}</span>
+                </div>
+                <span class="badge">${product.workflow_status || ''}</span>
+            `;
+            box.appendChild(row);
+        }
+    } catch (error) {
+        if (box) box.textContent = error.message;
+    }
+}
+
 // Arabic: عرض آخر أسطر السجل الخارجي.
 // English: Display recent external-log lines.
 async function refreshLogs() {
@@ -723,6 +968,226 @@ async function downloadLogs() {
 async function resetPanelPosition() {
     await chrome.storage.local.remove('adminPanelCoordinates');
     showStatus('تم مسح الموضع اليدوي. حدّث صفحة المتجر.', 'success');
+}
+
+// =========================================================
+// Arabic: مجلد الحفظ - عرض الحالة واختيار مجلد جديد عند الحاجة.
+// English: Save folder - status display and picking a new folder when needed.
+// =========================================================
+
+function renderFolderStatus(data) {
+    const box = byId('folderStatusBox');
+    const banner = byId('folderSetupBanner');
+
+    if (data && data.configured) {
+        if (box) {
+            box.className = 'result-box success';
+            box.textContent = `المجلد الحالي: ${data.root_dir}\nمجلد الصور: ${data.images_root}`;
+        }
+        if (banner) banner.style.display = 'none';
+    } else {
+        if (box) {
+            box.className = 'result-box warning';
+            box.textContent = 'لم يتم اختيار مجلد حفظ بعد. لن يستطيع الخادم حفظ أي منتج قبل اختيار مجلد.';
+        }
+        if (banner) banner.style.display = 'block';
+    }
+}
+
+// Arabic: قراءة حالة مجلد الحفظ الحالي من الخادم.
+// English: Read the current save-folder status from the server.
+async function refreshFolderStatus() {
+    try {
+        const response = await fetch(`${API_BASE}/api/paths/status`, { cache: 'no-store' });
+        const data = await response.json();
+        renderFolderStatus(data);
+        return data;
+    } catch (_) {
+        renderFolderStatus({ configured: false });
+        return null;
+    }
+}
+
+// Arabic: فتح نافذة اختيار مجلد أصلية على جهاز المستخدم عبر الخادم المحلي.
+// English: Open a native folder picker on the user's machine through the local server.
+async function chooseFolder() {
+    showStatus('افتح نافذة اختيار المجلد على جهازك وانتظر...', 'warning', 15000);
+    const response = await fetch(`${API_BASE}/api/paths/choose-folder`, { method: 'POST' });
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+        if (data.cancelled) {
+            showStatus('لم يتم اختيار أي مجلد.', 'warning');
+        } else {
+            throw new Error(data.error || 'تعذر فتح نافذة اختيار المجلد.');
+        }
+        return;
+    }
+
+    renderFolderStatus(data);
+    showStatus('تم حفظ مجلد الحفظ بنجاح.', 'success');
+    await refreshArchiveStats();
+}
+
+// =========================================================
+// Arabic: مزامنة بين مستخدمين - تحميل/حفظ الإعدادات وعرض الحالة.
+// English: Two-user sync - load/save settings and render status.
+// =========================================================
+
+// Arabic: قراءة إعدادات المزامنة الحالية وتعبئة الحقول (المفتاح لا يُعاد كاملاً لأسباب أمنية).
+// English: Read current sync settings and populate the fields (the token is never sent back in full).
+async function loadSyncSettings() {
+    try {
+        const response = await fetch(`${API_BASE}/api/sync/config`, { cache: 'no-store' });
+        const data = await response.json();
+        if (!response.ok || !data.success) return;
+
+        if (byId('SyncEnabled')) byId('SyncEnabled').checked = Boolean(data.Enabled);
+        if (byId('SyncServerUrl')) byId('SyncServerUrl').value = data.ServerUrl || '';
+        if (byId('AddedByName')) byId('AddedByName').value = data.AddedByName || '';
+        if (byId('SyncToken')) {
+            byId('SyncToken').placeholder = data.TokenSet
+                ? `مفتاح محفوظ (${data.TokenPreview}) - اتركه فارغاً للإبقاء عليه`
+                : 'لم يُضبط بعد';
+        }
+    } catch (_) {
+        // Arabic: عدم توفر الخادم لا يمنع بقية اللوحة من العمل. English: Server unavailability should not break the rest of the popup.
+    }
+}
+
+// Arabic: حفظ إعدادات المزامنة (رابط، مفتاح اختياري، اسم المستخدم).
+// English: Save sync settings (URL, optional token, user name).
+async function saveSyncSettings() {
+    const resultBox = byId('syncSettingsResult');
+    const payload = {
+        Enabled: Boolean(byId('SyncEnabled')?.checked),
+        ServerUrl: String(byId('SyncServerUrl')?.value || '').trim(),
+        Token: String(byId('SyncToken')?.value || '').trim(),
+        AddedByName: String(byId('AddedByName')?.value || '').trim(),
+    };
+
+    if (payload.Enabled && (!payload.ServerUrl)) {
+        if (resultBox) {
+            resultBox.className = 'result-box error';
+            resultBox.textContent = 'أدخل رابط مجلد المزامنة قبل التفعيل.';
+        }
+        return;
+    }
+
+    const response = await fetch(`${API_BASE}/api/sync/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+        throw new Error(data.error || 'تعذر حفظ إعدادات المزامنة.');
+    }
+
+    if (byId('SyncToken')) byId('SyncToken').value = '';
+    if (resultBox) {
+        resultBox.className = 'result-box success';
+        resultBox.textContent = 'تم حفظ إعدادات المزامنة.';
+    }
+    await loadSyncSettings();
+    await refreshSyncStatus();
+}
+
+function formatSyncTimestamp(value) {
+    if (!value) return '—';
+    try {
+        return new Date(value).toLocaleString('ar-SA', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
+    } catch (_) {
+        return value;
+    }
+}
+
+// Arabic: عرض آخر سحب/رفع وعدد العناصر بالطابور.
+// English: Render last pull/push and the pending queue size.
+async function refreshSyncStatus() {
+    try {
+        const response = await fetch(`${API_BASE}/api/sync/status`, { cache: 'no-store' });
+        const data = await response.json();
+        if (!response.ok || !data.success) return;
+
+        if (byId('syncPendingCount')) byId('syncPendingCount').textContent = data.pending_queue;
+        if (byId('syncLastPull')) byId('syncLastPull').textContent = formatSyncTimestamp(data.last_pull_at);
+        if (byId('syncLastPush')) byId('syncLastPush').textContent = formatSyncTimestamp(data.last_push_at);
+
+        const resultBox = byId('syncStatusResult');
+        if (resultBox) {
+            if (!data.enabled) {
+                resultBox.className = 'result-box warning';
+                resultBox.textContent = 'المزامنة معطّلة حالياً.';
+            } else if (data.last_error) {
+                resultBox.className = 'result-box error';
+                resultBox.textContent = `آخر خطأ: ${data.last_error}`;
+            } else {
+                resultBox.className = 'result-box success';
+                resultBox.textContent = `متصلة بـ ${data.server_url}`;
+            }
+        }
+    } catch (_) {
+        // Arabic: يُترك بصمت؛ checkServer يعرض بالفعل حالة اتصال Python العامة. English: Left silent; checkServer already surfaces general Python connectivity.
+    }
+}
+
+// Arabic: تشغيل دورة مزامنة فورية عند الضغط على الزر.
+// English: Run one immediate sync cycle on button press.
+async function triggerSyncNow() {
+    const response = await fetch(`${API_BASE}/api/sync/now`, { method: 'POST' });
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+        throw new Error(data.error || 'تعذر تشغيل المزامنة.');
+    }
+
+    showStatus('تمت المزامنة.', 'success');
+    await refreshSyncStatus();
+    await refreshRecentProducts();
+}
+
+// Arabic: شاشة تشخيص صغيرة تعرض آخر المنتجات ومن أضافها من الطرفين.
+// English: A small diagnostics view showing the latest products and who added them from either side.
+async function refreshRecentProducts() {
+    const box = byId('recentProductsBox');
+    if (!box) return;
+    box.textContent = 'جارِ التحميل...';
+
+    try {
+        const response = await fetch(`${API_BASE}/api/archive/recent?limit=15`, { cache: 'no-store' });
+        const data = await response.json();
+
+        if (!response.ok || !data.success) {
+            throw new Error(data.error || 'تعذر تحميل القائمة.');
+        }
+
+        if (!data.products.length) {
+            box.textContent = 'لا توجد منتجات بعد.';
+            return;
+        }
+
+        box.innerHTML = data.products.map(product => `
+            <div class="store-card">
+                <div>
+                    <strong>#${product.id} — ${escapeHtmlForPopup(product.name_en || '')}</strong>
+                    <span>${escapeHtmlForPopup(product.brand_name || '')} • أضافه: ${escapeHtmlForPopup(product.added_by || 'غير محدد')}</span>
+                </div>
+                <span class="badge">${product.id_source === 'local_fallback' ? 'محلي' : 'مركزي'}</span>
+            </div>
+        `).join('');
+    } catch (error) {
+        box.textContent = error.message;
+    }
+}
+
+// Arabic: تنظيف بسيط للنصوص قبل حقنها كـ HTML في قائمة آخر المنتجات.
+// English: A small text-escape helper before injecting HTML into the recent-products list.
+function escapeHtmlForPopup(value) {
+    return String(value || '').replace(/[&<>"']/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[char]));
 }
 
 // Arabic: ربط حدث بأمان حتى لا تتعطل اللوحة إذا غاب عنصر اختياري.
@@ -789,6 +1254,11 @@ async function initializePopup() {
     bindClick('refreshLogsBtn', refreshLogs);
     bindClick('downloadLogsBtn', downloadLogs);
     bindClick('resetPanelPositionBtn', resetPanelPosition);
+    bindClick('chooseFolderBtn', chooseFolder);
+    bindClick('folderSetupBannerBtn', chooseFolder);
+    bindClick('saveSyncBtn', saveSyncSettings);
+    bindClick('syncNowBtn', triggerSyncNow);
+    bindClick('refreshRecentBtn', refreshRecentProducts);
 
     byId('AIProvider')?.addEventListener('change', handleAiProviderChange);
 
@@ -797,6 +1267,7 @@ async function initializePopup() {
         await Promise.all([
             checkServer(),
             refreshArchiveStats(),
+            refreshFolderStatus(),
         ]);
     } catch (error) {
         showStatus(`تعذر تحميل الإعدادات: ${error.message}`, 'error', 7500);

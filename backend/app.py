@@ -5,6 +5,8 @@ from logging.handlers import RotatingFileHandler
 import os
 import re
 import shutil
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -36,15 +38,25 @@ def handle_local_request_too_large(_error):
         "error": "حجم البيانات المرسلة إلى الخادم المحلي أكبر من الحد المسموح.",
     }), 413
 
-# Arabic: المسارات الأساسية قابلة للتعديل عند نقل المشروع إلى جهاز أو متجر آخر.
-# English: Core paths are intentionally centralized for future store migrations.
+# Arabic: المسارات الأساسية لم تعد قيماً ثابتة؛ دالة recompute_paths() في الأسفل
+# تعيد حسابها من paths_config.json (أو من متغير البيئة كافتراضي أولي فقط).
+# English: Core paths are no longer fixed constants; recompute_paths() below
+# recalculates them from paths_config.json (env var is only the first-run default).
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PATHS_CONFIG_PATH = os.path.join(SCRIPT_DIR, "paths_config.json")
+SYNC_CONFIG_PATH = os.path.join(SCRIPT_DIR, "sync_config.json")
+SYNC_QUEUE_PATH = os.path.join(SCRIPT_DIR, "sync_queue.json")
+SYNC_STATE_PATH = os.path.join(SCRIPT_DIR, "sync_state.json")
+IMAGES_FOLDER_NAME = "صور"
+
 ROOT_DIR = os.getenv("ALPHACODE_ROOT_DIR", r"Y:\\سوقفاي")
-BASE_DIR = os.path.join(ROOT_DIR, "صور", "Air Jordan")
+BASE_DIR = os.path.join(ROOT_DIR, IMAGES_FOLDER_NAME)
 EXCEL_PATH = os.path.join(ROOT_DIR, "items_bulk_format_nodata.xlsx")
 ARCHIVE_PATH = os.path.join(ROOT_DIR, "archive_db.json")
 AI_CACHE_PATH = os.path.join(ROOT_DIR, "ai_copy_cache.json")
 LOG_DIR = os.path.join(ROOT_DIR, "logs")
 LOG_PATH = os.path.join(LOG_DIR, "alphacode.log")
+ROOT_DIR_CONFIGURED = False  # Arabic: يصبح True فقط بعد اختيار/التحقق من مجلد صالح.
 
 # Arabic: مزودات الذكاء الاصطناعي مدعومة من الخادم دون أتمتة واجهة ChatGPT الشخصية.
 # English: The backend supports API providers without automating a personal ChatGPT web session.
@@ -239,6 +251,323 @@ def save_json_atomic(target_path, payload):
             os.remove(temp_path)
 
 
+# =========================================================
+# Arabic: إدارة المسارات الديناميكية - اختيار مجلد الحفظ يدوياً إن لم يوجد المسار الافتراضي.
+# English: Dynamic path management - manual folder picker when the default path is missing.
+# =========================================================
+
+def load_paths_config():
+    """Arabic: قراءة إعداد المجلد المخصص المحفوظ محلياً. English: Read the locally saved custom-folder setting."""
+    return load_json_file(PATHS_CONFIG_PATH, {})
+
+
+def save_paths_config(config):
+    """Arabic: حفظ إعداد المجلد المخصص. English: Persist the custom-folder setting."""
+    save_json_atomic(PATHS_CONFIG_PATH, config)
+
+
+def is_root_dir_valid(path):
+    """Arabic: التحقق الفعلي من أن المسار موجود وقابل للكتابة. English: Actually verify the path exists and is writable."""
+    if not path or not os.path.isdir(path):
+        return False
+    try:
+        probe = os.path.join(path, f".alphacode_write_probe_{uuid.uuid4().hex[:8]}")
+        with open(probe, "w") as probe_file:
+            probe_file.write("ok")
+        os.remove(probe)
+        return True
+    except OSError:
+        return False
+
+
+def reconfigure_logging_target():
+    """Arabic: إعادة توجيه ملف السجل الخارجي عند تغيير مجلد الحفظ. English: Repoint the external log file when the save folder changes."""
+    root_logger = logging.getLogger()
+    for handler in list(root_logger.handlers):
+        if getattr(handler, "_alphacode_file", False):
+            root_logger.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:
+                pass
+    configure_application_logging()
+
+
+def recompute_paths():
+    """
+    Arabic: إعادة حساب كل المسارات المشتقة من ROOT_DIR الحالي دون إنشاء أي مجلد بصمت
+    إلا إذا كان المستخدم قد اختاره صراحة من قبل عبر /api/paths/choose-folder.
+    English: Recompute every ROOT_DIR-derived path without silently creating anything
+    unless the user has explicitly chosen it before via /api/paths/choose-folder.
+    """
+    global ROOT_DIR, BASE_DIR, EXCEL_PATH, ARCHIVE_PATH, AI_CACHE_PATH, LOG_DIR, LOG_PATH, ROOT_DIR_CONFIGURED
+
+    cfg = load_paths_config()
+    chosen = normalize_text(cfg.get("RootDir"))
+    candidate = chosen or os.getenv("ALPHACODE_ROOT_DIR", r"Y:\\سوقفاي")
+
+    ROOT_DIR = candidate
+    BASE_DIR = os.path.join(ROOT_DIR, IMAGES_FOLDER_NAME)
+    EXCEL_PATH = os.path.join(ROOT_DIR, "items_bulk_format_nodata.xlsx")
+    ARCHIVE_PATH = os.path.join(ROOT_DIR, "archive_db.json")
+    AI_CACHE_PATH = os.path.join(ROOT_DIR, "ai_copy_cache.json")
+    LOG_DIR = os.path.join(ROOT_DIR, "logs")
+    LOG_PATH = os.path.join(LOG_DIR, "alphacode.log")
+
+    if chosen and not os.path.isdir(ROOT_DIR):
+        try:
+            os.makedirs(ROOT_DIR, exist_ok=True)
+        except OSError as exc:
+            logger.warning("Could not create the configured root folder %s: %s", ROOT_DIR, exc)
+
+    ROOT_DIR_CONFIGURED = bool(chosen) and is_root_dir_valid(ROOT_DIR)
+    reconfigure_logging_target()
+    return ROOT_DIR_CONFIGURED
+
+
+class RootDirNotConfigured(Exception):
+    """Arabic: تُرفع عند محاولة الحفظ قبل اختيار مجلد صالح. English: Raised when a save is attempted before a valid folder is chosen."""
+
+
+def require_root_dir():
+    """Arabic: يمنع أي عملية كتابة على القرص قبل إعداد مجلد صالح. English: Blocks any disk write before a valid folder is configured."""
+    if not ROOT_DIR_CONFIGURED or not is_root_dir_valid(ROOT_DIR):
+        raise RootDirNotConfigured("No valid save folder is configured yet. Choose one from the extension settings first.")
+
+
+def open_native_folder_dialog():
+    """
+    Arabic: يفتح نافذة اختيار مجلد أصلية من نظام التشغيل عبر عملية Python منفصلة (tkinter)
+    لتفادي أي تعارض بين tkinter وخيوط Flask. يرجع المسار المختار أو '' عند الإلغاء.
+    English: Opens a native OS folder-picker via a separate Python subprocess (tkinter)
+    to avoid any conflict between tkinter and Flask's worker threads. Returns the chosen
+    path, or '' if the user cancelled.
+    """
+    script = (
+        "import tkinter as tk\n"
+        "from tkinter import filedialog\n"
+        "root = tk.Tk()\n"
+        "root.withdraw()\n"
+        "root.attributes('-topmost', True)\n"
+        "path = filedialog.askdirectory(title='AlphaCode - اختر مجلد حفظ المنتجات والصور')\n"
+        "print(path)\n"
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-X", "utf8", "-c", script],
+            capture_output=True, text=True, timeout=180, encoding="utf-8"
+        )
+        return normalize_text(result.stdout.splitlines()[-1]) if result.stdout.strip() else ""
+    except Exception as exc:
+        logger.error("Could not open the native folder dialog: %s", exc)
+        raise
+
+
+def get_brand_folder_name(brand_name):
+    """Arabic: اسم مجلد آمن مشتق من البراند الحالي. English: A filesystem-safe folder name derived from the current brand."""
+    return clean_folder_name(brand_name, "Other") or "Other"
+
+
+def get_brand_dir(brand_name):
+    """Arabic: مسار مجلد صور البراند المحدد داخل BASE_DIR. English: The brand-specific image folder inside BASE_DIR."""
+    return os.path.join(BASE_DIR, get_brand_folder_name(brand_name))
+
+
+def get_product_image_dir(product):
+    """Arabic: إعادة بناء مسار مجلد منتج موجود بالاعتماد على brand_folder المحفوظ معه (متوافق مع منتجات أُضيفت قبل هذا التحديث). English: Rebuild an existing product's folder using its stored brand_folder (backward compatible with products added before this update)."""
+    brand_folder = normalize_text(product.get("brand_folder")) or "Air Jordan"
+    folder_name = normalize_text(product.get("folder"))
+    return os.path.join(BASE_DIR, brand_folder, folder_name)
+
+
+# =========================================================
+# Arabic: مزامنة اختيارية بين مستخدمين عبر سكربت PHP بسيط (sync.php) على Hostinger.
+# لا تُفعَّل هذه المزامنة إلا بعد ضبط SyncConfig (رابط + مفتاح) من لوحة الإضافة.
+# English: Optional two-user sync via a small PHP endpoint (sync.php) hosted on Hostinger.
+# Disabled by default until SyncConfig (URL + token) is set from the extension popup.
+# =========================================================
+
+SYNC_LOCK = threading.RLock()
+SYNC_HTTP_TIMEOUT = (5, 10)  # (connect, read) seconds - short so the UI never hangs on a bad connection.
+
+
+def load_sync_config():
+    """Arabic: قراءة إعدادات المزامنة (تفعيل، رابط، مفتاح، اسم المستخدم). English: Read sync settings (enabled, URL, token, user name)."""
+    defaults = {"Enabled": False, "ServerUrl": "", "Token": "", "AddedByName": ""}
+    stored = load_json_file(SYNC_CONFIG_PATH, {})
+    defaults.update({key: stored.get(key, defaults[key]) for key in defaults})
+    return defaults
+
+
+def save_sync_config(config):
+    """Arabic: حفظ إعدادات المزامنة بعد تنظيفها. English: Persist sanitized sync settings."""
+    save_json_atomic(SYNC_CONFIG_PATH, {
+        "Enabled": safe_bool(config.get("Enabled"), False),
+        "ServerUrl": normalize_text(config.get("ServerUrl")).rstrip("/"),
+        "Token": normalize_text(config.get("Token")),
+        "AddedByName": normalize_text(config.get("AddedByName"))[:60],
+    })
+
+
+def load_sync_state():
+    return load_json_file(SYNC_STATE_PATH, {"last_pull_at": "", "last_push_at": "", "last_error": ""})
+
+
+def save_sync_state(state):
+    save_json_atomic(SYNC_STATE_PATH, state)
+
+
+def load_sync_queue():
+    return load_json_file(SYNC_QUEUE_PATH, [])
+
+
+def save_sync_queue(queue):
+    save_json_atomic(SYNC_QUEUE_PATH, queue)
+
+
+def sync_call(action, payload=None, method="POST"):
+    """Arabic: نداء موحّد لسكربت sync.php مع مهلة قصيرة وأخطاء واضحة. English: A single call point into sync.php with a short timeout and clear errors."""
+    config = load_sync_config()
+    if not config["Enabled"] or not config["ServerUrl"] or not config["Token"]:
+        return None, "sync_disabled"
+    url = f"{config['ServerUrl']}/sync.php"
+    headers = {"X-Sync-Token": config["Token"], "Content-Type": "application/json"}
+    try:
+        if method == "GET":
+            response = requests.get(url, params={"action": action}, headers=headers, timeout=SYNC_HTTP_TIMEOUT)
+        else:
+            response = requests.post(url, params={"action": action}, headers=headers, json=payload or {}, timeout=SYNC_HTTP_TIMEOUT)
+        data = response.json()
+        if response.status_code >= 400 and not data.get("duplicate"):
+            return data, data.get("error") or f"HTTP {response.status_code}"
+        return data, None
+    except requests.RequestException as exc:
+        return None, str(exc)
+    except ValueError as exc:
+        return None, f"Invalid sync response: {exc}"
+
+
+def sync_reserve_id():
+    """Arabic: حجز ID فريد من الخادم المركزي؛ يرجع None عند التعطيل أو الفشل ليعمل الاحتياط المحلي. English: Reserve a unique ID centrally; returns None when disabled/unreachable so local numbering can take over."""
+    data, error = sync_call("reserve_id", {}, method="POST")
+    if error or not data or not data.get("success"):
+        if error and error != "sync_disabled":
+            logger.warning("Remote ID reservation failed, falling back to local numbering: %s", error)
+        return None
+    return safe_int(data.get("id"), None) if data.get("id") is not None else None
+
+
+def sync_reserve_key(dedup_key, added_by):
+    """
+    Arabic: قفل تفاؤلي - يحجز مفتاح المنتج مركزياً قبل تنزيل الصور لمنع تجهيز نفس المنتج مرتين من الطرفين.
+    English: Optimistic lock - reserves the product key centrally before image download, preventing both sides from preparing the same product.
+    Returns: (ok, conflict_item, error)
+    """
+    if not dedup_key:
+        return True, None, None
+    data, error = sync_call("reserve_key", {"key": dedup_key, "added_by": added_by}, method="POST")
+    if error == "sync_disabled":
+        return True, None, None
+    if data and data.get("duplicate"):
+        return False, data.get("existing"), None
+    if error:
+        logger.warning("Remote key reservation unavailable, continuing with local-only duplicate check: %s", error)
+        return True, None, error
+    return bool(data and data.get("success")), None, None
+
+
+def sync_push_product(dedup_key, archive_item):
+    """Arabic: رفع منتج مكتمل إلى الأرشيف المركزي؛ يوضع في طابور إعادة المحاولة عند فشل الاتصال. English: Push a finished product to the central archive; queued for retry on connection failure."""
+    if not dedup_key or not load_sync_config()["Enabled"]:
+        return
+    data, error = sync_call("push", {"key": dedup_key, "product": archive_item}, method="POST")
+    is_duplicate = bool(data and data.get("duplicate"))
+    if not error or is_duplicate:
+        with SYNC_LOCK:
+            state = load_sync_state()
+            state["last_push_at"] = datetime.now().isoformat(timespec="seconds")
+            state["last_error"] = ""
+            save_sync_state(state)
+        return
+    logger.warning("Immediate sync push failed, queueing for retry: %s", error)
+    with SYNC_LOCK:
+        queue = load_sync_queue()
+        queue.append({
+            "key": dedup_key, "product": archive_item, "attempts": 0,
+            "queued_at": datetime.now().isoformat(timespec="seconds"),
+        })
+        save_sync_queue(queue)
+
+
+def sync_flush_queue():
+    """Arabic: إعادة محاولة إرسال العناصر المتراكمة بعد انقطاع الاتصال (Backoff بسيط عبر دورة الخيط الخلفي). English: Retry queued pushes after a connectivity gap (simple backoff via the background cycle)."""
+    with SYNC_LOCK:
+        queue = load_sync_queue()
+    if not queue:
+        return
+    remaining = []
+    for entry in queue:
+        data, error = sync_call("push", {"key": entry["key"], "product": entry["product"]}, method="POST")
+        is_duplicate = bool(data and data.get("duplicate"))
+        if error and not is_duplicate:
+            entry["attempts"] = entry.get("attempts", 0) + 1
+            if entry["attempts"] < 20:
+                remaining.append(entry)
+            else:
+                logger.error("Dropping sync queue item %s after 20 failed attempts.", entry.get("key"))
+    with SYNC_LOCK:
+        save_sync_queue(remaining)
+        if len(remaining) != len(queue):
+            state = load_sync_state()
+            state["last_push_at"] = datetime.now().isoformat(timespec="seconds")
+            save_sync_state(state)
+
+
+def sync_pull_updates():
+    """Arabic: سحب منتجات الطرف الآخر ودمجها محلياً - يُستخدم في فحص التكرار حتى لا يعيد أحد الطرفين إضافة منتج أضافه الآخر. English: Pull the other side's products and merge locally - used by duplicate checks so neither side re-adds what the other already added."""
+    config = load_sync_config()
+    if not config["Enabled"]:
+        return
+    state = load_sync_state()
+    data, error = sync_call("pull", {"since": state.get("last_pull_at", "")}, method="POST")
+    if error:
+        with SYNC_LOCK:
+            state["last_error"] = error
+            save_sync_state(state)
+        return
+    items = (data or {}).get("items") or {}
+    if items:
+        with SAVE_LOCK:
+            archive = load_archive()
+            changed = False
+            for key, item in items.items():
+                if key not in archive:
+                    archive[key] = item
+                    changed = True
+            if changed:
+                save_json_atomic(ARCHIVE_PATH, archive)
+    with SYNC_LOCK:
+        state["last_pull_at"] = (data or {}).get("server_time") or datetime.now().isoformat(timespec="seconds")
+        state["last_error"] = ""
+        save_sync_state(state)
+
+
+def sync_background_worker():
+    """Arabic: خيط خلفي يسحب تحديثات الطرف الآخر ويعيد إرسال الطابور دورياً كل 90 ثانية. English: Background thread that pulls the other side's updates and flushes the retry queue every 90 seconds."""
+    while True:
+        try:
+            sync_pull_updates()
+            sync_flush_queue()
+        except Exception as exc:
+            logger.warning("Sync background cycle failed: %s", exc)
+        time.sleep(90)
+
+
+# Arabic: أول حساب للمسارات عند إقلاع التطبيق (يقرأ paths_config.json إن وُجد).
+# English: First path resolution at app startup (reads paths_config.json if present).
+recompute_paths()
+
+
 def clean_folder_name(name, fallback_code):
     """Arabic: تنظيف اسم مجلد المنتج من رموز Windows غير الصالحة. English: Sanitize a product folder name for Windows."""
     clean_name = re.sub(r'[\\/*?:"<>|]', "", normalize_text(name)).strip(" .")
@@ -385,35 +714,51 @@ def build_optimized_image_url(raw_url, settings):
 
 
 def prepare_image_for_save(content, output_path, settings):
-    """Arabic: تصغير الصورة وحفظها بصيغة يقبلها المتجر. English: Resize and save an image in a store-compatible format."""
+    """
+    Arabic: تصغير الصورة وجعلها مربعة 1:1 مع ضغط ممتاز دون فقدان الجودة الملحوظة محلياً.
+    English: Resize, convert to a centered 1:1 square canvas, and optimize image locally.
+    """
     output_format = normalize_image_format(settings["ImageFormat"])
+    max_dim = settings["ImageMaxDimension"]  # المقاس المربع المطلوب (مثلاً 1000x1000)
+
     with Image.open(BytesIO(content)) as source_image:
+        # 1. تصحيح اتجاه الصورة من الـ EXIF
         source_image = ImageOps.exif_transpose(source_image)
-        source_image.thumbnail(
-            (settings["ImageMaxDimension"], settings["ImageMaxDimension"]),
-            Image.Resampling.LANCZOS,
-        )
-        if output_format == "png":
-            if source_image.mode not in {"RGB", "RGBA"}:
-                source_image = source_image.convert("RGBA" if "transparency" in source_image.info else "RGB")
-            source_image.save(output_path, "PNG", optimize=True, compress_level=9)
-            return
+
+        # 2. معالجة الشفافية وتحويل الألوان إلى RGB
         if source_image.mode in {"RGBA", "LA"} or (source_image.mode == "P" and "transparency" in source_image.info):
             rgba = source_image.convert("RGBA")
-            background = Image.new("RGB", rgba.size, "white")
+            background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
             background.paste(rgba, mask=rgba.getchannel("A"))
-            source_image = background
+            source_image = background.convert("RGB")
         else:
             source_image = source_image.convert("RGB")
-        source_image.save(
-            output_path,
-            "JPEG",
-            quality=settings["ImageQuality"],
-            optimize=True,
-            progressive=True,
-        )
 
+        # 3. تصغير الصورة مع الحفاظ على النسب الأصلية (دون تشويه)
+        source_image.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
 
+        # 4. إنشاء خلفية بيضاء مربعة بمقاس (max_dim x max_dim)
+        square_canvas = Image.new("RGB", (max_dim, max_dim), (255, 255, 255))
+
+        # 5. توسيط الصورة داخل القماش المربع (Padding) لعدم قص أي جزء من منتج الحذاء
+        offset_x = (max_dim - source_image.width) // 2
+        offset_y = (max_dim - source_image.height) // 2
+        square_canvas.paste(source_image, (offset_x, offset_y))
+
+        # 6. حفظ الصورة وضغطها بأعلى كفاءة وبدون فقدان جودة ملحوظ
+        if output_format == "png":
+            square_canvas.save(output_path, "PNG", optimize=True, compress_level=9)
+        else:
+            # استخدام Quality بين 80 إلى 88 يقلل الحجم بنسبة تصل إلى 70% مع الحفاظ على دقة ممتازة
+            quality_val = max(75, min(safe_int(settings.get("ImageQuality"), 85), 95))
+            square_canvas.save(
+                output_path,
+                "JPEG",
+                quality=quality_val,
+                optimize=True,
+                progressive=True,
+            )
+            
 def download_single_image(session, raw_url, output_path, settings, image_number):
     """Arabic: تنزيل صورة مع ثلاث محاولات والرجوع للرابط الأصلي. English: Download one image with retries and original-URL fallback."""
     optimized_url = build_optimized_image_url(raw_url, settings)
@@ -832,12 +1177,12 @@ def commit_archive_excel(temp_archive, temp_excel, token):
 
 
 def delete_product_folder(product):
-    """Arabic: حذف مجلد صور منتج واحد بأمان داخل BASE_DIR فقط. English: Safely remove one product image folder within BASE_DIR."""
+    """Arabic: حذف مجلد صور منتج واحد بأمان داخل مجلد البراند الخاص به فقط. English: Safely remove one product image folder within its own brand folder only."""
     folder_name = normalize_text(product.get("folder"))
     if not folder_name:
         return False
     base_real = os.path.realpath(BASE_DIR)
-    folder_real = os.path.realpath(os.path.join(BASE_DIR, folder_name))
+    folder_real = os.path.realpath(get_product_image_dir(product))
     if os.path.commonpath([base_real, folder_real]) != base_real:
         raise ValueError("Refusing to delete a folder outside the configured image directory.")
     if os.path.isdir(folder_real):
@@ -883,15 +1228,111 @@ def health_check():
         if default_provider == "openai"
         else os.getenv("GROQ_MODEL", DEFAULT_AI_MODEL)
     )
+    sync_config = load_sync_config()
     return jsonify({
         "success": True,
         "service": "AlphaCode Extractor",
-        "version": "4.4.0",
+        "version": "4.5.0",
         "ai_provider": default_provider,
         "ai_configured": provider_keys.get(default_provider, False),
         "ai_providers": provider_keys,
         "default_ai_model": default_model,
+        "needs_folder_setup": not ROOT_DIR_CONFIGURED,
+        "root_dir": ROOT_DIR if ROOT_DIR_CONFIGURED else "",
+        "sync_enabled": sync_config["Enabled"],
     })
+
+
+@app.route("/api/paths/status", methods=["GET"])
+def get_paths_status():
+    """Arabic: حالة مجلد الحفظ الحالي لعرضها في لوحة الإضافة. English: Current save-folder status for the extension popup."""
+    return jsonify({
+        "success": True,
+        "configured": ROOT_DIR_CONFIGURED,
+        "root_dir": ROOT_DIR if ROOT_DIR_CONFIGURED else "",
+        "images_root": BASE_DIR if ROOT_DIR_CONFIGURED else "",
+    })
+
+
+@app.route("/api/paths/choose-folder", methods=["POST"])
+def choose_root_folder():
+    """Arabic: يفتح نافذة اختيار مجلد أصلية على جهاز المستخدم ويحفظ اختياره. English: Opens a native folder picker on the user's machine and saves the choice."""
+    try:
+        chosen = open_native_folder_dialog()
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+    if not chosen:
+        return jsonify({"success": False, "cancelled": True, "error": "No folder was selected."}), 400
+    if not is_root_dir_valid(chosen):
+        return jsonify({"success": False, "error": "The selected folder is not writable."}), 400
+    with SAVE_LOCK:
+        save_paths_config({"RootDir": chosen})
+        configured = recompute_paths()
+    logger.info("Root save folder configured by user. path=%s", chosen)
+    return jsonify({"success": True, "configured": configured, "root_dir": ROOT_DIR, "images_root": BASE_DIR})
+
+
+@app.route("/api/sync/config", methods=["GET"])
+def get_sync_config():
+    """Arabic: إرجاع إعدادات المزامنة الحالية (المفتاح مُقنّع جزئياً لأمان أفضل). English: Return current sync settings (token partially masked for safety)."""
+    config = load_sync_config()
+    masked_token = (config["Token"][:4] + "…") if len(config["Token"]) > 4 else ("•" * len(config["Token"]))
+    return jsonify({
+        "success": True,
+        "Enabled": config["Enabled"],
+        "ServerUrl": config["ServerUrl"],
+        "AddedByName": config["AddedByName"],
+        "TokenSet": bool(config["Token"]),
+        "TokenPreview": masked_token,
+    })
+
+
+@app.route("/api/sync/config", methods=["POST"])
+def set_sync_config():
+    """Arabic: حفظ إعدادات المزامنة من لوحة الإضافة. English: Save sync settings from the extension popup."""
+    data = request.get_json(silent=True) or {}
+    existing = load_sync_config()
+    # Arabic: إن أُرسل حقل Token فارغاً، نحافظ على المفتاح المحفوظ سابقاً بدل مسحه بالخطأ.
+    # English: If Token is sent empty, keep the previously saved key instead of wiping it by mistake.
+    token = normalize_text(data.get("Token")) or existing["Token"]
+    save_sync_config({
+        "Enabled": data.get("Enabled"),
+        "ServerUrl": data.get("ServerUrl"),
+        "Token": token,
+        "AddedByName": data.get("AddedByName"),
+    })
+    logger.info("Sync configuration updated. enabled=%s server=%s", safe_bool(data.get("Enabled")), normalize_text(data.get("ServerUrl")))
+    return jsonify({"success": True})
+
+
+@app.route("/api/sync/status", methods=["GET"])
+def get_sync_status():
+    """Arabic: حالة المزامنة للوحة التشخيص - آخر سحب/رفع وعدد العناصر المعلّقة. English: Sync status for the diagnostics tab - last pull/push and pending queue size."""
+    config = load_sync_config()
+    state = load_sync_state()
+    queue = load_sync_queue()
+    return jsonify({
+        "success": True,
+        "enabled": config["Enabled"],
+        "server_url": config["ServerUrl"],
+        "last_pull_at": state.get("last_pull_at") or "",
+        "last_push_at": state.get("last_push_at") or "",
+        "last_error": state.get("last_error") or "",
+        "pending_queue": len(queue),
+    })
+
+
+@app.route("/api/sync/now", methods=["POST"])
+def trigger_sync_now():
+    """Arabic: تشغيل دورة مزامنة فورية عند الضغط على زر 'مزامنة الآن'. English: Run one immediate sync cycle for the 'sync now' button."""
+    if not load_sync_config()["Enabled"]:
+        return jsonify({"success": False, "error": "Sync is not enabled."}), 400
+    try:
+        sync_pull_updates()
+        sync_flush_queue()
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+    return jsonify({"success": True, "status": load_sync_state(), "pending_queue": len(load_sync_queue())})
 
 
 @app.route("/api/log/client", methods=["POST"])
@@ -991,7 +1432,9 @@ def get_last_archived_product():
 def get_archive_stats():
     """Arabic: إحصاءات مختصرة لإدارة بيانات الأرشيف. English: Return archive statistics for data-management controls."""
     archive = load_archive()
-    entries = archive_entries(archive)
+    # Arabic: نستبعد سجلات الحجز التفاؤلي (لا تملك id بعد) من الإحصاء حتى لا تُحتسب كمنتجات فعلية.
+    # English: Exclude optimistic-lock reservation stubs (no id yet) from the count so they are not counted as real products.
+    entries = {key: item for key, item in archive_entries(archive).items() if item.get("id") is not None}
     image_count = sum(len(item.get("images") or []) for item in entries.values())
     return jsonify({
         "success": True,
@@ -1000,8 +1443,32 @@ def get_archive_stats():
         "last_id": max([safe_int(item.get("id"), 0) for item in entries.values()] or [0]),
         "archive_path": ARCHIVE_PATH,
         "excel_path": EXCEL_PATH,
-        "image_root": BASE_DIR,
+        "image_root": BASE_DIR if ROOT_DIR_CONFIGURED else "",
+        "root_configured": ROOT_DIR_CONFIGURED,
     })
+
+
+@app.route("/api/archive/recent", methods=["GET"])
+def get_recent_products():
+    """Arabic: شاشة تشخيص صغيرة - آخر المنتجات المضافة مع اسم من أضافها ومصدر الـ ID. English: A small diagnostics view - the latest added products with who added them and the ID source."""
+    limit = max(1, min(safe_int(request.args.get("limit"), 15), 100))
+    archive = load_archive()
+    entries = [item for item in archive_entries(archive).values() if item.get("id") is not None]
+    entries.sort(key=lambda item: safe_int(item.get("id"), 0), reverse=True)
+    recent = [
+        {
+            "id": item.get("id"),
+            "name_en": item.get("name_en") or item.get("name"),
+            "brand_name": item.get("brand_name"),
+            "brand_folder": item.get("brand_folder"),
+            "added_by": item.get("added_by") or "غير محدد",
+            "id_source": item.get("id_source") or "local_fallback",
+            "created_at": item.get("created_at"),
+            "workflow_status": item.get("workflow_status"),
+        }
+        for item in entries[:limit]
+    ]
+    return jsonify({"success": True, "products": recent})
 
 
 @app.route("/api/pending/latest", methods=["GET"])
@@ -1125,7 +1592,7 @@ def serve_product_image(product_id, filename):
     safe_filename = os.path.basename(filename)
     if safe_filename not in (product.get("images") or []):
         return jsonify({"success": False, "error": "Image is not registered for this product."}), 404
-    folder_path = os.path.join(BASE_DIR, normalize_text(product.get("folder")))
+    folder_path = get_product_image_dir(product)
     return send_from_directory(folder_path, safe_filename, as_attachment=False)
 
 
@@ -1793,6 +2260,12 @@ def generate_ai_copy():
 @app.route("/api/extract", methods=["POST"])
 def extract_product():
     """Arabic: تنزيل الصور وحفظ Excel والأرشيف ثم تجهيز المنتج للوحة Sooqify. English: Download images, commit Excel/archive, and prepare the Sooqify autofill package."""
+    if not ROOT_DIR_CONFIGURED or not is_root_dir_valid(ROOT_DIR):
+        return jsonify({
+            "success": False,
+            "needs_folder_setup": True,
+            "error": "No save folder is configured yet. Choose one from the extension settings first.",
+        }), 409
     data = request.get_json(silent=True) or {}
     settings = extract_settings(data)
     search_code = normalize_text(data.get("SearchCode"))
@@ -1857,6 +2330,10 @@ def extract_product():
     download_indexes = selected_indexes if download_selected_only else list(range(len(images)))
     download_plan = [(index, images[index]) for index in download_indexes]
 
+    sync_config = load_sync_config()
+    added_by = sync_config["AddedByName"] or "غير محدد"
+    dedup_key = search_code if is_valid_marker(search_code) else (style_code if is_valid_marker(style_code) else "")
+
     with SAVE_LOCK:
         archive = load_archive()
         existing = find_existing_product(archive, search_code, style_code)
@@ -1870,15 +2347,35 @@ def extract_product():
                 "error": "This product already exists in the archive.",
             }), 409
 
-        next_id = get_next_id(archive)
+        # Arabic: قفل تفاؤلي مركزي - يمنع الطرف الآخر من تجهيز نفس المنتج في نفس اللحظة قبل أي تنزيل صور.
+        # English: Central optimistic lock - stops the other side from preparing the same product at the same time, before any image download.
+        reserved_ok, conflict_item, reserve_error = sync_reserve_key(dedup_key, added_by)
+        if not reserved_ok and conflict_item:
+            return jsonify({
+                "success": False,
+                "exists": True,
+                "remote_conflict": True,
+                "id": conflict_item.get("id"),
+                "added_by": conflict_item.get("added_by"),
+                "error": "This product was just reserved or added by the other user.",
+            }), 409
+
+        next_id = sync_reserve_id()
+        id_source = "remote"
+        if next_id is None:
+            next_id = get_next_id(archive)
+            id_source = "local_fallback"
+
         transaction_id = uuid.uuid4().hex
         today_str = datetime.now().strftime("%Y-%m-%d")
         identifier = search_code if is_valid_marker(search_code) else style_code
         folder_base = clean_folder_name(name_en, identifier or next_id)
         folder_suffix = clean_code_for_path(identifier or f"ID-{next_id}")
         final_folder_name = f"{folder_base}__{folder_suffix}"[:115].rstrip(" .")
-        final_product_folder = os.path.join(BASE_DIR, final_folder_name)
-        os.makedirs(BASE_DIR, exist_ok=True)
+        brand_folder_name = get_brand_folder_name(brand_name)
+        brand_dir = get_brand_dir(brand_name)
+        final_product_folder = os.path.join(brand_dir, final_folder_name)
+        os.makedirs(brand_dir, exist_ok=True)
         temp_root = os.path.join(BASE_DIR, ".alphacode_tmp")
         os.makedirs(temp_root, exist_ok=True)
         temp_product_folder = os.path.join(temp_root, transaction_id)
@@ -1963,7 +2460,7 @@ def extract_product():
                 "Veg": settings["Veg"],
                 "Recommended": settings["Recommended"],
             }
-            archive_key = search_code if is_valid_marker(search_code) else f"STYLE_{clean_code_for_path(style_code)}_{next_id}"
+            archive_key = dedup_key or f"ID_{next_id}"
             settings_for_store = {
                 "StoreId": settings["StoreId"],
                 "CategoryId": settings["CategoryId"],
@@ -2002,6 +2499,9 @@ def extract_product():
                 "workflow_status": "prepared",
                 "store_submission_status": "not_submitted",
                 "folder": final_folder_name,
+                "brand_folder": brand_folder_name,
+                "added_by": added_by,
+                "id_source": id_source,
                 "images": local_images,
                 "store_images": store_images,
                 "store_main_image": store_main_image,
@@ -2023,6 +2523,7 @@ def extract_product():
             temp_excel = create_temp_excel(new_row, transaction_id)
             temp_archive = write_json_temp(ARCHIVE_PATH, updated_archive, transaction_id)
             commit_transaction(temp_product_folder, final_product_folder, temp_excel, temp_archive, transaction_id)
+            threading.Thread(target=sync_push_product, args=(archive_key, archive_item), daemon=True).start()
             pending_product = build_pending_product(next_id, archive_item)
             logger.info(
                 "Product saved successfully. id=%s, downloaded=%s/%s, source_images=%s, selected_only=%s, transferred_bytes=%s",
@@ -2060,4 +2561,14 @@ if __name__ == "__main__":
     logger.info("AlphaCode Extractor server is ready on http://127.0.0.1:5000")
     logger.info("AI keys configured. Groq=%s OpenAI=%s", bool(os.getenv("GROQ_API_KEY")), bool(os.getenv("OPENAI_API_KEY")))
     logger.info("External log file: %s", LOG_PATH)
+    if ROOT_DIR_CONFIGURED:
+        logger.info("Save folder configured: %s", ROOT_DIR)
+    else:
+        logger.warning("No save folder configured yet. Waiting for /api/paths/choose-folder from the popup.")
+    sync_settings = load_sync_config()
+    if sync_settings["Enabled"]:
+        logger.info("Two-user sync ENABLED. server=%s", sync_settings["ServerUrl"])
+        threading.Thread(target=sync_background_worker, daemon=True).start()
+    else:
+        logger.info("Two-user sync is disabled. Configure it from the extension settings to enable it.")
     app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)

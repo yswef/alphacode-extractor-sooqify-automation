@@ -54,6 +54,15 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+
+# ملفات التكوين وقاعدة البيانات المحلية الخاصة بالإضافة
+paths_config.json
+sync_config.json
+sync_queue.json
+sync_state.json
+archive_db.json
+ai_copy_cache.json
+
 # OS/editor
 .DS_Store
 Thumbs.db

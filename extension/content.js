@@ -455,6 +455,7 @@ function bindExternalCopyTemplateControls({
 // English: Prioritize explicit Item No/Style Code labels and never use a generic Code token.
 function extractStyleCode(sourceText) {
     const patterns = [
+        /(?:Product\s*(?:No\.?|Number)|Product\s*#)\s*[:：#]?\s*([A-Z0-9][A-Z0-9._/-]{2,})/i, // تم الإضافة هنا
         /(?:Item\s*(?:No\.?|Number)|Item\s*#)\s*[:：#]?\s*([A-Z0-9][A-Z0-9._/-]{2,})/i,
         /Style\s*Code\s*[:：#]?\s*([A-Z0-9][A-Z0-9._/-]{2,})/i,
         /(?:货号|款号|型号|商品编号)\s*[:：#]?\s*([A-Z0-9][A-Z0-9._/-]{2,})/i,

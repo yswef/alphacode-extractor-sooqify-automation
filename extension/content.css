@@ -342,7 +342,7 @@
 }
 
 /* =========================================================
-   AlphaCode v4.4 - Batch Product Queue
+   AlphaCode v4.5 - Batch Product Queue
    ========================================================= */
 .alphacode-batch-select {
     display: inline-flex !important;
@@ -456,7 +456,7 @@
 #alphacode-batch-progress-panel .batch-retry { background:#fef3c7; color:#92400e; }
 
 /* =========================================================
-   AlphaCode v4.4 - External JSON copy template
+   AlphaCode v4.5 - External JSON copy template
    ========================================================= */
 .alphacode-json-template-section {
     margin: 12px 0 14px;

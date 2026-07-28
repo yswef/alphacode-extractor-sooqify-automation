@@ -1,6 +1,6 @@
 # AlphaCode Extractor Changelog
 
-## v4.3.0 — Batch Product Queue
+## v4.5.0 — Batch Product Queue
 
 ### Batch workflow
 

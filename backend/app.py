@@ -12,7 +12,7 @@ import time
 import uuid
 from datetime import datetime
 from io import BytesIO
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit, unquote
 
 import certifi
 import pandas as pd
@@ -66,7 +66,7 @@ DEFAULT_AI_PROVIDER = "groq"
 DEFAULT_AI_MODEL = "openai/gpt-oss-120b"
 DEFAULT_OPENAI_MODEL = "gpt-5.2"
 GROQ_OFFICIAL_SEARCH_MODEL = "groq/compound-mini"
-AI_PROMPT_VERSION = "4.3-batch-official-brand-guard-fast-json"
+AI_PROMPT_VERSION = "4.5-batch-official-brand-guard-fast-json"
 
 # Arabic: القفل يمنع تعارض طلبين أثناء تحديث الصور وExcel والأرشيف.
 # English: The lock prevents concurrent requests from corrupting images, Excel, or archive data.
@@ -713,44 +713,75 @@ def build_optimized_image_url(raw_url, settings):
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, parsed.fragment))
 
 
+def get_dominant_bg_color(img):
+    """جلب متوسّط لون الخلفية من زوايا الصورة الأربع"""
+    # تحويل لـ RGB لضمان استخراج القيم ثلاثية (R, G, B)
+    rgb_img = img.convert("RGB")
+    w, h = rgb_img.size
+
+    # أخذ عينات من الزوايا الأربع
+    corners = [
+        rgb_img.getpixel((0, 0)),  # أعلى اليسار
+        rgb_img.getpixel((w - 1, 0)),  # أعلى اليمين
+        rgb_img.getpixel((0, h - 1)),  # أسفل اليسار
+        rgb_img.getpixel((w - 1, h - 1)),  # أسفل اليمين
+    ]
+
+    # حساب متوسط ألوان RGB للزوايا
+    r = sum(c[0] for c in corners) // 4
+    g = sum(c[1] for c in corners) // 4
+    b = sum(c[2] for c in corners) // 4
+
+    return (r, g, b)
+
+
 def prepare_image_for_save(content, output_path, settings):
-    """
-    Arabic: تصغير الصورة وجعلها مربعة 1:1 مع ضغط ممتاز دون فقدان الجودة الملحوظة محلياً.
-    English: Resize, convert to a centered 1:1 square canvas, and optimize image locally.
+    """Arabic: تصغير الصورة وجعلها مربعة 1:1 مع ضغط ممتاز دون فقدان الجودة
+
+    الملحوظة محلياً واستخراج لون الخلفية تلقائياً. English: Resize, convert to
+    a centered 1:1 square canvas with auto background detection.
     """
     output_format = normalize_image_format(settings["ImageFormat"])
-    max_dim = settings["ImageMaxDimension"]  # المقاس المربع المطلوب (مثلاً 1000x1000)
+    max_dim = settings["ImageMaxDimension"]  # المقاس المربع المطلوب
 
     with Image.open(BytesIO(content)) as source_image:
         # 1. تصحيح اتجاه الصورة من الـ EXIF
         source_image = ImageOps.exif_transpose(source_image)
 
-        # 2. معالجة الشفافية وتحويل الألوان إلى RGB
-        if source_image.mode in {"RGBA", "LA"} or (source_image.mode == "P" and "transparency" in source_image.info):
+        # 2. استخراج لون الخلفية تلقائياً من زوايا الصورة الأصلية
+        bg_color = get_dominant_bg_color(source_image)
+
+        # 3. معالجة الشفافية وتحويل الألوان إلى RGB باستخدام لون الخلفية المكتشف
+        if source_image.mode in {"RGBA", "LA"} or (
+            source_image.mode == "P" and "transparency" in source_image.info
+        ):
             rgba = source_image.convert("RGBA")
-            background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+            background = Image.new("RGBA", rgba.size, bg_color + (255,))
             background.paste(rgba, mask=rgba.getchannel("A"))
             source_image = background.convert("RGB")
         else:
             source_image = source_image.convert("RGB")
 
-        # 3. تصغير الصورة مع الحفاظ على النسب الأصلية (دون تشويه)
+        # 4. تصغير الصورة مع الحفاظ على النسب الأصلية (دون تشويه)
         source_image.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
 
-        # 4. إنشاء خلفية بيضاء مربعة بمقاس (max_dim x max_dim)
-        square_canvas = Image.new("RGB", (max_dim, max_dim), (255, 255, 255))
+        # 5. إنشاء القماش المربع بنفس لون الخلفية المكتشف تلقائياً
+        square_canvas = Image.new("RGB", (max_dim, max_dim), bg_color)
 
-        # 5. توسيط الصورة داخل القماش المربع (Padding) لعدم قص أي جزء من منتج الحذاء
+        # 6. توسيط الصورة داخل القماش المربع (Padding)
         offset_x = (max_dim - source_image.width) // 2
         offset_y = (max_dim - source_image.height) // 2
         square_canvas.paste(source_image, (offset_x, offset_y))
 
-        # 6. حفظ الصورة وضغطها بأعلى كفاءة وبدون فقدان جودة ملحوظ
+        # 7. حفظ الصورة وضغطها بأعلى كفاءة
         if output_format == "png":
-            square_canvas.save(output_path, "PNG", optimize=True, compress_level=9)
+            square_canvas.save(
+                output_path, "PNG", optimize=True, compress_level=9
+            )
         else:
-            # استخدام Quality بين 80 إلى 88 يقلل الحجم بنسبة تصل إلى 70% مع الحفاظ على دقة ممتازة
-            quality_val = max(75, min(safe_int(settings.get("ImageQuality"), 85), 95))
+            quality_val = max(
+                75, min(safe_int(settings.get("ImageQuality"), 85), 95)
+            )
             square_canvas.save(
                 output_path,
                 "JPEG",

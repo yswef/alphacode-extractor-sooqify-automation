@@ -1,4 +1,4 @@
-# AlphaCode Extractor v4.3 — Sooqify Batch Automation
+# AlphaCode Extractor v4.5 — Sooqify Batch Automation
 
 > Private Chrome Extension and Flask backend for extracting supplier products, preparing bilingual catalog copy, optimizing images, and submitting products to Sooqify/6amMart individually or as a controlled batch.
 
@@ -187,9 +187,9 @@ Confirm Category ID, Subcategory ID, Brand ID, Unit ID, Size Attribute ID, and t
 
 - [Arabic project documentation](docs/AlphaCode_Project_Documentation_AR.pdf)
 - [English project documentation](docs/AlphaCode_Project_Documentation_EN.pdf)
-- [v4.3 changelog](CHANGELOG.md)
+- [v4.5 changelog](CHANGELOG.md)
 
-The PDF documents describe the core architecture; `CHANGELOG.md` and this README contain the v4.3 batch additions.
+The PDF documents describe the core architecture; `CHANGELOG.md` and this README contain the v4.5 batch additions.
 
 ## License
 

@@ -1,5 +1,39 @@
 # AlphaCode Extractor Changelog
 
+## v4.5.2 — Two-User Sync, Manual Folder Setup, Brand/Date Image Folders
+
+### Two-user sync (optional)
+
+- Added an optional central sync endpoint (`sync.php`, hosted on the operator's own web hosting) for two machines sharing one Sooqify store.
+- Added atomic remote ID reservation so the two machines never assign the same product ID.
+- Added an optimistic remote lock on each product's Search/Style code, requested before any image download, so both machines cannot prepare the same product at once.
+- Added an automatic push of every newly archived product to the shared remote archive, with a local retry queue and a 90-second background worker for offline recovery.
+- Added a local-only fallback: if the remote server is unreachable, ID assignment and duplicate checks fall back to the local archive and the product is flagged for later review instead of blocking the operator.
+- Added a "Sync" popup tab with connection settings (URL, secret token, operator name), last pull/push timestamps, pending-queue count, and a manual "sync now" action.
+- Added a small diagnostics list of the most recently added products, showing who added each one and whether its ID came from the remote reservation or a local fallback.
+
+### Manual save-folder setup
+
+- Removed the hardcoded Windows save path; the backend now blocks product saving with a clear error until a folder is explicitly configured.
+- Added a native OS folder-picker dialog, triggered from the popup, so each machine chooses its own save folder independently.
+- Added a popup banner and a folder-status card that appear whenever no valid folder is configured yet.
+
+### Per-brand and per-date image folders
+
+- Product image folders are now organized as `<images root>/<brand>/<date>/<product folder>` instead of a single flat folder.
+- Added a `style_code.txt` file inside every product folder containing its Style Code, Search Code, and product ID.
+- Preserved read and delete compatibility for products saved under earlier folder layouts (brand-only or unclassified).
+
+### Store submission and image quality
+
+- Added an option to submit only the main image to Sooqify while still downloading every image locally.
+- When that option is enabled, every downloaded image is saved exactly as received — no resize, square-padding, or recompression — with its file extension detected directly from the image data.
+- Bypassed the source-side CDN thumbnail transform entirely while this option is active, so local copies are always full quality.
+
+### Fixes
+
+- Fixed a popup settings bug where certain newly added toggle switches did not persist after closing and reopening the extension.
+
 ## v4.5.0 — Batch Product Queue
 
 ### Batch workflow

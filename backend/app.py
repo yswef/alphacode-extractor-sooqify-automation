@@ -374,10 +374,23 @@ def get_brand_dir(brand_name):
 
 
 def get_product_image_dir(product):
-    """Arabic: إعادة بناء مسار مجلد منتج موجود بالاعتماد على brand_folder المحفوظ معه (متوافق مع منتجات أُضيفت قبل هذا التحديث). English: Rebuild an existing product's folder using its stored brand_folder (backward compatible with products added before this update)."""
-    brand_folder = normalize_text(product.get("brand_folder")) or "Air Jordan"
+    """
+    Arabic: إعادة بناء مسار مجلد منتج موجود، متوافق مع كل الأنماط السابقة: براند/تاريخ (الحالي)،
+    تاريخ فقط (فترة انتقالية قصيرة)، براند فقط (نمط أقدم)، أو مباشرة داخل مجلد الصور (أقدم نمط).
+    English: Rebuild an existing product's folder location, compatible with every previous scheme:
+    brand/date (current), date-only (a brief transitional window), brand-only (older), or directly
+    under the images root (oldest).
+    """
     folder_name = normalize_text(product.get("folder"))
-    return os.path.join(BASE_DIR, brand_folder, folder_name)
+    date_folder = normalize_text(product.get("date_folder"))
+    brand_folder = normalize_text(product.get("brand_folder"))
+    if brand_folder and date_folder:
+        return os.path.join(BASE_DIR, brand_folder, date_folder, folder_name)
+    if date_folder:
+        return os.path.join(BASE_DIR, date_folder, folder_name)
+    if brand_folder:
+        return os.path.join(BASE_DIR, brand_folder, folder_name)
+    return os.path.join(BASE_DIR, folder_name)
 
 
 # =========================================================
@@ -675,6 +688,9 @@ def extract_settings(data):
         "ArabicCopyStyle": normalize_text(settings.get("ArabicCopyStyle")) or "sales-natural",
         "OfficialResearchOnRegenerate": safe_bool(settings.get("OfficialResearchOnRegenerate"), True),
         "DownloadSelectedImagesOnly": safe_bool(settings.get("DownloadSelectedImagesOnly"), False),
+        # Arabic: عند التفعيل - يُرفع للمتجر الصورة الرئيسية فقط، وتُحفظ كل الصور محلياً كما هي (دون تصغير أو تربيع أو ضغط).
+        # English: When enabled - only the main image is submitted to the store, and every image is saved locally untouched (no resize/square/compression).
+        "UploadMainImageOnly": safe_bool(settings.get("UploadMainImageOnly"), True),
     }
 
 
@@ -697,7 +713,9 @@ def strip_existing_image_transform(url):
 def build_optimized_image_url(raw_url, settings):
     """Arabic: طلب نسخة JPEG مصغرة من CDN قبل تنزيلها لتقليل الإنترنت. English: Request a smaller JPEG from the CDN before download to reduce bandwidth."""
     source_url = strip_existing_image_transform(raw_url)
-    if not settings["OptimizeImageAtSource"]:
+    # Arabic: وضع "الصورة الرئيسية فقط" يحفظ الصور الأصلية بجودتها الكاملة، فلا داعي لأي تحويل من الـ CDN.
+    # English: "Main image only" mode saves originals at full quality, so no CDN transform is requested at all.
+    if not settings["OptimizeImageAtSource"] or settings.get("UploadMainImageOnly"):
         return source_url
     try:
         parsed = urlsplit(source_url)
@@ -711,6 +729,19 @@ def build_optimized_image_url(raw_url, settings):
     )
     query = f"{parsed.query}&{transform}" if parsed.query else transform
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, parsed.fragment))
+
+
+def sniff_image_extension(content):
+    """Arabic: تحديد امتداد الصورة الحقيقي من أول بايتات الملف دون أي تحويل. English: Detect the real image extension from the file's leading bytes, no conversion involved."""
+    if content[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if content[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return "webp"
+    if content[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    return "jpg"
 
 
 def get_dominant_bg_color(img):
@@ -790,11 +821,23 @@ def prepare_image_for_save(content, output_path, settings):
                 progressive=True,
             )
             
-def download_single_image(session, raw_url, output_path, settings, image_number):
-    """Arabic: تنزيل صورة مع ثلاث محاولات والرجوع للرابط الأصلي. English: Download one image with retries and original-URL fallback."""
-    optimized_url = build_optimized_image_url(raw_url, settings)
+def download_single_image(session, raw_url, output_dir, base_name, settings, image_number):
+    """
+    Arabic: تنزيل صورة مع ثلاث محاولات والرجوع للرابط الأصلي. في وضع "الصورة الرئيسية فقط"
+    تُحفظ البايتات كما وصلت تماماً دون أي تصغير أو تربيع أو ضغط، بامتداد يُكتشف من محتوى الملف.
+    English: Download one image with retries and original-URL fallback. In "main image only"
+    mode the bytes are saved exactly as received - no resize/square/compression - with an
+    extension detected from the file content itself.
+    Returns: (bytes_downloaded, final_filename, source_url_used)
+    """
+    raw_mode = bool(settings.get("UploadMainImageOnly"))
     original_url = strip_existing_image_transform(raw_url)
-    candidate_urls = [optimized_url] + ([original_url] if optimized_url != original_url else [])
+    if raw_mode:
+        candidate_urls = [original_url]
+    else:
+        optimized_url = build_optimized_image_url(raw_url, settings)
+        candidate_urls = [optimized_url] + ([original_url] if optimized_url != original_url else [])
+
     last_error = "Unknown download error"
     for candidate_index, candidate_url in enumerate(candidate_urls):
         for attempt in range(1, 4):
@@ -804,15 +847,27 @@ def download_single_image(session, raw_url, output_path, settings, image_number)
                 content = response.content
                 if not content:
                     raise ValueError("The image response was empty")
-                prepare_image_for_save(content, output_path, settings)
+
+                if raw_mode:
+                    extension = sniff_image_extension(content)
+                    final_name = f"{base_name}.{extension}"
+                    with open(os.path.join(output_dir, final_name), "wb") as raw_file:
+                        raw_file.write(content)
+                else:
+                    output_format = normalize_image_format(settings["ImageFormat"])
+                    extension = "png" if output_format == "png" else "jpg"
+                    final_name = f"{base_name}.{extension}"
+                    prepare_image_for_save(content, os.path.join(output_dir, final_name), settings)
+
                 logger.info(
-                    "Image %s downloaded (%s bytes, source=%s, attempt=%s)",
+                    "Image %s downloaded (%s bytes, source=%s, mode=%s, attempt=%s)",
                     image_number,
                     len(content),
-                    "optimized" if candidate_index == 0 and optimized_url != original_url else "original",
+                    "optimized" if (not raw_mode and candidate_index == 0 and optimized_url != original_url) else "original",
+                    "raw" if raw_mode else "processed",
                     attempt,
                 )
-                return len(content), candidate_url
+                return len(content), final_name, candidate_url
             except Exception as exc:
                 last_error = str(exc)
                 logger.warning("Image %s download attempt %s failed: %s", image_number, attempt, exc)
@@ -2403,17 +2458,18 @@ def extract_product():
         folder_base = clean_folder_name(name_en, identifier or next_id)
         folder_suffix = clean_code_for_path(identifier or f"ID-{next_id}")
         final_folder_name = f"{folder_base}__{folder_suffix}"[:115].rstrip(" .")
-        brand_folder_name = get_brand_folder_name(brand_name)
-        brand_dir = get_brand_dir(brand_name)
-        final_product_folder = os.path.join(brand_dir, final_folder_name)
-        os.makedirs(brand_dir, exist_ok=True)
+        # Arabic: مجلد المنتج يوضع مباشرة داخل مجلد بتاريخ اليوم تحت مجلد الصور المُختار.
+        # English: The product folder sits directly inside a folder named for today's date, under the chosen images root.
+        brand_folder_name = get_brand_folder_name(brand_name)  # Arabic: يُحفظ كمعلومة إضافية فقط، لا يُستخدم كمسار. English: Kept only as metadata now, not used for the path.
+        date_folder_name = today_str
+        date_dir = os.path.join(BASE_DIR, date_folder_name)
+        final_product_folder = os.path.join(date_dir, final_folder_name)
+        os.makedirs(date_dir, exist_ok=True)
         temp_root = os.path.join(BASE_DIR, ".alphacode_tmp")
         os.makedirs(temp_root, exist_ok=True)
         temp_product_folder = os.path.join(temp_root, transaction_id)
         os.makedirs(temp_product_folder, exist_ok=False)
 
-        output_format = normalize_image_format(settings["ImageFormat"])
-        extension = "png" if output_format == "png" else "jpg"
         local_images, downloaded_image_records, failed_images = [], [], []
         total_download_bytes = 0
         session = requests.Session()
@@ -2424,13 +2480,13 @@ def extract_product():
         )
         try:
             for sequence_number, (source_index, image_url) in enumerate(download_plan, start=1):
-                image_name = f"{today_str}-{uuid.uuid4().hex[:12]}.{extension}"
-                image_path = os.path.join(temp_product_folder, image_name)
+                base_name = f"{today_str}-{uuid.uuid4().hex[:12]}"
                 try:
-                    downloaded_bytes, _ = download_single_image(
+                    downloaded_bytes, image_name, _ = download_single_image(
                         session,
                         image_url,
-                        image_path,
+                        temp_product_folder,
+                        base_name,
                         settings,
                         source_index + 1,
                     )
@@ -2452,6 +2508,14 @@ def extract_product():
             if not local_images:
                 raise RuntimeError("No image could be downloaded. Nothing was saved.")
 
+            # Arabic: ملف نصي بكود الستايل داخل مجلد المنتج كما طُلب.
+            # English: A text file with the style code inside the product folder, as requested.
+            style_code_txt_path = os.path.join(temp_product_folder, "style_code.txt")
+            with open(style_code_txt_path, "w", encoding="utf-8") as style_file:
+                style_file.write(f"Style Code: {style_code or '-'}\n")
+                style_file.write(f"Search Code: {search_code or '-'}\n")
+                style_file.write(f"Product ID: {next_id}\n")
+
             downloaded_by_index = {item["source_index"]: item["name"] for item in downloaded_image_records}
             store_images = [downloaded_by_index[index] for index in selected_indexes if index in downloaded_by_index]
             if not store_images:
@@ -2459,6 +2523,10 @@ def extract_product():
             store_main_image = downloaded_by_index.get(main_image_index) or store_images[0]
             store_images = [store_main_image] + [name for name in store_images if name != store_main_image]
             store_images = store_images[:store_image_limit]
+            if settings["UploadMainImageOnly"]:
+                # Arabic: يُرفع للمتجر الصورة الرئيسية فقط، بينما تبقى كل الصور محفوظة محلياً بجودتها الكاملة.
+                # English: Only the main image goes to the store; every image still stays saved locally at full quality.
+                store_images = [store_main_image]
             logger.info(
                 "Store image selection prepared. id=%s selected=%s main=%s all_downloaded=%s",
                 next_id, store_images, store_main_image, len(local_images),
@@ -2531,8 +2599,10 @@ def extract_product():
                 "store_submission_status": "not_submitted",
                 "folder": final_folder_name,
                 "brand_folder": brand_folder_name,
+                "date_folder": date_folder_name,
                 "added_by": added_by,
                 "id_source": id_source,
+                "upload_main_image_only": settings["UploadMainImageOnly"],
                 "images": local_images,
                 "store_images": store_images,
                 "store_main_image": store_main_image,

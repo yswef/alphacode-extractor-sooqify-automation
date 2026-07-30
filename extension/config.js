@@ -46,7 +46,7 @@
         // English: Brand and size variants.
         BrandName: 'Air Jordan',
         BrandId: 6,
-        BrandMapJson: '{"Air Jordan":6,"Nike":7}',
+        BrandMapJson: '{"Air Jordan":6}',
         SizeAttributeId: 1,
         SizeChoiceNo: 1,
         SizeactualChoiceNo: 1,
@@ -56,13 +56,17 @@
         // Arabic: الصور؛ الخيار الجديد يسمح بتنزيل الصور المحددة فقط محلياً.
         // English: Images; the new option can download only selected images locally.
         ImageMaxDimension: 1200,
-        ImageQuality: 95,
-        ImageFormat: 'png',
+        ImageQuality: 75,
+        ImageFormat: 'jpeg',
         OptimizeImageAtSource: true,
         RequireAllImages: true,
         MaxImages: 30,
         StoreImageLimit: 6,
-        DownloadSelectedImagesOnly: true,
+        DownloadSelectedImagesOnly: false,
+
+        // Arabic: عند التفعيل يُرفع للمتجر الصورة الرئيسية فقط، وتُحفظ كل الصور محلياً بجودتها الأصلية دون أي تعديل.
+        // English: When enabled, only the main image is submitted to the store, and every image is saved locally at full original quality with no edits.
+        UploadMainImageOnly: true,
 
         // Arabic: إعدادات الذكاء الاصطناعي القابلة للتبديل.
         // English: Switchable AI-provider settings.
@@ -78,7 +82,7 @@
         // Arabic: التشغيل الآلي للمتجر.
         // English: Store automation.
         AutoAddProduct: false,
-        AutoSubmitDelaySeconds: 1,
+        AutoSubmitDelaySeconds: 0,
         FastAutofillMode: true,
 
         // Arabic: طابور الدفعات يجهز منتجاً واحداً في كل مرة افتراضياً لتفادي حدود Groq، ويرسل منتجاً واحداً فقط إلى المتجر.

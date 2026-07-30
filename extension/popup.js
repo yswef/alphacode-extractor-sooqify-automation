@@ -43,6 +43,7 @@ const BOOLEAN_FIELDS = new Set([
     'AIJsonRepairEnabled',
     'OfficialResearchOnRegenerate',
     'OpenSupplierAtLastProduct',
+    'UploadMainImageOnly',
     'FastAutofillMode',
     'BatchModeEnabled',
     'BatchContinueOnFailure',

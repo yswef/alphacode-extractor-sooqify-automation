@@ -2556,7 +2556,7 @@ async function injectAdminPanel() {
     panel.querySelector(
         '#alphacode-fill-product',
     ).onclick = async event => {
-        event.currentTarget.disabled = true;
+        button.disabled = true;
 
         try {
             await autofillLatestProduct(
@@ -2580,14 +2580,14 @@ async function injectAdminPanel() {
                 },
             );
         } finally {
-            event.currentTarget.disabled = false;
+            button.disabled = false;
         }
     };
 
     panel.querySelector(
         '#alphacode-fill-submit',
     ).onclick = async event => {
-        event.currentTarget.disabled = true;
+        button.disabled = true;
 
         try {
             await autofillLatestProduct(
@@ -2611,7 +2611,7 @@ async function injectAdminPanel() {
                 },
             );
 
-            event.currentTarget.disabled = false;
+            button.disabled = false;
         }
     };
 

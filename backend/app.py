@@ -374,13 +374,6 @@ def get_brand_dir(brand_name):
 
 
 def get_product_image_dir(product):
-    """
-    Arabic: إعادة بناء مسار مجلد منتج موجود، متوافق مع كل الأنماط السابقة: براند/تاريخ (الحالي)،
-    تاريخ فقط (فترة انتقالية قصيرة)، براند فقط (نمط أقدم)، أو مباشرة داخل مجلد الصور (أقدم نمط).
-    English: Rebuild an existing product's folder location, compatible with every previous scheme:
-    brand/date (current), date-only (a brief transitional window), brand-only (older), or directly
-    under the images root (oldest).
-    """
     folder_name = normalize_text(product.get("folder"))
     date_folder = normalize_text(product.get("date_folder"))
     brand_folder = normalize_text(product.get("brand_folder"))
@@ -2462,7 +2455,7 @@ def extract_product():
         # English: The product folder sits directly inside a folder named for today's date, under the chosen images root.
         brand_folder_name = get_brand_folder_name(brand_name)  # Arabic: يُحفظ كمعلومة إضافية فقط، لا يُستخدم كمسار. English: Kept only as metadata now, not used for the path.
         date_folder_name = today_str
-        date_dir = os.path.join(BASE_DIR, date_folder_name)
+        date_dir = os.path.join(BASE_DIR, brand_folder_name, date_folder_name)
         final_product_folder = os.path.join(date_dir, final_folder_name)
         os.makedirs(date_dir, exist_ok=True)
         temp_root = os.path.join(BASE_DIR, ".alphacode_tmp")
@@ -2510,12 +2503,16 @@ def extract_product():
 
             # Arabic: ملف نصي بكود الستايل داخل مجلد المنتج كما طُلب.
             # English: A text file with the style code inside the product folder, as requested.
-            style_code_txt_path = os.path.join(temp_product_folder, "style_code.txt")
-            with open(style_code_txt_path, "w", encoding="utf-8") as style_file:
-                style_file.write(f"Style Code: {style_code or '-'}\n")
-                style_file.write(f"Search Code: {search_code or '-'}\n")
-                style_file.write(f"Product ID: {next_id}\n")
-
+            product_info_txt_path = os.path.join(temp_product_folder, "product_info.txt")
+            with open(product_info_txt_path, "w", encoding="utf-8") as info_file:
+                info_file.write(f"-"*10 + "[Name]" + "-"*10 + "\n")
+                info_file.write(f"Name: {name_en or '-'}\n")
+                info_file.write(f"Name: {name_ar or '-'}\n")
+                info_file.write(f"-"*10 + "[Style Code]" + "-"*10 + "\n")
+                info_file.write(f"Style Code: {style_code or '-'}\n")
+                info_file.write(f"-"*10 + "[Date Added]" + "-"*10 + "\n")
+                info_file.write(f"Date Added: {today_str}\n")
+                info_file.write(f"Added By: {added_by}\n")
             downloaded_by_index = {item["source_index"]: item["name"] for item in downloaded_image_records}
             store_images = [downloaded_by_index[index] for index in selected_indexes if index in downloaded_by_index]
             if not store_images:

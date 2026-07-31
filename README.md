@@ -1,4 +1,4 @@
-# AlphaCode Extractor v4.5.2 — Sooqify Batch Automation
+# AlphaCode Extractor v4.6.0 — Sooqify Batch Automation
 
 > Private Chrome Extension and Flask backend for extracting supplier products, preparing bilingual catalog copy, optimizing images, and submitting products to Sooqify/6amMart individually or as a controlled batch — with optional two-user sync for teams sharing one store.
 
@@ -11,7 +11,7 @@
 - Run official-site-only research when the operator explicitly requests regeneration.
 - Download, resize, compress, and archive product images locally.
 - Optionally submit only the main image to Sooqify while keeping every image saved locally at full, untouched quality.
-- Organize saved images per brand and per day (`<images root>/<Brand>/<YYYY-MM-DD>/<product>`), each with a `style_code.txt` reference file.
+- Organize saved images per brand and per day (`<images root>/<Brand>/<YYYY-MM-DD>/<product>`), each with a `product_info.txt` reference file.
 - Send up to six images to Sooqify: one main image and up to five gallery images (or just the main image, if that option is enabled).
 - Fill category, subcategory, brand, unit, price, stock, sizes, variants, translations, and images.
 - Add one product manually or select several products and run a persistent batch queue.
@@ -165,7 +165,7 @@ ai_copy_cache.json
 logs\alphacode.log
 صور\<Brand>\<YYYY-MM-DD>\<product folder>\
     ...product images...
-    style_code.txt
+    product_info.txt
 ```
 
 ## Troubleshooting
@@ -214,9 +214,9 @@ Confirm Category ID, Subcategory ID, Brand ID, Unit ID, Size Attribute ID, and t
 
 - [Arabic project documentation](docs/AlphaCode_Project_Documentation_AR.pdf)
 - [English project documentation](docs/AlphaCode_Project_Documentation_EN.pdf)
-- [v4.5.2 changelog](CHANGELOG.md)
+- [v4.6.0 changelog](CHANGELOG.md)
 
-The PDF documents describe the core architecture; `CHANGELOG.md` and this README contain the v4.5 batch additions and the v4.5.2 sync/folder/image-quality additions.
+The PDF documents describe the core architecture; `CHANGELOG.md` and this README contain the v4.5 batch additions, the v4.5.2 sync/folder/image-quality additions, and the v4.6.0 console/product-info additions.
 
 ## License
 

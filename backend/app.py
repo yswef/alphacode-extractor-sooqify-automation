@@ -66,22 +66,66 @@ DEFAULT_AI_PROVIDER = "groq"
 DEFAULT_AI_MODEL = "openai/gpt-oss-120b"
 DEFAULT_OPENAI_MODEL = "gpt-5.2"
 GROQ_OFFICIAL_SEARCH_MODEL = "groq/compound-mini"
-AI_PROMPT_VERSION = "4.5-batch-official-brand-guard-fast-json"
+AI_PROMPT_VERSION = "4.6-batch-official-brand-guard-fast-json"
 
 # Arabic: القفل يمنع تعارض طلبين أثناء تحديث الصور وExcel والأرشيف.
 # English: The lock prevents concurrent requests from corrupting images, Excel, or archive data.
 SAVE_LOCK = threading.RLock()
 AI_CACHE_LOCK = threading.RLock()
+class AnsiColors:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    GREEN = "\033[92m"
+    CYAN = "\033[96m"
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    MAGENTA = "\033[95m"
+    GRAY = "\033[90m"
+    WHITE = "\033[97m"
 
+
+def enable_windows_ansi_support():
+    """Arabic: تفعيل معالجة ألوان ANSI على cmd/PowerShell القديمة في ويندوز. English: Enable ANSI color processing on older Windows cmd/PowerShell consoles."""
+    if os.name == "nt":
+        os.system("")  # Arabic: خدعة بسيطة تُفعّل وضع VT100 في الطرفية الحالية. English: A simple trick that turns on VT100 mode for the current console.
+
+
+enable_windows_ansi_support()
+
+
+class HackerConsoleFormatter(logging.Formatter):
+    """Arabic: تنسيق ملوّن ومرتّب لمخرجات الطرفية فقط؛ ملف السجل الخارجي يبقى نصاً عادياً. English: A colorized, organized format for the console only; the external log file stays plain text."""
+
+    LEVEL_STYLE = {
+        "DEBUG": (AnsiColors.GRAY, "·"),
+        "INFO": (AnsiColors.CYAN, "*"),
+        "WARNING": (AnsiColors.YELLOW, "!"),
+        "ERROR": (AnsiColors.RED, "x"),
+        "CRITICAL": (AnsiColors.RED + AnsiColors.BOLD, "X"),
+    }
+
+    def format(self, record):
+        color, symbol = self.LEVEL_STYLE.get(record.levelname, (AnsiColors.WHITE, "*"))
+        timestamp = self.formatTime(record, "%H:%M:%S")
+        source_tag = record.name.upper()[:10].ljust(10)
+        message = record.getMessage()
+        return (
+            f"{AnsiColors.GRAY}{timestamp}{AnsiColors.RESET} "
+            f"{color}[{symbol}]{AnsiColors.RESET} "
+            f"{AnsiColors.DIM}{source_tag}{AnsiColors.RESET} "
+            f"{color}{message}{AnsiColors.RESET}"
+        )
 def configure_application_logging():
-    """Arabic: تهيئة سجل خارجي دوّار مع استمرار الطباعة في الطرفية. English: Configure rotating external logs while preserving console output."""
-    log_format = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    """Arabic: تهيئة سجل خارجي دوّار (نص عادي) وطرفية ملوّنة منظمة. English: Configure a rotating plain-text external log and an organized, colorized console."""
+    file_format = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    console_format = HackerConsoleFormatter()
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
 
     if not any(getattr(handler, "_alphacode_console", False) for handler in root_logger.handlers):
         console_handler = logging.StreamHandler()
-        console_handler.setFormatter(log_format)
+        console_handler.setFormatter(console_format)
         console_handler._alphacode_console = True
         root_logger.addHandler(console_handler)
 
@@ -94,7 +138,7 @@ def configure_application_logging():
                 backupCount=5,
                 encoding="utf-8",
             )
-            file_handler.setFormatter(log_format)
+            file_handler.setFormatter(file_format)
             file_handler._alphacode_file = True
             root_logger.addHandler(file_handler)
     except OSError as exc:
@@ -1311,7 +1355,7 @@ def health_check():
     return jsonify({
         "success": True,
         "service": "AlphaCode Extractor",
-        "version": "4.5.0",
+        "version": "4.6.0",
         "ai_provider": default_provider,
         "ai_configured": provider_keys.get(default_provider, False),
         "ai_providers": provider_keys,
@@ -2653,9 +2697,56 @@ def extract_product():
             shutil.rmtree(temp_product_folder, ignore_errors=True)
             return jsonify({"success": False, "error": str(exc), "failed_images": failed_images}), 500
 
+def print_startup_banner():
+    """Arabic: طباعة شعار ترحيبي عند تشغيل السيرفر. English: Print a welcome banner when the server starts."""
+    os.system("cls" if os.name == "nt" else "clear")
+    banner = r"""
+****************************************************************************************
+****************************************************************************************
+**                                                                                    **
+**  ███████╗███╗   ██╗██████╗      ██╗██╗██╗   ██╗███████╗███████╗███████╗             **
+**  ██╔════╝████╗  ██║██╔════╝    ╚██╗██║██║   ██║██╔════╝██╔════╝██╔════╝             **
+**  █████╗  ██╔██╗ ██║██║  ███╗    ╚████║██║   ██║███████╗█████╗  █████╗               **
+**  ██╔══╝  ██║╚██╗██║██║   ██║     ╚██╔╝██║   ██║╚════██║██╔══╝  ██╔══╝               **
+**  ███████╗██║ ╚████║╚██████╔╝      ██║ ╚██████╔╝███████║███████╗██║                  **
+**  ╚══════╝╚═╝  ╚═══╝ ╚═════╝       ╚═╝  ╚═════╝ ╚══════╝╚══════╝╚═╝                  **
+**                                                                                    **
+**                              --->  ENG.Yousef  <---                                **
+**                                                                                    **
+****************************************************************************************
+****************************************************************************************
+"""
+    print(f"{AnsiColors.GREEN}{AnsiColors.BOLD}{banner}{AnsiColors.RESET}")
+def print_startup_status():
+    """Arabic: لوحة حالة مختصرة وملوّنة بعد شعار البدء. English: A short colorized status panel printed right after the startup banner."""
+    def status_line(label, value, ok=True):
+        tag_color = AnsiColors.GREEN if ok else AnsiColors.YELLOW
+        tag = "OK" if ok else "!!"
+        print(
+            f"  {tag_color}[{tag}]{AnsiColors.RESET} "
+            f"{AnsiColors.WHITE}{label:<18}{AnsiColors.RESET} "
+            f"{tag_color}{value}{AnsiColors.RESET}"
+        )
+
+    sync_cfg = load_sync_config()
+    groq_ok = bool(os.getenv("GROQ_API_KEY"))
+    openai_ok = bool(os.getenv("OPENAI_API_KEY"))
+
+    print(f"{AnsiColors.CYAN}{'─' * 70}{AnsiColors.RESET}")
+    print(f"{AnsiColors.CYAN}{AnsiColors.BOLD}  SYSTEM STATUS{AnsiColors.RESET}")
+    print(f"{AnsiColors.CYAN}{'─' * 70}{AnsiColors.RESET}")
+    status_line("Server", "http://127.0.0.1:5000", True)
+    status_line("Save Folder", ROOT_DIR if ROOT_DIR_CONFIGURED else "Not configured", ROOT_DIR_CONFIGURED)
+    status_line("Groq API Key", "Configured" if groq_ok else "Missing", groq_ok)
+    status_line("OpenAI API Key", "Configured" if openai_ok else "Missing", openai_ok)
+    status_line("Two-User Sync", sync_cfg["ServerUrl"] if sync_cfg["Enabled"] else "Disabled", sync_cfg["Enabled"])
+    status_line("External Log", LOG_PATH, True)
+    print(f"{AnsiColors.CYAN}{'─' * 70}{AnsiColors.RESET}\n")
 
 if __name__ == "__main__":
     """Arabic: تشغيل خادم Flask محلياً دون وضع Debug. English: Run the local Flask server without debug mode."""
+    print_startup_banner()
+    print_startup_status()
     logger.info("AlphaCode Extractor server is ready on http://127.0.0.1:5000")
     logger.info("AI keys configured. Groq=%s OpenAI=%s", bool(os.getenv("GROQ_API_KEY")), bool(os.getenv("OPENAI_API_KEY")))
     logger.info("External log file: %s", LOG_PATH)

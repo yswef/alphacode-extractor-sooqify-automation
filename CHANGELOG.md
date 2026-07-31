@@ -1,5 +1,22 @@
 # AlphaCode Extractor Changelog
 
+## v4.6.0 — Product Info File, Console UX, Stability Fix
+
+### Product folder documentation
+
+- Replaced the minimal `style_code.txt` with a richer `product_info.txt` in every product folder, containing the product's English and Arabic name, style code, date added, and who added it.
+
+### Console output
+
+- Added a colorized ASCII startup banner shown when the backend starts.
+- Added a colorized, organized console log formatter (level badge, timestamp, source tag) while keeping the external log file plain text for easy searching.
+- Added ANSI color support for Windows `cmd`/PowerShell consoles.
+- Added a startup status panel summarizing server URL, save-folder configuration, AI key status, and two-user sync status at a glance.
+
+### Fixes
+
+- Fixed a null-reference crash (`Cannot set properties of null (setting 'disabled')`) in the Sooqify autofill panel's manual fill/submit buttons, caused by reading `event.currentTarget` after an `await` inside the click handler.
+
 ## v4.5.2 — Two-User Sync, Manual Folder Setup, Brand/Date Image Folders
 
 ### Two-user sync (optional)

@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime
 from io import BytesIO
 from urllib.parse import urlsplit, urlunsplit, unquote
+import Reports
 
 import certifi
 import pandas as pd
@@ -27,7 +28,7 @@ from PIL import Image, ImageOps
 # If reportlab isn't installed yet, the app keeps running normally and /api/reports routes return a clear
 # error instead of crashing the server.
 try:
-    import reports as reports_module
+    import Reports as reports_module
     REPORTS_AVAILABLE = True
 except ImportError:
     reports_module = None

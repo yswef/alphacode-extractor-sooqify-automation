@@ -18,6 +18,7 @@
 # with English-only labels (a safe fallback, never crashes the app).
 
 import os
+import reportlab
 from collections import Counter, defaultdict
 from datetime import datetime
 

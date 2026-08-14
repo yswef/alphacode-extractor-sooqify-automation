@@ -1,4 +1,4 @@
-# AlphaCode Extractor v4.6.0 — Sooqify Batch Automation
+# AlphaCode Extractor v5.0.0 — Sooqify Batch Automation
 
 > Private Chrome Extension and Flask backend for extracting supplier products, preparing bilingual catalog copy, optimizing images, and submitting products to Sooqify/6amMart individually or as a controlled batch — with optional two-user sync for teams sharing one store.
 
@@ -10,9 +10,9 @@
 - Prevent duplicated `Air Jordan` and `إير جوردن` text in product titles.
 - Run official-site-only research when the operator explicitly requests regeneration.
 - Download, resize, compress, and archive product images locally.
-- Optionally submit only the main image to Sooqify while keeping every image saved locally at full, untouched quality.
+- Submit only the selected main image to Sooqify by default while keeping the full gallery saved locally at full, untouched quality.
 - Organize saved images per brand and per day (`<images root>/<Brand>/<YYYY-MM-DD>/<product>`), each with a `product_info.txt` reference file.
-- Send up to six images to Sooqify: one main image and up to five gallery images (or just the main image, if that option is enabled).
+- Send only the selected main image to Sooqify; the remaining gallery stays local on the operator device unless the toggle is turned off.
 - Fill category, subcategory, brand, unit, price, stock, sizes, variants, translations, and images.
 - Add one product manually or select several products and run a persistent batch queue.
 - Notify the operating system after each submitted product and after batch completion.
@@ -120,7 +120,7 @@ The main settings are in `extension/config.js` and are editable in the popup.
 | `AIModel` | `openai/gpt-oss-120b` | Final bilingual copy model |
 | `BrandMapJson` | `{"Air Jordan":6}` | Allowed store brands and IDs |
 | `StoreImageLimit` | `6` | One main + five gallery images |
-| `UploadMainImageOnly` | `false` | Submit only the main image to Sooqify; save every image locally untouched |
+| `UploadMainImageOnly` | `true` | Submit only the main image to Sooqify; save the full gallery locally untouched |
 | `FastAutofillMode` | `true` | Uses short conditional waits |
 | `AutoSubmitDelaySeconds` | `0` | Removes the countdown |
 | `BatchModeEnabled` | `true` | Enables multi-product selection |
@@ -214,9 +214,9 @@ Confirm Category ID, Subcategory ID, Brand ID, Unit ID, Size Attribute ID, and t
 
 - [Arabic project documentation](docs/AlphaCode_Project_Documentation_AR.pdf)
 - [English project documentation](docs/AlphaCode_Project_Documentation_EN.pdf)
-- [v4.6.0 changelog](CHANGELOG.md)
+- [v5.0.0 changelog](CHANGELOG.md)
 
-The PDF documents describe the core architecture; `CHANGELOG.md` and this README contain the v4.5 batch additions, the v4.5.2 sync/folder/image-quality additions, and the v4.6.0 console/product-info additions.
+The PDF documents describe the core architecture; `CHANGELOG.md` and this README cover the v5.0.0 main-image-only upload update, the v4.5 batch flow, and the v4.5.2/v4.6.0 sync and product-info additions.
 
 ## License
 

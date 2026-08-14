@@ -1,5 +1,17 @@
 # AlphaCode Extractor Changelog
 
+## v5.0.0 — Main Image Only Upload
+
+### Store upload behavior
+
+- Changed the default behavior so the product gallery stays on the local machine and only the selected main image is sent to Sooqify.
+- Kept full local image downloads intact and preserved the toggle for operators who want to re-enable gallery uploads manually.
+- Updated the backend coordination and browser autofill flow so the gallery fields are skipped entirely in main-image-only mode.
+
+### Release metadata
+
+- Bumped the backend health version to `5.0.0` and aligned the browser extension manifest and project documentation to the same release number.
+
 ## v4.6.0 — Product Info File, Console UX, Stability Fix
 
 ### Product folder documentation

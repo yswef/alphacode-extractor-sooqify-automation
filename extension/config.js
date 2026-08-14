@@ -74,7 +74,9 @@
 
         // Arabic: عند التفعيل يُرفع للمتجر الصورة الرئيسية فقط، وتُحفظ كل الصور محلياً بجودتها الأصلية دون أي تعديل.
         // English: When enabled, only the main image is submitted to the store, and every image is saved locally at full original quality with no edits.
-        UploadMainImageOnly: false,
+        // Arabic: تعديل v5.0.0 يفرض هذا السلوك افتراضياً لأن المطلوب هو تنزيل كل الصور محلياً وعدم إرسال أي صورة معرض إلى المتجر.
+        // English: v5.0.0 change defaults this behavior on so all local images are kept locally and only the selected main image is sent to the store.
+        UploadMainImageOnly: true,
 
         // Arabic: إعدادات الذكاء الاصطناعي القابلة للتبديل.
         // English: Switchable AI-provider settings.

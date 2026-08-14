@@ -814,6 +814,15 @@
     color: #475569;
 }
 
+    .alphacode-code-row input,
+    .batch-style-code,
+    #modStyleCode {
+        padding: 6px 8px;
+        border-radius: 6px;
+        border: 1px solid #cbd5e0;
+        min-width: 160px;
+        font-size: 13px;
+    }
 .batch-progress-bar {
     height: 8px;
     border-radius: 999px;

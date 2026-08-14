@@ -43,6 +43,7 @@ const BOOLEAN_FIELDS = new Set([
     'AIAutoGenerate',
     'AutoAddProduct',
     'DownloadSelectedImagesOnly',
+    'UploadMainImageOnly',
     'AIJsonRepairEnabled',
     'OfficialResearchOnRegenerate',
     'OpenSupplierAtLastProduct',
@@ -306,7 +307,7 @@ async function saveConfiguration() {
         }
     }
 
-    showStatus('تم حفظ إعدادات AlphaCode v4 وتطبيقها.', 'success');
+    showStatus('تم حفظ إعدادات AlphaCode v5.0.0 وتطبيقها.', 'success');
     await checkServer();
 }
 
@@ -1264,11 +1265,13 @@ async function handleLoginOverlay() {
         }
 
         const role = data.member?.role || 'member';
-        await chrome.storage.local.set({ sessionLoggedIn: true, sessionRole: role, sessionTime: Date.now() });
+        const displayName = data.member?.display_name || name;
+        await chrome.storage.local.set({ sessionLoggedIn: true, sessionRole: role, sessionTime: Date.now(), sessionName: displayName });
 
         applyRoleRestrictions(role);
+        byId('profileChip').textContent = displayName;
         byId('loginOverlay').style.display = 'none';
-        showStatus(`مرحباً ${data.member?.display_name || name} (${role})`, 'success');
+        showStatus(`مرحباً ${displayName} (${role})`, 'success');
     } catch (e) {
         errorBox.textContent = e.message;
         errorBox.style.display = 'block';
@@ -1280,13 +1283,24 @@ async function handleLoginOverlay() {
 // Arabic: فحص الجلسة وإغلاق الشاشة إذا كان مسجلاً
 // English: Check session and hide login screen if logged in
 async function checkLoginState() {
-    const stored = await chrome.storage.local.get(['sessionLoggedIn', 'sessionRole']);
+    const stored = await chrome.storage.local.get(['sessionLoggedIn', 'sessionRole', 'sessionName']);
     if (stored.sessionLoggedIn) {
         applyRoleRestrictions(stored.sessionRole);
+        byId('profileChip').textContent = stored.sessionName || 'Sooqify Online';
         byId('loginOverlay').style.display = 'none';
     } else {
+        byId('profileChip').textContent = 'Sooqify Online';
         byId('loginOverlay').style.display = 'flex';
     }
+}
+
+// Logout: clear session-related local storage and restore overlay
+async function handleLogout() {
+    await chrome.storage.local.remove(['sessionLoggedIn', 'sessionRole', 'sessionTime', 'sessionName']);
+    applyRoleRestrictions(''); // hide admin areas
+    byId('profileChip').textContent = 'Sooqify Online';
+    byId('loginOverlay').style.display = 'flex';
+    showStatus('تم تسجيل الخروج.', 'success');
 }
 
 // Arabic: إخفاء التبويبات والمميزات المخصصة للأدمن عن الأعضاء
@@ -1397,9 +1411,34 @@ async function initializePopup() {
     bindClick('folderSetupBannerBtn', chooseFolder);
     bindClick('saveSyncBtn', saveSyncSettings);
     bindClick('syncNowBtn', triggerSyncNow);
+    bindClick('reconcileFullBtn', async () => {
+        const btn = byId('reconcileFullBtn');
+        const resultBox = byId('syncStatusResult');
+        try {
+            btn.disabled = true;
+            btn.textContent = 'جارٍ الدمج...';
+            const resp = await fetch(`${API_BASE}/api/sync/reconcile`, { method: 'POST' });
+            const data = await resp.json();
+            if (!resp.ok || !data.success) {
+                resultBox.className = 'result-box error';
+                resultBox.textContent = data.error || 'تعذر إجراء الدمج.';
+            } else {
+                resultBox.className = 'result-box success';
+                resultBox.textContent = `نجح الدمج: تم سحب ${data.server_count || 0} عناصر، رفع ${data.pushed_immediate || 0} منتجات محلية.`;
+            }
+        } catch (error) {
+            byId('syncStatusResult').className = 'result-box error';
+            byId('syncStatusResult').textContent = error.message || String(error);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'دمج كامل مع الأرشيف المركزي';
+            await refreshSyncStatus();
+        }
+    });
     bindClick('refreshRecentBtn', refreshRecentProducts);
     bindClick('generateReportBtn', generateReport);
     bindClick('loginBtnCheck', handleLoginOverlay);
+    bindClick('logoutBtn', handleLogout);
     bindClick('copyBatchNamesBtn', copyAdminBatchNames);
 
     byId('AIProvider')?.addEventListener('change', handleAiProviderChange);

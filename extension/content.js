@@ -26,6 +26,7 @@ const DEFAULT_CONFIG = globalThis.ALPHACODE_DEFAULT_CONFIG || {
     SupplierStoreName: 'BRANDKINGDOM', SupplierStoreId: '',
     ImageMaxDimension: 1200, ImageQuality: 60, ImageFormat: 'jpeg',
     OptimizeImageAtSource: true, RequireAllImages: true, MaxImages: 30, StoreImageLimit: 6,
+    UploadMainImageOnly: true,
     AIAutoGenerate: true, AIProvider: 'groq', AIModel: 'openai/gpt-oss-120b',
     AIBaseUrl: '', AIKeyEnv: 'GROQ_API_KEY', AIJsonRepairEnabled: true,
     ArabicCopyStyle: 'sales-natural', OfficialResearchOnRegenerate: true,
@@ -465,26 +466,52 @@ function bindExternalCopyTemplateControls({
 // Arabic: الأولوية لصيغ Item No وStyle Code والحقول الصينية فقط، دون كلمة Code العامة.
 // English: Prioritize explicit Item No/Style Code labels and never use a generic Code token.
 function extractStyleCode(sourceText) {
+    if (!sourceText || !String(sourceText)) return '';
+    const text = String(sourceText);
+
+    // Common labelled patterns (English, Chinese, MPN/Part/Art/Model)
     const patterns = [
-        /(?:Product\s*(?:No\.?|Number)|Product\s*#)\s*[:：#]?\s*([A-Z0-9][A-Z0-9._/-]{2,})/i, // تم الإضافة هنا
-        /(?:Item\s*(?:No\.?|Number)|Item\s*#)\s*[:：#]?\s*([A-Z0-9][A-Z0-9._/-]{2,})/i,
-        /Style\s*Code\s*[:：#]?\s*([A-Z0-9][A-Z0-9._/-]{2,})/i,
-        /(?:SKU|Ref(?:erence)?\.?\s*(?:No\.?)?)\s*[:：#]?\s*([A-Z0-9][A-Z0-9._/-]{2,})/i,
-        /(?:货号|款号|型号|商品编号|参考编号)\s*[:：#]?\s*([A-Z0-9][A-Z0-9._/-]{2,})/i,
-        /(?:Model\s*(?:No\.?|Number)?)\s*[:：#]?\s*([A-Z0-9][A-Z0-9._/-]{2,})/i
+        /(?:Product\s*(?:No\.?|Number)|Product\s*#)\s*[:：#]?\s*([A-Z0-9][A-Z0-9._\/-]{2,})/i,
+        /(?:Item\s*(?:No\.?|Number)|Item\s*#)\s*[:：#]?\s*([A-Z0-9][A-Z0-9._\/-]{2,})/i,
+        /Style\s*Code\s*[:：#]?\s*([A-Z0-9][A-Z0-9._\/-]{2,})/i,
+        /(?:SKU|Ref(?:erence)?|MPN|Part\s*No\.|Art\s*No\.|MPN:)\s*[:：#]?\s*([A-Z0-9][A-Z0-9._\/-]{2,})/i,
+        /(?:货号|款号|型号|商品编号|参考编号)\s*[:：#]?\s*([A-Z0-9][A-Z0-9._\/-]{2,})/i,
+        /(?:Model\s*(?:No\.?|Number)?)\s*[:：#]?\s*([A-Z0-9][A-Z0-9._\/-]{2,})/i,
+        /(?:MPN|Part\s+No\.|Art\s+No\.)\s*[:：#]?\s*([A-Z0-9\-_.]{3,})/i,
     ];
 
     for (const pattern of patterns) {
-        const match = sourceText.match(pattern);
-        if (match) return match[1].replace(/[.,;:]+$/g, '').trim();
+        const match = text.match(pattern);
+        if (match && match[1]) {
+            const cleaned = match[1].replace(/[.,;:\s]+$/g, '').trim();
+            if (isReasonableCode(cleaned)) return cleaned;
+        }
     }
 
-    // Arabic: نمط احتياطي للأكواد الصريحة التي تتكون من جزئين وشرطة أو حروف وأرقام إذا كانت واضحة جداً.
-    // English: Fallback strict pattern for explicit Nike/Adidas/etc item codes without labels.
-    const strictFallback = sourceText.match(/\b([A-Z]{2,4}[-–_]?\d{4,6}[-–_]?[A-Z0-9]{0,4})\b/i);
-    if (strictFallback) return strictFallback[1].replace(/[.,;:]+$/g, '').trim();
+    // Codes inside parentheses e.g. (ABC-1234) or [ABC123]
+    const paren = text.match(/[\(\[\{]\s*([A-Z0-9][A-Z0-9._\/-]{2,})\s*[\)\]\}]/i);
+    if (paren && paren[1] && isReasonableCode(paren[1].trim())) return paren[1].trim();
 
-    return 'غير محدد';
+    // Fallback: take token after a '#' if it looks like a code
+    const afterHash = text.match(/#\s*([A-Z0-9][A-Z0-9._\/-]{2,})/i);
+    if (afterHash && afterHash[1] && isReasonableCode(afterHash[1].trim())) return afterHash[1].trim();
+
+    // Strict fallback for e.g. ABC-1234 or AB123456 patterns
+    const strictFallback = text.match(/\b([A-Z]{1,4}[-–_]?[0-9]{3,8}[-–_]?[A-Z0-9]{0,4})\b/i);
+    if (strictFallback && strictFallback[1] && isReasonableCode(strictFallback[1].trim())) return strictFallback[1].trim();
+
+    return '';
+}
+
+
+function isReasonableCode(value) {
+    if (!value) return false;
+    // Reject obviously fake tokens
+    const lower = String(value).toLowerCase();
+    if (/^(?:详情|购买|查看|图片|img|http|https)$/.test(lower)) return false;
+    if (/^[0-9]{6,}$/.test(value)) return false; // long numeric sequences are unlikely real style codes
+    if (value.length < 3 || value.length > 40) return false;
+    return true;
 }
 
 // Arabic: تحديد نوع المنتج (حذاء/ساعة) من نص الصفحة أو مسار التصنيف (Breadcrumb)؛ يبقى قابلاً للتجاوز يدوياً من واجهة الاستخراج.
@@ -1378,7 +1405,7 @@ function renderNewProductForm(context) {
             <div class="alphacode-readonly-item"><span>صور المعرض الكامل:</span><strong class="alphacode-image-count">${images.length} صور</strong></div>
             <div class="alphacode-readonly-item"><span>متجر المورد:</span><strong>${normalizeText(extractorConfig.SupplierStoreName) || 'غير محدد'} / ${resolveSupplierStoreId() || 'لا يوجد ID'}</strong></div>
             <div class="alphacode-readonly-item"><span>Search Code:</span><strong>${searchCode || 'غير موجود'}</strong></div>
-            <div class="alphacode-readonly-item alphacode-code-row"><span>Style Code / Item No.:</span><div><button class="alphacode-copy-btn" id="copyStyleBtn" type="button">📋 نسخ</button><strong>${styleCode}</strong></div></div>
+            <div class="alphacode-readonly-item alphacode-code-row"><span>Style Code / Item No.:</span><div><input id="modStyleCode" type="text" placeholder="ادخل كود الستايل إن وجد" style="min-width:140px;padding:6px 8px;border-radius:6px;border:1px solid #ccd5e3;" value="${escapeHtml(styleCode || '')}"><button class="alphacode-copy-btn" id="copyStyleBtn" type="button">📋 نسخ</button></div></div>
             <div class="alphacode-readonly-item"><span>الصور:</span><strong>JPG / ${extractorConfig.ImageQuality}% / ${extractorConfig.ImageMaxDimension}px</strong></div>
         </div>
         <div class="alphacode-actions">
@@ -1427,6 +1454,7 @@ function renderNewProductForm(context) {
         originalProductName: originalProductName || sourceText,
     });
 
+    fields.styleCode = modalBox.querySelector('#modStyleCode');
     fields.brandName.addEventListener('input', () => {
         fields.brandId.value = resolveBrandId(fields.brandName.value);
     });
@@ -1449,8 +1477,10 @@ function renderNewProductForm(context) {
     };
 
     modalBox.querySelector('#copyStyleBtn').onclick = async event => {
-        const copied = await copyTextToClipboard(styleCode);
+        const value = (modalBox.querySelector('#modStyleCode')?.value || styleCode || '').trim();
+        const copied = await copyTextToClipboard(value);
         event.currentTarget.textContent = copied ? '✔ تم النسخ' : 'تعذر النسخ';
+        setTimeout(() => { if (event.currentTarget?.isConnected) event.currentTarget.textContent = '📋 نسخ'; }, 1400);
     };
 
     modalBox.querySelector('#cancelBtn').onclick = () => overlay.remove();
@@ -1494,7 +1524,7 @@ function renderNewProductForm(context) {
         sourceText,
         originalProductName,
         searchCode,
-        styleCode,
+        styleCode: (modalBox.querySelector('#modStyleCode')?.value || '').trim(),
         images,
         fields,
         imageSelection,
@@ -2868,7 +2898,7 @@ function renderBatchReviewSlides(modalBox, drafts) {
                         <div class="alphacode-field alphacode-wide-field"><label>المقاسات</label><input class="batch-sizes" dir="ltr" value="${escapeHtml(draft.sizes.join(', '))}"></div>
                     </div>
                     <div class="alphacode-readonly-group">
-                        <div class="alphacode-readonly-item"><span>Style Code</span><strong>${escapeHtml(draft.styleCode)}</strong></div>
+                        <div class="alphacode-readonly-item"><span>Style Code</span><input class="batch-style-code" type="text" placeholder="ادخل/عدّل كود الستايل" value="${escapeHtml(draft.styleCode || '')}"></div>
                         <div class="alphacode-readonly-item"><span>Search Code</span><strong>${escapeHtml(draft.searchCode || '-')}</strong></div>
                         <div class="alphacode-readonly-item"><span>الصور المكتشفة</span><strong>${draft.images.length}</strong></div>
                     </div>
@@ -2978,6 +3008,7 @@ function renderBatchReviewSlides(modalBox, drafts) {
             draft.brandId = resolveBrandId(draft.brandName);
             draft.originalPrice = Number(slide.querySelector('.batch-price').value || 0);
             draft.sizes = uniqueSizes(slide.querySelector('.batch-sizes').value.split(/[,،\s]+/).filter(Boolean));
+            draft.styleCode = (slide.querySelector('.batch-style-code')?.value || '').trim();
             if (draft.include) includedDrafts.push(draft);
         });
 

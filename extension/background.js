@@ -457,8 +457,11 @@ async function buildSooqifyFormData(product, pageHtml, formHtml) {
         }
     }
 
+    // Arabic: تعديل v5.0.0 - عند تفعيل رفع الصورة الرئيسية فقط يبقى كل معرض الصور محلياً ولا تُرسل أيّ صورة إضافية للمتجر.
+    // English: v5.0.0 change - when the main-image-only mode is enabled, the full gallery stays local and no extra image is sent to the store.
+    const shouldUploadMainOnly = Boolean(product.upload_main_image_only || product.uploadMainImageOnly || false);
     const imageInfoList = Array.isArray(product.image_files)
-        ? product.image_files.slice(0, 6)
+        ? (shouldUploadMainOnly ? product.image_files.slice(0, 1) : product.image_files.slice(0, 6))
         : [];
 
     if (!imageInfoList.length) {
@@ -478,12 +481,14 @@ async function buildSooqifyFormData(product, pageHtml, formHtml) {
         imageFiles[0].fileName,
     );
 
-    for (const galleryImage of imageFiles.slice(1)) {
-        formData.append(
-            'item_images[]',
-            galleryImage.blob,
-            galleryImage.fileName,
-        );
+    if (!shouldUploadMainOnly) {
+        for (const galleryImage of imageFiles.slice(1)) {
+            formData.append(
+                'item_images[]',
+                galleryImage.blob,
+                galleryImage.fileName,
+            );
+        }
     }
 
     return {

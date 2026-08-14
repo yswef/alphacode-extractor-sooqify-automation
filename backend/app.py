@@ -589,6 +589,73 @@ def sync_background_worker():
         time.sleep(90)
 
 
+def sync_reconcile_full():
+    """Arabic: سحب كامل أرشيف السيرفر ثم رفع أي منتج محلي مفقود على السيرفر.
+    English: Pull the full server archive (no deletes/overwrites locally), then push
+    any locally-known product that the server does not have yet.
+
+    Returns a summary dict suitable for JSONifying.
+    """
+    config = load_sync_config()
+    if not config["Enabled"]:
+        return {"success": False, "error": "sync_disabled"}
+
+    # Pull the full remote archive (since="" asks for everything)
+    data, error = sync_call("pull", {"since": ""}, method="POST")
+    if error:
+        return {"success": False, "error": error}
+
+    items = (data or {}).get("items") or {}
+    server_keys = set(items.keys())
+
+    # Compute local-only keys under lock
+    with SAVE_LOCK:
+        archive = load_archive()
+        local_keys = {k for k in archive.keys() if not str(k).startswith("_")}
+
+    to_push = [k for k in sorted(local_keys) if k not in server_keys]
+
+    pushed = 0
+    errors = []
+    for key in to_push:
+        try:
+            archive_item = archive.get(key)
+            if archive_item:
+                # Use the existing push helper which queues on failure
+                sync_push_product(key, archive_item)
+                pushed += 1
+        except Exception as exc:
+            logger.warning("Reconcile push failed for %s: %s", key, exc)
+            errors.append({"key": key, "error": str(exc)})
+
+    # Update sync state with pull time
+    with SYNC_LOCK:
+        state = load_sync_state()
+        state["last_pull_at"] = (data or {}).get("server_time") or datetime.now().isoformat(timespec="seconds")
+        state["last_error"] = ""
+        save_sync_state(state)
+
+    return {
+        "success": True,
+        "server_count": len(server_keys),
+        "local_count": len(local_keys),
+        "will_push_count": len(to_push),
+        "pushed_immediate": pushed,
+        "errors": errors,
+    }
+
+
+@app.route('/api/sync/reconcile', methods=['POST'])
+def api_sync_reconcile():
+    """Manual endpoint to trigger a full reconcile: pull all remote items and push any local-only items."""
+    try:
+        result = sync_reconcile_full()
+        return jsonify(result), (200 if result.get('success') else 500)
+    except Exception as exc:
+        logger.exception('Manual sync reconcile failed: %s', exc)
+        return jsonify({'success': False, 'error': str(exc)}), 500
+
+
 # Arabic: أول حساب للمسارات عند إقلاع التطبيق (يقرأ paths_config.json إن وُجد).
 # English: First path resolution at app startup (reads paths_config.json if present).
 recompute_paths()
@@ -1400,7 +1467,7 @@ def health_check():
     return jsonify({
         "success": True,
         "service": "AlphaCode Extractor",
-        "version": "4.5.0",
+        "version": "5.0.0",
         "ai_provider": default_provider,
         "ai_configured": provider_keys.get(default_provider, False),
         "ai_providers": provider_keys,
@@ -1548,6 +1615,13 @@ def login_sync():
             return jsonify({"success": False, "error": f"تسجيل الدخول مرفوض: HTTP {he.code}"}), 400
     except Exception as e:
         return jsonify({"success": False, "error": f"خطأ في الاتصال: {str(e)}"}), 500
+
+
+@app.route("/api/sync/logout", methods=["POST"])
+def logout_sync():
+    """Arabic: تسجيل خروج وهمي (لا يحذف المفتاح). English: Logout endpoint for the popup to call; stateless on server."""
+    # Currently stateless: the extension stores session locally. Return success for compatibility.
+    return jsonify({"success": True, "message": "Logged out."})
 
 
 @app.route("/api/reports/generate", methods=["POST"])
@@ -2573,6 +2647,29 @@ def generate_ai_copy():
         }), 502
 
 
+def resolve_store_images_for_upload(image_names, selected_indexes, main_image_index, upload_main_image_only=False):
+    """Arabic: يحسب قائمة الصور النهائية للمتجر مع إبقاء الصورة الرئيسية فقط إذا كان الخيار مفعلًا. English: Resolve the final store image list while keeping only the main image when the option is enabled."""
+    if not image_names:
+        return []
+
+    ordered_names = list(image_names)
+    if upload_main_image_only:
+        if main_image_index in selected_indexes:
+            main_position = selected_indexes.index(main_image_index)
+            if main_position < len(ordered_names):
+                return [ordered_names[main_position]]
+        return [ordered_names[0]]
+
+    main_name = ordered_names[0]
+    if main_image_index in selected_indexes:
+        main_position = selected_indexes.index(main_image_index)
+        if main_position < len(ordered_names):
+            main_name = ordered_names[main_position]
+
+    gallery_names = [name for name in ordered_names if name != main_name]
+    return [main_name] + gallery_names[:5]
+
+
 @app.route("/api/extract", methods=["POST"])
 def extract_product():
     """Arabic: تنزيل الصور وحفظ Excel والأرشيف ثم تجهيز المنتج للوحة Sooqify. English: Download images, commit Excel/archive, and prepare the Sooqify autofill package."""
@@ -2765,13 +2862,15 @@ def extract_product():
             store_images = [downloaded_by_index[index] for index in selected_indexes if index in downloaded_by_index]
             if not store_images:
                 store_images = local_images[:store_image_limit]
-            store_main_image = downloaded_by_index.get(main_image_index) or store_images[0]
-            store_images = [store_main_image] + [name for name in store_images if name != store_main_image]
-            store_images = store_images[:store_image_limit]
-            if settings["UploadMainImageOnly"]:
-                # Arabic: يُرفع للمتجر الصورة الرئيسية فقط، بينما تبقى كل الصور محفوظة محلياً بجودتها الكاملة.
-                # English: Only the main image goes to the store; every image still stays saved locally at full quality.
-                store_images = [store_main_image]
+            store_images = resolve_store_images_for_upload(
+                store_images,
+                selected_indexes,
+                main_image_index,
+                bool(settings["UploadMainImageOnly"]),
+            )
+            store_main_image = store_images[0] if store_images else ""
+            # Arabic: لا يُرفع للمتجر سوى الصورة الأساسية المختارة؛ تبقى كل الصور الأخرى محفوظة محلياً فقط.
+            # English: Only the selected main image is submitted to the store; all remaining images stay local only.
             logger.info(
                 "Store image selection prepared. id=%s selected=%s main=%s all_downloaded=%s",
                 next_id, store_images, store_main_image, len(local_images),
@@ -2938,6 +3037,15 @@ if __name__ == "__main__":
     if sync_settings["Enabled"]:
         logger.info("Two-user sync ENABLED. server=%s", sync_settings["ServerUrl"])
         threading.Thread(target=sync_background_worker, daemon=True).start()
+        # Start a one-off reconcile at startup to pull server archive and push local-only items.
+        def _startup_reconcile():
+            try:
+                res = sync_reconcile_full()
+                logger.info("Initial sync reconcile result: %s", res)
+            except Exception as exc:
+                logger.warning("Initial sync reconcile failed: %s", exc)
+
+        threading.Thread(target=_startup_reconcile, daemon=True).start()
     else:
         logger.info("Two-user sync is disabled. Configure it from the extension settings to enable it.")
     app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)

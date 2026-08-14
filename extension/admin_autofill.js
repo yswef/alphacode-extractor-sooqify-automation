@@ -928,22 +928,29 @@ async function fillImageInputs(form, product, setStatus) {
         ? product.image_files.slice(0, storeImageLimit)
         : [];
 
+    // Arabic: تعديل v5.0.0 - في وضع الصورة الرئيسية فقط لا تُرسل صور المعرض إلى المتجر، بل تُبقي كل الصور محلياً ضمن جهاز المشغل فقط.
+    // English: v5.0.0 change - in the main-image-only mode the gallery is not sent to the store and remains local only on the operator device.
+    const shouldUploadMainOnly = Boolean(
+        adminConfig.UploadMainImageOnly,
+    );
     const imageFiles = [];
+
+    const selectableImages = shouldUploadMainOnly ? imageInfoList.slice(0, 1) : imageInfoList;
 
     for (
         let index = 0;
-        index < imageInfoList.length;
+        index < selectableImages.length;
         index += 1
     ) {
         setStatus(
-            `جلب الصورة ${index + 1} من ${imageInfoList.length}...`,
+            `جلب الصورة ${index + 1} من ${selectableImages.length}...`,
             'working',
         );
 
         try {
             imageFiles.push(
                 await fetchLocalImageFile(
-                    imageInfoList[index],
+                    selectableImages[index],
                 ),
             );
         } catch (error) {
@@ -953,7 +960,7 @@ async function fillImageInputs(form, product, setStatus) {
                 error.message,
                 {
                     image_index: index + 1,
-                    image_name: imageInfoList[index]?.name,
+                    image_name: selectableImages[index]?.name,
                 },
             );
 
@@ -1017,6 +1024,18 @@ async function fillImageInputs(form, product, setStatus) {
         throw new Error(
             'المتجر لم يحتفظ بالصورة الرئيسية بعد تعبئتها.',
         );
+    }
+
+    if (shouldUploadMainOnly) {
+        return {
+            total: imageFiles.length,
+            main: 1,
+            galleryExpected: 0,
+            galleryAssigned: 0,
+            galleryNames: [],
+            missingGalleryNames: [],
+            mode: 'main_only_store_upload',
+        };
     }
 
     const galleryFiles = imageFiles.slice(1);

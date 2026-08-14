@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "AlphaCode Product Extractor",
-  "version": "4.6.0",
-  "description": "AlphaCode v4.6.0 with two-user sync, manual save-folder setup, per-brand/per-date image folders, main-image-only store submission, persistent virtual-list batch selection, per-product image choice, JSON copy templates, notifications, and reusable sequential Sooqify submission.",
+  "version": "5.0.0",
+  "description": "AlphaCode v5.0.0 with main-image-only store submission, local full-gallery saves, sync stability, manual save-folder setup, per-brand/per-date image folders, persistent virtual-list batch selection, per-product image choice, JSON copy templates, notifications, and reusable sequential Sooqify submission.",
   "permissions": [
     "activeTab",
     "scripting",

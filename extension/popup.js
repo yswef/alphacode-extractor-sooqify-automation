@@ -1306,26 +1306,24 @@ async function handleLogout() {
 // Arabic: إخفاء التبويبات والمميزات المخصصة للأدمن عن الأعضاء
 // English: Hide admin tabs and features from regular members
 function applyRoleRestrictions(role) {
-    if (role !== 'admin' && role !== 'project_manager') {
-        const restrictedTabs = ['settings', 'reports', 'data', 'diagnostics'];
-        document.querySelectorAll('.tab-button').forEach(btn => {
-            if (restrictedTabs.includes(btn.dataset.tab)) {
-                btn.style.display = 'none';
-            }
-        });
-        document.querySelectorAll('.admin-only-element').forEach(el => {
-            el.style.display = 'none';
-        });
-        if (restrictedTabs.includes(document.querySelector('.tab-button.active')?.dataset.tab)) {
-            activateTab('product-type'); // switch to a public tab
-        }
-    } else {
-        document.querySelectorAll('.admin-only-element').forEach(el => {
-            el.style.display = 'block';
-        });
-        document.querySelectorAll('.tab-button').forEach(btn => {
-            btn.style.display = '';
-        });
+    // role: 'admin' or 'project_manager' => full access
+    // regular members => only show 'settings' and 'product-type' tabs
+    const memberVisible = ['settings', 'product-type'];
+    if (role === 'admin' || role === 'project_manager') {
+        document.querySelectorAll('.admin-only-element').forEach(el => { el.style.display = 'block'; });
+        document.querySelectorAll('.tab-button').forEach(btn => { btn.style.display = ''; });
+        return;
+    }
+
+    // Default to member view: hide admin sections and most tabs
+    document.querySelectorAll('.admin-only-element').forEach(el => { el.style.display = 'none'; });
+    document.querySelectorAll('.tab-button').forEach(btn => {
+        btn.style.display = memberVisible.includes(btn.dataset.tab) ? '' : 'none';
+    });
+
+    const activeTab = document.querySelector('.tab-button.active')?.dataset.tab;
+    if (!memberVisible.includes(activeTab)) {
+        activateTab('settings');
     }
 }
 

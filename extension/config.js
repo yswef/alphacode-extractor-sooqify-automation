@@ -54,22 +54,27 @@
         // English: Brand and size variants.
         BrandName: 'Air Jordan',
         BrandId: 6,
-        BrandMapJson: '{"Air Jordan":6}',
+        BrandMapJson: `{
+    "Air Jordan": 6,
+    "Nike": 7,
+    "Adidas": 8,
+    "New Balance": 9
+}`,
         SizeAttributeId: 1,
         SizeChoiceNo: 1,
         SizeactualChoiceNo: 1,
         SizeTitle: 'الحجم',
-        DefaultLanguage: 'en',
+        DefaultLanguage: 'ar',
 
         // Arabic: الصور؛ الخيار الجديد يسمح بتنزيل الصور المحددة فقط محلياً.
         // English: Images; the new option can download only selected images locally.
         ImageMaxDimension: 1200,
-        ImageQuality: 75,
+        ImageQuality: 100,
         ImageFormat: 'jpeg',
         OptimizeImageAtSource: true,
         RequireAllImages: true,
         MaxImages: 30,
-        StoreImageLimit: 6,
+        StoreImageLimit: 10,
         DownloadSelectedImagesOnly: false,
 
         // Arabic: عند التفعيل يُرفع للمتجر الصورة الرئيسية فقط، وتُحفظ كل الصور محلياً بجودتها الأصلية دون أي تعديل.

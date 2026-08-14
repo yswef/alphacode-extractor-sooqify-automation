@@ -64,6 +64,7 @@ sync_queue.json
 sync_state.json
 archive_db.json
 ai_copy_cache.json
+reports_config.json
 
 # OS/editor
 .DS_Store

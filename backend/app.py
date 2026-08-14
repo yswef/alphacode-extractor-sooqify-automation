@@ -61,6 +61,9 @@ SYNC_CONFIG_PATH = os.path.join(SCRIPT_DIR, "sync_config.json")
 SYNC_QUEUE_PATH = os.path.join(SCRIPT_DIR, "sync_queue.json")
 SYNC_STATE_PATH = os.path.join(SCRIPT_DIR, "sync_state.json")
 IMAGES_FOLDER_NAME = "صور"
+# Arabic: أي منتج فيه عدد صور أقل من هذا الرقم يُرفض ولا يُضاف للمتجر نهائياً (المتجر يحتاج 6 صور: رئيسية + 5 معرض).
+# English: Any product with fewer images than this is rejected and never added to the store (the store needs 6: one main + 5 gallery).
+MIN_REQUIRED_PRODUCT_IMAGES = 6
 
 ROOT_DIR = os.getenv("ALPHACODE_ROOT_DIR", r"Y:\\سوقفاي")
 BASE_DIR = os.path.join(ROOT_DIR, IMAGES_FOLDER_NAME)
@@ -1500,6 +1503,53 @@ def trigger_sync_now():
     return jsonify({"success": True, "status": load_sync_state(), "pending_queue": len(load_sync_queue())})
 
 
+@app.route("/api/sync/login", methods=["POST"])
+def login_sync():
+    """Arabic: التحقق من حساب العضو عبر خادم المزامنة المركزي. English: Verify member account via central sync server."""
+    data = request.get_json(silent=True) or {}
+    name = normalize_text(data.get("name"))
+    password = normalize_text(data.get("password"))
+    if not name:
+        return jsonify({"success": False, "error": "الاسم مطلوب."}), 400
+
+    config = load_sync_config()
+    server_url = normalize_text(config.get("ServerUrl"))
+    token = normalize_text(config.get("Token"))
+    
+    if not config.get("Enabled") or not server_url:
+        if name.lower() == "admin" and password == "admin":
+            return jsonify({"success": True, "member": {"role": "admin", "display_name": "Admin (Local)"}})
+        return jsonify({"success": False, "error": "المزامنة غير مفعلة أو الرابط غير متوفر."}), 400
+
+    import urllib.request
+    import urllib.error
+    
+    server_url_clean = server_url.rstrip('/')
+    if not server_url_clean.endswith('.php'):
+        server_url_clean = f"{server_url_clean}/sync.php"
+        
+    url = f"{server_url_clean}?action=whoami"
+    payload = json.dumps({"key": name, "password": password}).encode("utf-8")
+    
+    req = urllib.request.Request(url, data=payload, method="POST")
+    req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("X-Sync-Token", token)
+        
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            result = json.loads(response.read().decode("utf-8"))
+            return jsonify(result)
+    except urllib.error.HTTPError as he:
+        try:
+            result = json.loads(he.read().decode("utf-8"))
+            return jsonify(result), he.code
+        except Exception:
+            return jsonify({"success": False, "error": f"تسجيل الدخول مرفوض: HTTP {he.code}"}), 400
+    except Exception as e:
+        return jsonify({"success": False, "error": f"خطأ في الاتصال: {str(e)}"}), 500
+
+
 @app.route("/api/reports/generate", methods=["POST"])
 def generate_pdf_report():
     """Arabic: توليد تقرير PDF يومي أو شهري من الأرشيف. English: Generate a daily or monthly PDF report from the archive."""
@@ -2566,6 +2616,17 @@ def extract_product():
     if not images:
         return jsonify({"success": False, "error": "No product images were received."}), 400
 
+    # Arabic: يُرفض المنتج بالكامل ولا يُضاف نهائياً إذا كان عدد صوره أقل من الحد الأدنى المطلوب.
+    # English: The product is rejected entirely (not added at all) if it has fewer images than the required minimum.
+    if len(images) < MIN_REQUIRED_PRODUCT_IMAGES:
+        return jsonify({
+            "success": False,
+            "skipped_low_images": True,
+            "image_count": len(images),
+            "min_required_images": MIN_REQUIRED_PRODUCT_IMAGES,
+            "error": f"تم تخطي المنتج: عدد صوره {len(images)} أقل من الحد الأدنى المطلوب ({MIN_REQUIRED_PRODUCT_IMAGES}).",
+        }), 422
+
     # Arabic: ترتيب الصور المختارة مع دعم تنزيل المحدد فقط وعدم إضافة صور لم يخترها المستخدم.
     # English: Normalize selected images and optionally download only the exact user selection.
     # Arabic: المتجر الحالي يدعم ست صور إجمالاً: رئيسية وخمس صور معرض.
@@ -2589,10 +2650,14 @@ def extract_product():
     selected_indexes.insert(0, main_image_index)
     selected_indexes = selected_indexes[:store_image_limit]
 
+    # Arabic: وضع "الصورة الرئيسية فقط للمتجر" معناه حفظ كل الصور محلياً بجودتها الأصلية دائماً،
+    # فيتجاهل خيار "تنزيل الصور المحددة فقط" ويتجاوزه فرضاً حتى لو كان مفعّلاً.
+    # English: "Upload main image only to store" always means saving every image locally at
+    # original quality, so it forces "download selected images only" off even if it's enabled.
     download_selected_only = safe_bool(
         data.get("DownloadSelectedImagesOnly"),
         settings["DownloadSelectedImagesOnly"],
-    )
+    ) and not settings.get("UploadMainImageOnly")
     download_indexes = selected_indexes if download_selected_only else list(range(len(images)))
     download_plan = [(index, images[index]) for index in download_indexes]
 

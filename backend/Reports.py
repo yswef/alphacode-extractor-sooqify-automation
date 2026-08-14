@@ -127,27 +127,7 @@ def _build_per_user_table(entries):
     return table
 
 
-def _build_products_table(entries):
-    """Arabic: جدول تفصيلي بكل منتج مضاف خلال الفترة. English: A detailed table of every product added during the period."""
-    header = [
-        "ID",
-        _rtl("الاسم") if _ARABIC_SUPPORT else "Name",
-        _rtl("البراند") if _ARABIC_SUPPORT else "Brand",
-        _rtl("النوع") if _ARABIC_SUPPORT else "Type",
-        _rtl("أضافه") if _ARABIC_SUPPORT else "Added by",
-    ]
-    rows = [header]
-    for item in sorted(entries, key=lambda entry: entry.get("id") or 0):
-        rows.append([
-            str(item.get("id")),
-            _rtl(item.get("name_en") or item.get("name") or "-"),
-            _rtl(item.get("brand_name") or "-"),
-            _rtl("ساعة") if (item.get("product_type") == "watches" and _ARABIC_SUPPORT) else item.get("product_type", "shoes"),
-            item.get("added_by") or "-",
-        ])
-    table = Table(rows, colWidths=[15 * mm, 65 * mm, 35 * mm, 20 * mm, 30 * mm], repeatRows=1)
-    table.setStyle(_table_style(header_rows=1, small=True))
-    return table
+
 
 
 def _table_style(header_rows=1, small=False):
@@ -213,8 +193,6 @@ def generate_report(archive_entries, scope, output_path, target_date=None):
         _build_summary_table(entries),
         Paragraph(_rtl("حسب المستخدم") if _ARABIC_SUPPORT else "By User", section_style),
         _build_per_user_table(entries),
-        Paragraph(_rtl("تفاصيل المنتجات") if _ARABIC_SUPPORT else "Product Details", section_style),
-        _build_products_table(entries),
     ]
 
     doc.build(story)

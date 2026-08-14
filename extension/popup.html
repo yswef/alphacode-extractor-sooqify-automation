@@ -107,6 +107,16 @@
     </style>
 </head>
 <body>
+<div id="loginOverlay" style="position:fixed;inset:0;background:var(--surface);z-index:9999;display:flex;align-items:center;justify-content:center;">
+    <article class="card" style="width:320px;">
+        <h2>تسجيل الدخول</h2>
+        <p class="hint">الرجاء تسجيل الدخول ببيانات حسابك</p>
+        <div class="field"><label for="loginName">الاسم أو الاسم المستعار</label><input id="loginName" type="text" placeholder="اسمك"></div>
+        <div class="field"><label for="loginPass">كلمة المرور</label><input id="loginPass" type="password" placeholder="كلمة المرور"></div>
+        <button class="btn btn-primary btn-block" id="loginBtnCheck" type="button" style="margin-top:12px;">تسجيل الدخول</button>
+        <div class="result-box error" id="loginErrorBox" style="display:none;margin-top:10px;"></div>
+    </article>
+</div>
 <header class="app-header">
     <div class="brand-row">
         <div>
@@ -391,6 +401,12 @@
             <h2>آخر المنتجات المضافة (من الطرفين)</h2>
             <button class="btn btn-outline btn-block" id="refreshRecentBtn" type="button">تحديث القائمة</button>
             <div id="recentProductsBox" style="margin-top:10px;"></div>
+        </article>
+
+        <article class="card admin-only-element" style="display:none; margin-top:13px;">
+            <h2>نسخ الأسماء دفعة واحدة (للأدمن)</h2>
+            <p class="hint">نسخ أسماء المنتجات، كل اسم بسطر مستقل وبينهم سطر فيه علامة + فقط</p>
+            <button class="btn btn-accent btn-block" id="copyBatchNamesBtn" type="button">نسخ أسماء الدفعة (+)</button>
         </article>
     </section>
 

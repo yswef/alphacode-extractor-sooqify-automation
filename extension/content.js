@@ -158,7 +158,7 @@ async function logExtractorEvent(level, event, message, details = {}) {
     try {
         const response = await safeRuntimeMessage({ action: 'LOG_CLIENT_EVENT', payload });
         if (response?.success) return;
-    } catch (_) {}
+    } catch (_) { }
     try {
         await fetch(`${API_BASE_URL}/api/log/client`, {
             method: 'POST',
@@ -191,7 +191,7 @@ if (isExtensionContextAvailable()) {
                 extractorConfig = { ...DEFAULT_CONFIG, ...message.config };
             }
         });
-    } catch (_) {}
+    } catch (_) { }
 }
 
 // Arabic: دالة normalizeText جزء من تدفق الاستخراج ويمكن تخصيصها عند نقل الأداة.
@@ -343,6 +343,17 @@ async function copyTextToClipboard(value) {
 }
 
 
+// Arabic: بناء نص يحوي كل الأسماء الأصلية لمنتجات الدفعة، كل اسم بسطر لحاله وبينهم سطر "+" فاصل،
+// جاهز للصق مباشرة في أي نموذج ذكاء اصطناعي خارجي لصياغتها باحترافية دفعة واحدة.
+// English: Build a single text block with every batch product's original name, one per line,
+// separated by a standalone "+" line, ready to paste into an external AI model for bulk rewriting.
+function buildBatchOriginalNamesText(drafts) {
+    return drafts
+        .map(draft => normalizeText(draft.originalProductName || draft.sourceText || ''))
+        .filter(Boolean)
+        .join('\n+\n');
+}
+
 // Arabic: إنشاء قالب JSON فارغ يمكن إرساله إلى أي نموذج ذكاء اصطناعي خارجي.
 // English: Build an empty JSON template that can be sent to any external AI model.
 function buildEmptyExternalCopyTemplate() {
@@ -467,6 +478,12 @@ function extractStyleCode(sourceText) {
         const match = sourceText.match(pattern);
         if (match) return match[1].replace(/[.,;:]+$/g, '').trim();
     }
+
+    // Arabic: نمط احتياطي للأكواد الصريحة التي تتكون من جزئين وشرطة أو حروف وأرقام إذا كانت واضحة جداً.
+    // English: Fallback strict pattern for explicit Nike/Adidas/etc item codes without labels.
+    const strictFallback = sourceText.match(/\b([A-Z]{2,4}[-–_]?\d{4,6}[-–_]?[A-Z0-9]{0,4})\b/i);
+    if (strictFallback) return strictFallback[1].replace(/[.,;:]+$/g, '').trim();
+
     return 'غير محدد';
 }
 
@@ -985,7 +1002,7 @@ function createAndInjectButton(container, parentCard) {
                     if (existingButton.dataset.alphacodeProductKey !== productKey) return;
                     if (data.exists) updateButtonAsAdded(existingButton, data.id || null, data.workflow_status || 'prepared');
                 })
-                .catch(() => {});
+                .catch(() => { });
         }
         ensureBatchSelectionControl(container, parentCard, existingButton);
         return;
@@ -1004,7 +1021,7 @@ function createAndInjectButton(container, parentCard) {
             if (data.exists) updateButtonAsAdded(button, data.id || null, data.workflow_status || "prepared");
             if (data.last_added_code) lastAddedSearchCodeGlobal = data.last_added_code;
         })
-        .catch(() => {});
+        .catch(() => { });
 
     button.addEventListener('click', event => {
         event.preventDefault();
@@ -1300,6 +1317,7 @@ function renderNewProductForm(context) {
     const fallbackNameAR = buildFallbackArabicName(sourceText, styleCode);
     const fallbackDescriptionAR = buildFallbackArabicDescription(sourceText, styleCode);
     const fallbackBrand = canonicalBrandName(sourceText);
+    const detectedProductType = detectProductType(sourceText);
 
     const contentArea = modalBox.querySelector('#modal-content-area');
     contentArea.className = '';
@@ -1354,6 +1372,7 @@ function renderNewProductForm(context) {
             <div class="alphacode-field"><label>بعد إضافة ${addedFee} يوان:</label><input type="number" id="modPriceFee" disabled></div>
         </div>
         <div class="alphacode-readonly-group">
+            <div class="alphacode-readonly-item"><span>نوع المنتج:</span><strong class="alphacode-success-text">${detectedProductType === 'watches' ? 'ساعة (Watches)' : 'أحذية (Shoes)'}</strong></div>
             <div class="alphacode-readonly-item"><span>السعر بعد المصارفة:</span><strong id="displaySAR" class="alphacode-success-text"></strong></div>
             <div class="alphacode-readonly-item"><span>Category / SubCategory:</span><strong>${extractorConfig.CategoryId} / ${extractorConfig.SubCategoryId}</strong></div>
             <div class="alphacode-readonly-item"><span>صور المعرض الكامل:</span><strong class="alphacode-image-count">${images.length} صور</strong></div>
@@ -1448,6 +1467,7 @@ function renderNewProductForm(context) {
             searchCode,
             styleCode,
             fields,
+            productType: detectedProductType,
             officialResearch,
         });
 
@@ -1491,6 +1511,7 @@ async function generateProductCopy(context) {
         searchCode,
         styleCode,
         fields,
+        productType,
         officialResearch = false,
     } = context;
 
@@ -1552,6 +1573,7 @@ async function generateProductCopy(context) {
                     BrandName: String(
                         fields.brandName.value || '',
                     ).slice(0, 100),
+                    ProductType: String(productType || 'shoes'),
                     AIProvider: extractorConfig.AIProvider || 'groq',
                     AIModel: extractorConfig.AIModel,
                     AIBaseUrl: extractorConfig.AIBaseUrl || '',
@@ -2247,7 +2269,7 @@ function persistBatchSelections() {
                 entries: Array.from(selectedBatchProducts.values()).map(serializeBatchSelectionEntry),
             }),
         );
-    } catch (_) {}
+    } catch (_) { }
 }
 
 function restoreBatchSelections() {
@@ -2265,7 +2287,7 @@ function restoreBatchSelections() {
                 imagePromise: null,
             });
         }
-    } catch (_) {}
+    } catch (_) { }
 }
 
 function createBatchSelectionSnapshot(card, button, key) {
@@ -2754,7 +2776,7 @@ async function buildBatchDraft(entry, index, total, updateProgress) {
                 draft.sizes = uniqueSizes(archived.sizes || draft.sizes);
                 draft.originalPrice = Number(archived.original_price || draft.originalPrice || 0);
             }
-        } catch (_) {}
+        } catch (_) { }
     }
 
     if (
@@ -2794,6 +2816,10 @@ function renderBatchReviewSlides(modalBox, drafts) {
     content.innerHTML = `
         <div class="alphacode-batch-review-header">
             <strong>مراجعة دفعة من ${drafts.length} منتجات</strong>
+            <div class="alphacode-batch-copy-all-wrap">
+                <button class="alphacode-copy-btn" id="alphacodeCopyAllOriginalNames" type="button" title="نسخ الأسماء الأصلية لكل منتجات الدفعة، كل اسم بسطر لحاله وبينها فاصل +">📋 نسخ كل الأسماء الأصلية للدفعة</button>
+                <span class="alphacode-ai-status" id="alphacodeCopyAllOriginalNamesStatus"></span>
+            </div>
             <span id="alphacodeBatchSlideCounter"></span>
         </div>
         <div class="alphacode-batch-slide-list">
@@ -2920,6 +2946,23 @@ function renderBatchReviewSlides(modalBox, drafts) {
     content.querySelector('#alphacodeBatchNext').onclick = () => showSlide(currentIndex + 1);
     dots.forEach(dot => { dot.onclick = () => showSlide(Number(dot.dataset.slide)); });
     showSlide(0);
+
+    const copyAllNamesButton = content.querySelector('#alphacodeCopyAllOriginalNames');
+    const copyAllNamesStatus = content.querySelector('#alphacodeCopyAllOriginalNamesStatus');
+    copyAllNamesButton.onclick = async () => {
+        const text = buildBatchOriginalNamesText(drafts);
+        if (!text) {
+            copyAllNamesStatus.textContent = 'لا توجد أسماء أصلية قابلة للنسخ في هذه الدفعة.';
+            copyAllNamesStatus.classList.add('error');
+            return;
+        }
+        const copied = await copyTextToClipboard(text);
+        copyAllNamesStatus.textContent = copied
+            ? `تم نسخ ${drafts.length} اسم أصلي (كل اسم بسطر، مفصولة بـ +).`
+            : 'تعذر النسخ إلى الحافظة.';
+        copyAllNamesStatus.classList.toggle('error', !copied);
+        copyAllNamesStatus.classList.toggle('success', copied);
+    };
 
     content.querySelector('#alphacodeCancelBatchReview').onclick = () => activeBatchReviewOverlay?.remove();
     content.querySelector('#alphacodeStartBatch').onclick = async event => {
@@ -3177,6 +3220,7 @@ function renderBatchProgressPanel(state) {
             <div class="batch-progress-header"><strong>طابور AlphaCode</strong><button type="button" class="batch-progress-close">×</button></div>
             <div class="batch-progress-summary"></div>
             <div class="batch-progress-current"></div>
+            <div class="batch-progress-timer"></div>
             <div class="batch-progress-bar"><span></span></div>
             <div class="batch-progress-actions">
                 <button class="batch-pause" type="button">إيقاف مؤقت</button>
@@ -3192,6 +3236,26 @@ function renderBatchProgressPanel(state) {
         panel.querySelector('.batch-cancel').onclick = () => {
             if (confirm('هل تريد إلغاء بقية منتجات الدفعة؟')) safeRuntimeMessage({ action: 'CANCEL_BATCH_QUEUE', batchId: latestBatchQueueState?.batchId });
         };
+        // Arabic: عداد تنازلي محلي (كل ثانية) لعرض الوقت المتبقي قبل اعتبار المنتج الحالي معلقاً (مهلة دقيقتين).
+        // English: Local one-second countdown showing time left before the current product is treated as hung (2-minute timeout).
+        setInterval(() => {
+            const timerEl = panel.querySelector('.batch-progress-timer');
+            if (!timerEl) return;
+            const current = latestBatchQueueState?.current;
+            const startedAt = Number(current?.startedAt || 0);
+            const timeoutMs = Number(current?.timeoutMs || 0);
+            if (latestBatchQueueState?.status !== 'running' || !startedAt || !timeoutMs) {
+                timerEl.textContent = '';
+                return;
+            }
+            const remainingMs = Math.max(0, timeoutMs - (Date.now() - startedAt));
+            const totalSeconds = Math.ceil(remainingMs / 1000);
+            const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
+            const seconds = String(totalSeconds % 60).padStart(2, '0');
+            timerEl.textContent = remainingMs > 0
+                ? `⏱ ${minutes}:${seconds} قبل اعتبار المنتج الحالي معلقاً وتخطّيه`
+                : '⏱ جارٍ اعتبار المنتج معلقاً وتخطّيه...';
+        }, 1000);
     }
 
     const succeeded = (state.results || []).filter(item => item.success).length;

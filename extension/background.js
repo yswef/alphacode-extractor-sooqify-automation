@@ -11,6 +11,9 @@ const DEFAULT_SOOQIFY_ADD_URL = 'https://admin.sooqifyonline.com/admin/item/add-
 const FALLBACK_JOBS_KEY = 'alphacodeFallbackSubmissionJobs';
 const BATCH_QUEUE_KEY = 'alphacodeBatchQueueState';
 const BATCH_ALARM_NAME = 'alphacodeBatchQueueWake';
+// Arabic: مهلة المنتج الواحد أثناء الدفعة - لو صفحة المتجر علّقت (مثلاً تنتظر تسجيل دخول) ولم ترد خلال هذه المدة، يُعتبر فشلاً ويُعاد المنتج آخر القائمة تلقائياً.
+// English: Per-product timeout during a batch - if the store page hangs (e.g. waiting on login) and never responds within this window, it's treated as a failure and requeued at the end automatically.
+const BATCH_PRODUCT_TIMEOUT_MS = 120000; // 2 minutes
 let batchLaunchLock = false;
 
 // Arabic: تحويل Uint8Array إلى Base64 على دفعات لتجنب تجاوز مكدس الاستدعاء.
@@ -797,6 +800,8 @@ async function processBatchQueue() {
                 },
             };
             next.product = product;
+            next.startedAt = Date.now();
+            next.timeoutMs = BATCH_PRODUCT_TIMEOUT_MS;
             state.current = next;
             await writeBatchQueueState(state);
 
@@ -813,6 +818,8 @@ async function processBatchQueue() {
                 },
                 { tab: { id: state.sourceTabId, url: '' } },
             );
+
+            scheduleBatchWatchdogTick();
         } catch (error) {
             state.current = null;
             state.results.push({
@@ -833,11 +840,110 @@ async function processBatchQueue() {
     }
 }
 
+// Arabic: يجدول فحصاً دورياً كل 10 ثوانٍ طالما الطابور يعمل والخدمة (service worker) ما زالت حية،
+// ليكتشف تجاوز المهلة بأسرع ما يمكن. المنبه الدائم (BATCH_ALARM_NAME) يبقى كخط دفاع احتياطي
+// لو الخدمة نامت (كل دقيقة تقريباً)، فلا يضيع الاكتشاف حتى لو تعلّق المتصفح بالخلفية لفترة.
+// English: Schedules a lightweight check every 10s while the queue is running and the service
+// worker stays alive, for fast timeout detection. The persistent alarm (BATCH_ALARM_NAME) is the
+// backup path if the service worker suspends (~every 1 minute), so detection is never lost even
+// if the browser sleeps the extension in the background.
+function scheduleBatchWatchdogTick() {
+    setTimeout(() => {
+        batchWatchdogTick().catch(() => {});
+    }, 10000);
+}
+
+async function batchWatchdogTick() {
+    const state = await readBatchQueueState();
+    if (!state || state.status !== 'running' || !state.current) return;
+    const startedAt = Number(state.current.startedAt || 0);
+    const timeoutMs = Number(state.current.timeoutMs || BATCH_PRODUCT_TIMEOUT_MS);
+    if (startedAt && (Date.now() - startedAt) >= timeoutMs) {
+        await handleBatchProductTimeout(state);
+        return;
+    }
+    scheduleBatchWatchdogTick();
+}
+
+// Arabic: يُعالج منتجاً تجاوز مهلة الانتظار (لم يرد أي شيء من تبويبه): ينظّف مهمته المعلّقة حتى
+// لا يُحتسب رده المتأخر لاحقاً على منتج آخر، ثم إما يعيده آخر القائمة (محاولة أخرى) أو يسجله
+// كفشل نهائي إذا سبق أن تجاوز المهلة على نفس المنتج من قبل.
+// English: Handles a product that exceeded the wait timeout (its tab never responded at all): it
+// clears its pending job first so a late reply can't be wrongly credited to a different product
+// later, then either requeues it at the end (one more try) or records it as a final failure if
+// this same product already timed out once before.
+async function handleBatchProductTimeout(state) {
+    const current = state.current;
+    if (!current) return;
+
+    const productId = Number(current.product?.local_id || 0);
+    const jobs = await readFallbackJobs();
+    for (const [tabId, job] of Object.entries(jobs)) {
+        if (job.batchId === state.batchId && Number(job.productId) === productId) {
+            delete jobs[tabId];
+            if (!job.reusedTab) {
+                chrome.tabs.remove(Number(tabId)).catch(() => {});
+            }
+        }
+    }
+    await writeFallbackJobs(jobs);
+
+    const productLabel = current.product?.name_en || current.product?.name || `ID ${productId}`;
+    const timeoutAttempts = safeInteger(current.timeoutAttempts, 0);
+
+    if (timeoutAttempts < 1) {
+        // Arabic: محاولة أخرى واحدة تلقائياً - يُعاد آخر القائمة، وتُعاد تهيئة تبويبه من الصفر.
+        // English: One automatic extra try - requeued at the end, its tab will be re-opened fresh.
+        state.pending.push({
+            ...current,
+            attempts: safeInteger(current.attempts, 0) + 1,
+            timeoutAttempts: timeoutAttempts + 1,
+            startedAt: undefined,
+            timeoutMs: undefined,
+            queuedAt: Date.now(),
+        });
+    } else {
+        state.results.push({
+            success: false,
+            productId,
+            product: current.product,
+            searchCode: current.searchCode,
+            styleCode: current.styleCode,
+            error: 'انتهت مهلة الانتظار (دقيقتين) بدون أي رد من صفحة المتجر - على الأغلب الجلسة تحتاج تسجيل دخول يدوي.',
+            timedOut: true,
+            completedAt: Date.now(),
+        });
+    }
+
+    state.current = null;
+    state.updatedAt = Date.now();
+    await writeBatchQueueState(state);
+
+    if (state.notifyEachProduct) {
+        await showBatchNotification(
+            'انتهت مهلة منتج',
+            timeoutAttempts < 1
+                ? `${productLabel} — تجاوز دقيقتين بدون رد، سيُعاد المحاولة آخر الدفعة.`
+                : `${productLabel} — تجاوز المهلة مرتين، سُجّل كفشل نهائي.`,
+        );
+    }
+
+    if (state.status === 'running') setTimeout(() => processBatchQueue(), 300);
+    else await maybeCompleteBatchQueue(state);
+}
+
 async function recordBatchSubmissionResult(result, job) {
     const state = await readBatchQueueState();
     if (!state || state.batchId !== job.batchId) return false;
 
     const current = state.current || {};
+    // Arabic: تجاهل أي رد متأخر يصل بعد ما انتهت مهلة هذا المنتج وانتقل الطابور لمنتج آخر،
+    // حتى لا يُنسب رد قديم خطأً للمنتج الحالي الجديد.
+    // English: Ignore a late reply that arrives after this product's timeout already moved the
+    // queue on to a different product, so a stale reply is never misattributed to the new current one.
+    if (Number(current.product?.local_id || 0) !== Number(result.productId || 0)) {
+        return false;
+    }
     const attempt = safeInteger(current.attempts, 0);
     const retryable = !result.success && attempt < state.maxRetries
         && !/انتهت جلسة|تسجيل الدخول|login/i.test(result.error || '');
@@ -1186,18 +1292,31 @@ chrome.tabs.onRemoved.addListener(async tabId => {
 // Arabic: استعادة طابور مستمر بعد إعادة تشغيل المتصفح أو تعليق Service Worker.
 // English: Recover a persisted queue after browser restart or service-worker suspension.
 async function recoverPersistedBatchQueue() {
-    const state = await readBatchQueueState();
+    let state = await readBatchQueueState();
     if (!state || state.status !== 'running') return;
     if (state.current) {
-        const jobs = await readFallbackJobs();
-        const hasLiveJob = Object.values(jobs).some(job => (
-            job.batchId === state.batchId
-            && Number(job.productId) === Number(state.current?.product?.local_id)
-        ));
-        if (!hasLiveJob) {
-            state.pending.unshift(state.current);
-            state.current = null;
-            await writeBatchQueueState(state);
+        // Arabic: أولاً - لو المنتج الحالي تجاوز مهلة الدقيقتين فعلاً (مثلاً بينما كانت الخدمة نائمة)، عامله كفشل فوراً.
+        // English: First - if the current product already exceeded the 2-minute timeout (e.g. while the service worker was asleep), handle it as a timeout right away.
+        const startedAt = Number(state.current.startedAt || 0);
+        const timeoutMs = Number(state.current.timeoutMs || BATCH_PRODUCT_TIMEOUT_MS);
+        if (startedAt && (Date.now() - startedAt) >= timeoutMs) {
+            await handleBatchProductTimeout(state);
+            state = await readBatchQueueState();
+        } else {
+            const jobs = await readFallbackJobs();
+            const hasLiveJob = Object.values(jobs).some(job => (
+                job.batchId === state.batchId
+                && Number(job.productId) === Number(state.current?.product?.local_id)
+            ));
+            if (!hasLiveJob) {
+                state.pending.unshift(state.current);
+                state.current = null;
+                await writeBatchQueueState(state);
+            } else if (startedAt) {
+                // Arabic: لسه شغالة ولها مهلة مضبوطة - أعد جدولة المراقب السريع (كان يمكن يضيع مع نوم الخدمة).
+                // English: Still running with a timeout set - reschedule the fast watchdog tick (it may have been lost when the service worker slept).
+                scheduleBatchWatchdogTick();
+            }
         }
     }
     await processBatchQueue();

@@ -302,7 +302,7 @@ async function saveConfiguration() {
                     action: 'UPDATE_CONFIG',
                     config: currentConfig,
                 });
-            } catch (_) {}
+            } catch (_) { }
         }
     }
 
@@ -1163,7 +1163,7 @@ async function refreshRecentProducts() {
     box.textContent = 'جارِ التحميل...';
 
     try {
-        const response = await fetch(`${API_BASE}/api/archive/recent?limit=15`, { cache: 'no-store' });
+        const response = await fetch(`${API_BASE}/api/archive/recent?limit=40`, { cache: 'no-store' });
         const data = await response.json();
 
         if (!response.ok || !data.success) {
@@ -1235,6 +1235,113 @@ function bindClick(id, handler) {
     });
 }
 
+// Arabic: تسجيل الدخول عبر الخادم
+// English: Login via server
+async function handleLoginOverlay() {
+    const errorBox = byId('loginErrorBox');
+    const name = byId('loginName').value.trim();
+    const password = byId('loginPass').value.trim();
+
+    if (!name) {
+        errorBox.textContent = 'أدخل الاسم أولاً.';
+        errorBox.style.display = 'block';
+        return;
+    }
+
+    errorBox.style.display = 'none';
+    byId('loginBtnCheck').textContent = 'جاري التحقق...';
+
+    try {
+        const response = await fetch(`${API_BASE}/api/sync/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, password })
+        });
+        const data = await response.json();
+
+        if (!response.ok || !data.success) {
+            throw new Error(data.error || 'فشل التحقق، تأكد من بياناتك أو من اتصال الأداة بالخادم.');
+        }
+
+        const role = data.member?.role || 'member';
+        await chrome.storage.local.set({ sessionLoggedIn: true, sessionRole: role, sessionTime: Date.now() });
+
+        applyRoleRestrictions(role);
+        byId('loginOverlay').style.display = 'none';
+        showStatus(`مرحباً ${data.member?.display_name || name} (${role})`, 'success');
+    } catch (e) {
+        errorBox.textContent = e.message;
+        errorBox.style.display = 'block';
+    } finally {
+        byId('loginBtnCheck').textContent = 'تسجيل الدخول';
+    }
+}
+
+// Arabic: فحص الجلسة وإغلاق الشاشة إذا كان مسجلاً
+// English: Check session and hide login screen if logged in
+async function checkLoginState() {
+    const stored = await chrome.storage.local.get(['sessionLoggedIn', 'sessionRole']);
+    if (stored.sessionLoggedIn) {
+        applyRoleRestrictions(stored.sessionRole);
+        byId('loginOverlay').style.display = 'none';
+    } else {
+        byId('loginOverlay').style.display = 'flex';
+    }
+}
+
+// Arabic: إخفاء التبويبات والمميزات المخصصة للأدمن عن الأعضاء
+// English: Hide admin tabs and features from regular members
+function applyRoleRestrictions(role) {
+    if (role !== 'admin' && role !== 'project_manager') {
+        const restrictedTabs = ['settings', 'reports', 'data', 'diagnostics'];
+        document.querySelectorAll('.tab-button').forEach(btn => {
+            if (restrictedTabs.includes(btn.dataset.tab)) {
+                btn.style.display = 'none';
+            }
+        });
+        document.querySelectorAll('.admin-only-element').forEach(el => {
+            el.style.display = 'none';
+        });
+        if (restrictedTabs.includes(document.querySelector('.tab-button.active')?.dataset.tab)) {
+            activateTab('product-type'); // switch to a public tab
+        }
+    } else {
+        document.querySelectorAll('.admin-only-element').forEach(el => {
+            el.style.display = 'block';
+        });
+        document.querySelectorAll('.tab-button').forEach(btn => {
+            btn.style.display = '';
+        });
+    }
+}
+
+// Arabic: نسخ الأسماء
+// English: Copy batches
+async function copyAdminBatchNames() {
+    const list = document.querySelectorAll('#recentProductsBox .store-card strong');
+    let names = [];
+    list.forEach(el => {
+        let text = el.textContent || '';
+        let parts = text.split('—');
+        if (parts.length > 1) {
+            names.push(parts[1].trim());
+        }
+    });
+
+    if (names.length === 0) {
+        showStatus('لا أجد منتجات معروضة لنسخها.', 'warning');
+        return;
+    }
+
+    const joined = names.join('\n+\n');
+    try {
+        await navigator.clipboard.writeText(joined);
+        showStatus('تم نسخ ' + names.length + ' أسماء بنجاح', 'success');
+    } catch (e) {
+        showStatus('فشل في نسخ النص: ' + e.message, 'error');
+    }
+}
+
 // Arabic: تحديث القيم المقترحة عند تبديل مزود الذكاء الاصطناعي دون حفظ المفتاح داخل Chrome.
 // English: Suggest provider-specific model and key environment values without storing secrets in Chrome.
 function handleAiProviderChange() {
@@ -1292,11 +1399,14 @@ async function initializePopup() {
     bindClick('syncNowBtn', triggerSyncNow);
     bindClick('refreshRecentBtn', refreshRecentProducts);
     bindClick('generateReportBtn', generateReport);
+    bindClick('loginBtnCheck', handleLoginOverlay);
+    bindClick('copyBatchNamesBtn', copyAdminBatchNames);
 
     byId('AIProvider')?.addEventListener('change', handleAiProviderChange);
 
     try {
         await loadSavedConfig();
+        await checkLoginState();
         await Promise.all([
             checkServer(),
             refreshArchiveStats(),

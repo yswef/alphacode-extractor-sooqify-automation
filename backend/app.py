@@ -460,13 +460,19 @@ def sync_call(action, payload=None, method="POST"):
     headers = {"X-Sync-Token": config["Token"], "Content-Type": "application/json"}
     try:
         if method == "GET":
-            response = requests.get(url, params={"action": action}, headers=headers, timeout=SYNC_HTTP_TIMEOUT)
-        else:
-            response = requests.post(url, params={"action": action}, headers=headers, json=payload or {}, timeout=SYNC_HTTP_TIMEOUT)
-        data = response.json()
-        if response.status_code >= 400 and not data.get("duplicate"):
-            return data, data.get("error") or f"HTTP {response.status_code}"
-        return data, None
+            if method == "GET":
+                response = requests.get(url, params={"action": action}, headers=headers, timeout=SYNC_HTTP_TIMEOUT)
+            else:
+                response = requests.post(url, params={"action": action}, headers=headers, json=payload or {}, timeout=SYNC_HTTP_TIMEOUT)
+            try:
+                data = response.json()
+            except ValueError as exc:
+                # Include a short snippet of the body to aid debugging when a non-JSON or empty response is returned
+                body_snippet = (response.text or '')[:800]
+                return None, f"Invalid sync response: {exc} | status={response.status_code} | body_snippet={body_snippet!r}"
+            if response.status_code >= 400 and not data.get("duplicate"):
+                return data, data.get("error") or f"HTTP {response.status_code}"
+            return data, None
     except requests.RequestException as exc:
         return None, str(exc)
     except ValueError as exc:

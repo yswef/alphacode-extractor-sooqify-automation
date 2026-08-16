@@ -607,7 +607,13 @@ def sync_reconcile_full():
         return {"success": False, "error": "sync_disabled"}
 
     # Pull the full remote archive (since="" asks for everything)
-    data, error = sync_call("pull", {"since": ""}, method="POST")
+    raw = sync_call("pull", {"since": ""}, method="POST")
+    # Defensive handling: sync_call should return (data, error). If it doesn't, log and return an error.
+    if isinstance(raw, tuple) and len(raw) == 2:
+        data, error = raw
+    else:
+        logger.warning("sync_call returned unexpected value during reconcile: %r", raw)
+        return {"success": False, "error": "invalid_sync_call_return"}
     if error:
         return {"success": False, "error": error}
 

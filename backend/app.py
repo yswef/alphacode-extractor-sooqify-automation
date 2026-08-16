@@ -729,6 +729,28 @@ def find_product_by_id(archive, product_id):
     return None
 
 
+@app.route('/api/sync/export', methods=['GET'])
+def export_local_archive():
+    """Export local archive entries (non-metadata) as a downloadable JSON file.
+    This provides a safe manual way to upload local products to the central server
+    when automated sync is blocked by upstream bot protection.
+    """
+    if not ROOT_DIR_CONFIGURED:
+        return jsonify({"success": False, "error": "no_root_folder"}), 409
+    try:
+        archive = load_archive()
+        entries = archive_entries(archive)
+        import tempfile
+        token = uuid.uuid4().hex
+        tmp = os.path.join(tempfile.gettempdir(), f"archive_export_{token}.json")
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            json.dump(entries, fh, ensure_ascii=False, indent=2)
+        return send_file(tmp, as_attachment=True, download_name=os.path.basename(tmp))
+    except Exception as exc:
+        logger.exception('Failed to export archive: %s', exc)
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
 def extract_settings(data):
     """Arabic: قراءة جميع الإعدادات مع قيم آمنة للمتاجر المستقبلية. English: Read all settings with safe defaults for future stores."""
     settings = data.get("Settings") if isinstance(data.get("Settings"), dict) else data

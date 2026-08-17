@@ -65,7 +65,7 @@ IMAGES_FOLDER_NAME = "صور"
 # English: Any product with fewer images than this is rejected and never added to the store (the store needs 6: one main + 5 gallery).
 MIN_REQUIRED_PRODUCT_IMAGES = 6
 
-ROOT_DIR = os.getenv("ALPHACODE_ROOT_DIR", r"Y:\\سوقفاي")
+ROOT_DIR = os.getenv("ALPHACODE_ROOT_DIR", SCRIPT_DIR)
 BASE_DIR = os.path.join(ROOT_DIR, IMAGES_FOLDER_NAME)
 EXCEL_PATH = os.path.join(ROOT_DIR, "items_bulk_format_nodata.xlsx")
 ARCHIVE_PATH = os.path.join(ROOT_DIR, "archive_db.json")
@@ -320,7 +320,7 @@ def recompute_paths():
 
     cfg = load_paths_config()
     chosen = normalize_text(cfg.get("RootDir"))
-    candidate = chosen or os.getenv("ALPHACODE_ROOT_DIR", r"Y:\\سوقفاي")
+    candidate = chosen or os.getenv("ALPHACODE_ROOT_DIR", SCRIPT_DIR)
 
     ROOT_DIR = candidate
     BASE_DIR = os.path.join(ROOT_DIR, IMAGES_FOLDER_NAME)
@@ -460,19 +460,13 @@ def sync_call(action, payload=None, method="POST"):
     headers = {"X-Sync-Token": config["Token"], "Content-Type": "application/json"}
     try:
         if method == "GET":
-            if method == "GET":
-                response = requests.get(url, params={"action": action}, headers=headers, timeout=SYNC_HTTP_TIMEOUT)
-            else:
-                response = requests.post(url, params={"action": action}, headers=headers, json=payload or {}, timeout=SYNC_HTTP_TIMEOUT)
-            try:
-                data = response.json()
-            except ValueError as exc:
-                # Include a short snippet of the body to aid debugging when a non-JSON or empty response is returned
-                body_snippet = (response.text or '')[:800]
-                return None, f"Invalid sync response: {exc} | status={response.status_code} | body_snippet={body_snippet!r}"
-            if response.status_code >= 400 and not data.get("duplicate"):
-                return data, data.get("error") or f"HTTP {response.status_code}"
-            return data, None
+            response = requests.get(url, params={"action": action}, headers=headers, timeout=SYNC_HTTP_TIMEOUT)
+        else:
+            response = requests.post(url, params={"action": action}, headers=headers, json=payload or {}, timeout=SYNC_HTTP_TIMEOUT)
+        data = response.json()
+        if response.status_code >= 400 and not data.get("duplicate"):
+            return data, data.get("error") or f"HTTP {response.status_code}"
+        return data, None
     except requests.RequestException as exc:
         return None, str(exc)
     except ValueError as exc:
@@ -596,9 +590,13 @@ def sync_background_worker():
 
 
 def sync_reconcile_full():
-    """Arabic: سحب كامل أرشيف السيرفر ثم رفع أي منتج محلي مفقود على السيرفر.
-    English: Pull the full server archive (no deletes/overwrites locally), then push
-    any locally-known product that the server does not have yet.
+    """Arabic: سحب كامل أرشيف السيرفر ودمج أي منتج غير موجود محلياً فيه (بدون حذف أو استبدال
+    أي شيء موجود عندك أصلاً)، ثم رفع أي منتج محلي غير موجود على السيرفر - بحيث تصير
+    نسختك المحلية ونسخة السيرفر متطابقتين بالكامل بالاتجاهين.
+    English: Pull the full server archive and merge in any product missing locally
+    (never deletes or overwrites anything already there), then push any local-only
+    product up to the server - so the local copy and the server end up fully mirrored
+    in both directions.
 
     Returns a summary dict suitable for JSONifying.
     """
@@ -607,25 +605,29 @@ def sync_reconcile_full():
         return {"success": False, "error": "sync_disabled"}
 
     # Pull the full remote archive (since="" asks for everything)
-    raw = sync_call("pull", {"since": ""}, method="POST")
-    # Defensive handling: sync_call should return (data, error). If it doesn't, log and return an error.
-    if isinstance(raw, tuple) and len(raw) == 2:
-        data, error = raw
-    else:
-        logger.warning("sync_call returned unexpected value during reconcile: %r", raw)
-        return {"success": False, "error": "invalid_sync_call_return"}
+    data, error = sync_call("pull", {"since": ""}, method="POST")
     if error:
         return {"success": False, "error": error}
 
     items = (data or {}).get("items") or {}
     server_keys = set(items.keys())
 
-    # Compute local-only keys under lock
+    # Arabic: نحسب "المحلي فقط" بناءً على الحالة قبل الدمج، وندمج منتجات السيرفر الناقصة
+    # محلياً في نفس القفل حتى لا يتعارض مع حفظ آخر يجري بالتوازي.
+    # English: Compute "local-only" from the state before merging, and merge in the
+    # server's missing products under the same lock to avoid racing a concurrent save.
     with SAVE_LOCK:
         archive = load_archive()
         local_keys = {k for k in archive.keys() if not str(k).startswith("_")}
+        to_push = [k for k in sorted(local_keys) if k not in server_keys]
 
-    to_push = [k for k in sorted(local_keys) if k not in server_keys]
+        pulled_in = 0
+        for key, item in items.items():
+            if key not in archive:
+                archive[key] = item
+                pulled_in += 1
+        if pulled_in:
+            save_json_atomic(ARCHIVE_PATH, archive)
 
     pushed = 0
     errors = []
@@ -651,6 +653,7 @@ def sync_reconcile_full():
         "success": True,
         "server_count": len(server_keys),
         "local_count": len(local_keys),
+        "pulled_in_count": pulled_in,
         "will_push_count": len(to_push),
         "pushed_immediate": pushed,
         "errors": errors,
@@ -727,28 +730,6 @@ def find_product_by_id(archive, product_id):
         if safe_int(item.get("id"), -2) == wanted_id:
             return item
     return None
-
-
-@app.route('/api/sync/export', methods=['GET'])
-def export_local_archive():
-    """Export local archive entries (non-metadata) as a downloadable JSON file.
-    This provides a safe manual way to upload local products to the central server
-    when automated sync is blocked by upstream bot protection.
-    """
-    if not ROOT_DIR_CONFIGURED:
-        return jsonify({"success": False, "error": "no_root_folder"}), 409
-    try:
-        archive = load_archive()
-        entries = archive_entries(archive)
-        import tempfile
-        token = uuid.uuid4().hex
-        tmp = os.path.join(tempfile.gettempdir(), f"archive_export_{token}.json")
-        with open(tmp, 'w', encoding='utf-8') as fh:
-            json.dump(entries, fh, ensure_ascii=False, indent=2)
-        return send_file(tmp, as_attachment=True, download_name=os.path.basename(tmp))
-    except Exception as exc:
-        logger.exception('Failed to export archive: %s', exc)
-        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 def extract_settings(data):

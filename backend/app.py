@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from io import BytesIO
 from urllib.parse import urlsplit, urlunsplit, unquote
 import Reports
+import watch_variant_extractor
 
 import certifi
 import pandas as pd
@@ -72,6 +73,7 @@ ARCHIVE_PATH = os.path.join(ROOT_DIR, "archive_db.json")
 AI_CACHE_PATH = os.path.join(ROOT_DIR, "ai_copy_cache.json")
 LOG_DIR = os.path.join(ROOT_DIR, "logs")
 LOG_PATH = os.path.join(LOG_DIR, "alphacode.log")
+PRICE_PATTERNS_LOG_PATH = os.path.join(LOG_DIR, "price_patterns.jsonl")
 ROOT_DIR_CONFIGURED = False  # Arabic: يصبح True فقط بعد اختيار/التحقق من مجلد صالح.
 
 # Arabic: مزودات الذكاء الاصطناعي مدعومة من الخادم دون أتمتة واجهة ChatGPT الشخصية.
@@ -340,7 +342,7 @@ def recompute_paths():
     English: Recompute every ROOT_DIR-derived path without silently creating anything
     unless the user has explicitly chosen it before via /api/paths/choose-folder.
     """
-    global ROOT_DIR, BASE_DIR, EXCEL_PATH, ARCHIVE_PATH, AI_CACHE_PATH, LOG_DIR, LOG_PATH, ROOT_DIR_CONFIGURED
+    global ROOT_DIR, BASE_DIR, EXCEL_PATH, ARCHIVE_PATH, AI_CACHE_PATH, LOG_DIR, LOG_PATH, PRICE_PATTERNS_LOG_PATH, ROOT_DIR_CONFIGURED
 
     cfg = load_paths_config()
     chosen = normalize_text(cfg.get("RootDir"))
@@ -353,6 +355,7 @@ def recompute_paths():
     AI_CACHE_PATH = os.path.join(ROOT_DIR, "ai_copy_cache.json")
     LOG_DIR = os.path.join(ROOT_DIR, "logs")
     LOG_PATH = os.path.join(LOG_DIR, "alphacode.log")
+    PRICE_PATTERNS_LOG_PATH = os.path.join(LOG_DIR, "price_patterns.jsonl")
 
     if chosen and not os.path.isdir(ROOT_DIR):
         try:
@@ -1947,6 +1950,112 @@ def download_pdf_report(filename):
     return send_from_directory(reports_dir, safe_filename, as_attachment=True)
 
 
+def log_price_pattern(source_text, raw_price_token, parsed_price, product_type, style_code, search_code, extra=None):
+    """
+    Arabic: يسجّل كل نمط سعر جديد يصادفه المستخرج في ملف JSONL منفصل (price_patterns.jsonl)
+            للمطور فقط — يساعد في رصد صيغ البائعين غير المعروفة وتحسين استخراج الأسعار لاحقاً.
+            لا يحتوي على بيانات شخصية ولا أسعار نهائية للمتجر.
+    English: Logs every price pattern the extractor encounters into a separate JSONL file
+             (price_patterns.jsonl) for the developer only - helps track unknown seller
+             formats and improve price extraction later. Contains no personal data or final
+             store prices.
+    """
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        entry = {
+            "ts": datetime.now().isoformat(),
+            "product_type": product_type,
+            "style_code": style_code or "",
+            "search_code": search_code or "",
+            "raw_token": str(raw_price_token or "")[:200],
+            "parsed_price": parsed_price,
+            "source_sample": str(source_text or "")[:300],
+            **(extra or {}),
+        }
+        with open(PRICE_PATTERNS_LOG_PATH, "a", encoding="utf-8") as file:
+            file.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        logger.debug("price_pattern log write failed: %s", exc)
+
+
+@app.route("/api/brands", methods=["GET"])
+def api_get_brands():
+    """
+    Arabic: يجلب قائمة البراندات من جدول brands في MySQL، مع fallback للإعدادات المحلية لو
+            المزامنة غير مفعّلة أو قاعدة البيانات غير متاحة. يُستخدم لتعبئة قائمة اختيار
+            البراند في واجهة المراجعة تلقائياً بدل الإدخال اليدوي الثابت.
+    English: Fetches the brands list from the MySQL brands table, with a fallback to local
+             settings if sync is disabled or the database is unavailable. Used to populate
+             the brand dropdown in the review UI automatically instead of a static hard-coded map.
+    """
+    sync_config = load_sync_config()
+    if sync_config.get("Enabled") and sync_config.get("ServerUrl") and sync_config.get("Token"):
+        data, error = sync_call("brands", {}, method="GET")
+        if not error and isinstance((data or {}).get("brands"), list):
+            return jsonify({"success": True, "source": "server", "brands": data["brands"]})
+
+    settings = load_settings()
+    brand_map_raw = settings.get("BrandMap") or "{}"
+    try:
+        brand_map = json.loads(brand_map_raw) if isinstance(brand_map_raw, str) else dict(brand_map_raw)
+    except (json.JSONDecodeError, TypeError):
+        brand_map = {}
+    brands = [{"id": v, "name": k} for k, v in brand_map.items()]
+    return jsonify({"success": True, "source": "local", "brands": brands})
+
+
+@app.route("/api/brands/add", methods=["POST"])
+def api_add_brand():
+    """
+    Arabic: يضيف براند جديد لجدول brands في MySQL عبر sync.php. المشغّل يدخل الاسم والـID
+            فقط، والإضافة تنعكس فوراً على كل الأجهزة التي تشاركت نفس المزامنة.
+    English: Adds a new brand to the MySQL brands table through sync.php. The operator
+             provides only the name and ID; the change is immediately reflected on every
+             synced device.
+    """
+    data = request.get_json(silent=True) or {}
+    name = normalize_text(data.get("name") or "").strip()
+    brand_id = data.get("id")
+    if not name:
+        return jsonify({"success": False, "error": "Brand name is required."}), 400
+    try:
+        brand_id = int(brand_id)
+        if brand_id <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Brand ID must be a positive integer."}), 400
+
+    result, error = sync_call("add_brand", {"name": name, "id": brand_id}, method="POST")
+    if error:
+        return jsonify({"success": False, "error": error}), 502
+    return jsonify({"success": True, "brand": {"name": name, "id": brand_id}})
+
+
+@app.route("/api/logs/price-patterns", methods=["GET"])
+def get_price_patterns_log():
+    """Arabic: تنزيل ملف أنماط الأسعار المكتشفة (للمطور فقط). English: Download the discovered price-patterns log (developer-only)."""
+    if not os.path.exists(PRICE_PATTERNS_LOG_PATH):
+        return jsonify({"success": False, "error": "No price patterns recorded yet."}), 404
+    return send_file(PRICE_PATTERNS_LOG_PATH, as_attachment=True, download_name="price_patterns.jsonl")
+
+
+def record_client_log_internal(level_name, event_name, message, details):
+    level = getattr(logging, level_name.upper(), logging.INFO)
+    logger.log(level, "CLIENT | event=%s | message=%s | details=%s", event_name, message, json.dumps(details, ensure_ascii=False))
+    # Arabic: لو الحدث من نوع اكتشاف نمط سعر جديد، نسجّله في ملف منفصل.
+    # English: If the event is a new price pattern discovery, log it separately.
+    if event_name in ("price_pattern_new", "price_pattern_unknown"):
+        log_price_pattern(
+            source_text=details.get("source_sample"),
+            raw_price_token=details.get("raw_token"),
+            parsed_price=details.get("parsed_price"),
+            product_type=details.get("product_type"),
+            style_code=details.get("style_code"),
+            search_code=details.get("search_code"),
+            extra={"event": event_name, "message": message},
+        )
+
+
 @app.route("/api/log/client", methods=["POST"])
 def record_client_log():
     """Arabic: تسجيل أخطاء وأحداث الإضافة في ملف Python الخارجي. English: Record extension errors and events in the external Python log."""
@@ -1955,26 +2064,16 @@ def record_client_log():
     event_name = normalize_text(data.get("event")) or "client_event"
     message = normalize_text(data.get("message")) or "No message"
     details = sanitize_log_value(data.get("details") or {})
+    record_client_log_internal(level_name, event_name, message, details)
+    return jsonify({"success": True})
+    """Arabic: تسجيل أخطاء وأحداث الإضافة في ملف Python الخارجي. English: Record extension errors and events in the external Python log."""
+    data = request.get_json(silent=True) or {}
+    level_name = normalize_text(data.get("level")).upper() or "INFO"
+    event_name = normalize_text(data.get("event")) or "client_event"
+    message = normalize_text(data.get("message")) or "No message"
+    details = sanitize_log_value(data.get("details") or {})
     level = getattr(logging, level_name, logging.INFO)
     logger.log(level, "CLIENT | event=%s | message=%s | details=%s", event_name, message, json.dumps(details, ensure_ascii=False))
-
-    try:
-        import os
-        from datetime import datetime
-        
-        # Save specific events to separate files (for developers)
-        if event_name == 'browser_error':
-            error_file = os.path.join(ROOT_DIR, "browser_errors.json") if ROOT_DIR_CONFIGURED else "browser_errors.json"
-            error_entry = {"time": datetime.now().isoformat(), "event": event_name, "message": message, "details": details}
-            with open(error_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(error_entry, ensure_ascii=False) + "\n")
-        elif event_name == 'pricing_miss':
-            price_file = os.path.join(ROOT_DIR, "unrecognized_prices.txt") if ROOT_DIR_CONFIGURED else "unrecognized_prices.txt"
-            with open(price_file, "a", encoding="utf-8") as f:
-                f.write(f"[{datetime.now().isoformat()}] Unrecognized price string: {message}\n")
-    except Exception as e:
-        logger.error("Failed to write to specialized log files: %s", e)
-
     return jsonify({"success": True})
 
 
@@ -2587,8 +2686,8 @@ ALLOWED BRANDS: {', '.join(allowed_brands) or configured_brand or 'Not provided'
     ]
 
 
-def make_provider_payload(runtime, messages, max_tokens, json_output=True):
-    """Arabic: تحويل الرسائل إلى تنسيق المزود المختار. English: Convert messages into the selected provider API format."""
+def make_provider_payload(runtime, messages, max_tokens, json_output=True, schema=None, schema_name="alphacode_product_copy"):
+    """Arabic: تحويل الرسائل إلى تنسيق المزود المختار - schema اختياري لاستخدامات غير توليد المحتوى (افتراضياً يبقى نفس سلوك الأسماء/الأوصاف كما هو). English: Convert messages into the selected provider API format - schema is optional for non-copy uses (defaults to the exact same name/description behavior as before)."""
     if runtime["api_mode"] == "responses":
         payload = {
             "model": runtime["model"],
@@ -2606,9 +2705,9 @@ def make_provider_payload(runtime, messages, max_tokens, json_output=True):
             payload["text"] = {
                 "format": {
                     "type": "json_schema",
-                    "name": "alphacode_product_copy",
+                    "name": schema_name,
                     "strict": True,
-                    "schema": product_copy_schema(),
+                    "schema": schema if schema is not None else product_copy_schema(),
                 }
             }
         return payload
@@ -2735,7 +2834,17 @@ def send_ai_request(runtime, payload, timeout_seconds, stage):
                 "error": message or "The provider rejected JSON mode.",
             }, 400
 
-        raise RuntimeError(message or f"AI provider HTTP {response.status_code}: {response.text[:500]}")
+        # Arabic: أي HTTP 4xx آخر غير متوقع (401/403/422 إلخ) — نرجّع tuple خطأ منظّم بدل
+        #         raise RuntimeError عشان كل الـendpoints تتعامل معه بنفس الطريقة.
+        # English: Any other unexpected HTTP 4xx (401/403/422 etc.) — return a structured
+        #          error tuple instead of raising RuntimeError so every caller handles it the same way.
+        return None, {
+            "success": False,
+            "error": message or f"AI provider HTTP {response.status_code}: {response.text[:200]}",
+            "http_status": response.status_code,
+            "stage": stage,
+            "provider": runtime.get("provider"),
+        }, response.status_code
 
     return response, None, None
 
@@ -2993,6 +3102,59 @@ def generate_ai_copy():
         }), 502
 
 
+@app.route("/api/ai/extract-watch-variants", methods=["POST"])
+def extract_watch_variants_endpoint():
+    """
+    Arabic: يستخرج الألوان وسعر كل لون فقط من النص الخام لمنتج ساعة، تلقائياً بعد سحب
+            بيانات المنتج - لا يولّد أي اسم أو وصف (هذي الحقول تبقى فاضية للإدخال اليدوي
+            لمنتجات الساعات). لا يخترع أي لون/سعر غير مكتوب صراحة بالنص.
+    English: Extracts only colors and each color's price from a watch product's raw text,
+             automatically right after the product data is pulled - never generates a
+             name or description (those stay empty for manual entry on watch products).
+             Never invents a color/price not explicitly written in the text.
+    """
+    data = request.get_json(silent=True) or {}
+    source_text = compact_prompt_text(data.get("SourceText"), 4000)
+    original_product_name = compact_prompt_text(data.get("OriginalProductName"), 400)
+    style_code = compact_prompt_text(data.get("StyleCode"), 80)
+    search_code = compact_prompt_text(data.get("SearchCode"), 80)
+
+    if not source_text and not original_product_name:
+        return jsonify({"success": False, "found": False, "error": "SourceText or OriginalProductName is required."}), 400
+
+    try:
+        runtime = resolve_ai_runtime(data)
+        messages = watch_variant_extractor.build_watch_variant_messages(
+            source_text, original_product_name, style_code, search_code,
+        )
+        payload = make_provider_payload(
+            runtime, messages, 500, json_output=True,
+            schema=watch_variant_extractor.WATCH_VARIANT_SCHEMA,
+            schema_name=watch_variant_extractor.WATCH_VARIANT_SCHEMA_NAME,
+        )
+        response, error, status = send_ai_request(runtime, payload, 60, "watch_variant_extraction")
+        if error is not None:
+            # Arabic: أي رفض من المزود (حتى وضع JSON) يُعتبر فشل استخراج - نتركه للمتصفح يقرر الإلغاء التلقائي.
+            # English: Any provider rejection (even JSON-mode) counts as an extraction failure - left for the extension to auto-cancel.
+            return jsonify({"success": False, "found": False, "error": error.get("error") or "AI request failed."}), (status or 502)
+
+        raw_text = extract_ai_output_text(response.json())
+        generated = watch_variant_extractor.validate_watch_variants(extract_first_json_object(raw_text))
+
+        return jsonify({
+            "success": True,
+            "found": generated["found"],
+            "base_price": generated["base_price"],
+            "variants": generated["variants"],
+            "notes": generated["notes"],
+            "provider": runtime["provider"],
+            "model": runtime["model"],
+        })
+    except (requests.RequestException, RuntimeError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        logger.warning("Watch variant extraction failed: %s", exc)
+        return jsonify({"success": False, "found": False, "error": str(exc)}), 502
+
+
 def resolve_store_images_for_upload(image_names, selected_indexes, main_image_index, upload_main_image_only=False):
     """Arabic: يحسب قائمة الصور النهائية للمتجر مع إبقاء الصورة الرئيسية فقط إذا كان الخيار مفعلًا. English: Resolve the final store image list while keeping only the main image when the option is enabled."""
     if not image_names:
@@ -3014,6 +3176,109 @@ def resolve_store_images_for_upload(image_names, selected_indexes, main_image_in
 
     gallery_names = [name for name in ordered_names if name != main_name]
     return [main_name] + gallery_names[:5]
+
+
+@app.route("/api/dry-run", methods=["POST"])
+def dry_run_extract():
+    """
+    Arabic: تجريبي فقط — يحاكي خطوات /api/extract الكاملة (التحقق، حساب الأسعار، بناء حمولة
+            سوقيفاي) ويرجّع تقريراً JSON شاملاً بدون رفع أي صور أو حفظ أي بيانات. آمن تماماً
+            للتشغيل في الإنتاج لأنه لا يلمس الأرشيف أو قاعدة البيانات أو السيرفر.
+    English: Test-only — simulates every step of /api/extract (validation, price calculation,
+             Sooqify payload build) and returns a comprehensive JSON report without uploading
+             any images or saving any data. Completely safe to run in production because it
+             never touches the archive, database, or server.
+    """
+    data = request.get_json(silent=True) or {}
+    settings = load_settings()
+    report = {
+        "dry_run": True,
+        "ts": datetime.now().isoformat(),
+        "input_summary": {
+            "name_en": compact_prompt_text(data.get("NameEN"), 100),
+            "style_code": compact_prompt_text(data.get("StyleCode"), 40),
+            "search_code": compact_prompt_text(data.get("SearchCode"), 40),
+            "product_type": data.get("ProductType", "shoes"),
+            "original_price_yuan": data.get("OriginalPrice"),
+            "image_count": len(data.get("Images") or []),
+            "sizes_raw": data.get("Sizes"),
+            "variants_raw": data.get("Variants"),
+        },
+        "settings_snapshot": {
+            "ExchangeRate": settings.get("ExchangeRate"),
+            "FeePercent": settings.get("FeePercent"),
+            "WatchFlatFeeYuan": settings.get("WatchFlatFeeYuan"),
+            "CategoryId": settings.get("CategoryId"),
+            "Stock": settings.get("Stock"),
+        },
+        "price_calculation": {},
+        "sooqify_payload_preview": {},
+        "validation_errors": [],
+    }
+
+    original_yuan = safe_float(data.get("OriginalPrice"), 0)
+    exchange_rate = safe_float(settings.get("ExchangeRate"), 1)
+    fee_percent = safe_float(settings.get("FeePercent"), 0)
+    watch_flat_fee = safe_float(settings.get("WatchFlatFeeYuan"), 0)
+    product_type = data.get("ProductType", "shoes")
+
+    if product_type == "watches":
+        total_yuan = original_yuan + watch_flat_fee
+        price_sar = round(total_yuan * exchange_rate)
+    else:
+        price_sar = round(original_yuan * exchange_rate * (1 + fee_percent / 100))
+        total_yuan = original_yuan
+
+    report["price_calculation"] = {
+        "original_yuan": original_yuan,
+        "watch_flat_fee_yuan": watch_flat_fee if product_type == "watches" else 0,
+        "total_yuan_before_exchange": total_yuan,
+        "exchange_rate": exchange_rate,
+        "fee_percent": fee_percent if product_type != "watches" else 0,
+        "final_price_sar": price_sar,
+    }
+
+    sizes_raw = data.get("Sizes") or []
+    sizes = parse_sizes_list(sizes_raw) if sizes_raw else []
+    raw_variants = data.get("Variants") if isinstance(data.get("Variants"), list) else []
+    watch_colors = []
+    for v in raw_variants:
+        if not isinstance(v, dict):
+            continue
+        clabel = normalize_text(str(v.get("color") or "")).strip()
+        try:
+            abs_p = float(v.get("price") or 0)
+        except (TypeError, ValueError):
+            abs_p = 0.0
+        if clabel and abs_p > 0:
+            watch_colors.append({"label": clabel, "_abs_price_yuan": abs_p})
+
+    if watch_colors and product_type == "watches":
+        variant_rows = [{"type": vc["label"], "price": round(vc["_abs_price_yuan"] * exchange_rate), "stock": settings.get("Stock", 10)} for vc in watch_colors]
+    elif sizes:
+        variant_rows = [{"type": s, "price": price_sar, "stock": settings.get("Stock", 10)} for s in sizes]
+    else:
+        variant_rows = [{"type": "Default", "price": price_sar, "stock": settings.get("Stock", 10)}]
+        report["validation_errors"].append("No sizes or colors provided - using Default variant.")
+
+    if not data.get("NameEN"):
+        report["validation_errors"].append("NameEN is empty.")
+    if original_yuan <= 0:
+        report["validation_errors"].append("OriginalPrice is zero or missing.")
+
+    report["sooqify_payload_preview"] = {
+        "name": data.get("NameEN", ""),
+        "description": data.get("DescriptionEN", ""),
+        "price": price_sar,
+        "category_id": settings.get("CategoryId"),
+        "variations": variant_rows,
+        "total_stock": sum(v["stock"] for v in variant_rows),
+        "image_count": len(data.get("Images") or []),
+    }
+
+    logger.info("DRY RUN | style=%s type=%s price_sar=%s variants=%s",
+        data.get("StyleCode"), product_type, price_sar, len(variant_rows))
+    return jsonify({"success": True, "report": report})
 
 
 @app.route("/api/extract", methods=["POST"])
@@ -3222,18 +3487,42 @@ def extract_product():
                 next_id, store_images, store_main_image, len(local_images),
             )
 
-            variations, choice_options, attributes, total_stock = build_variant_fields(
-                sizes,
-                data.get("WatchColors"),
-                data.get("PriceSAR"),
-                settings["Stock"],
-                settings,
-                settings["ProductType"],
-                data.get("OriginalPrice"),
-            )
-            # Arabic: نسخة Python من صفوف الأسعار لحفظها بالأرشيف - سوقيفاي تحتاجها كـ JSON نصي، لكن لوحة الأدمن تحتاج القائمة نفسها لتعبئة كل صف بسعره الصحيح بدل سعر واحد للكل.
-            # English: A plain Python copy of the price rows to persist in the archive - Sooqify needs it as a JSON string, but the admin panel needs the raw list to fill each row with its own price instead of one price for all.
-            variant_price_rows = json.loads(variations)
+            # Arabic: الإكستنشن يرسل الألوان بصيغة {color, price} (قيمة مطلقة باليوان).
+            # English: The extension sends colors as {color, price} (absolute CNY value).
+            raw_variants = data.get("Variants") if isinstance(data.get("Variants"), list) else []
+            watch_colors = []
+            for v in raw_variants:
+                if not isinstance(v, dict):
+                    continue
+                clabel = normalize_text(str(v.get("color") or "")).strip()
+                try:
+                    abs_price = float(v.get("price") or 0)
+                except (TypeError, ValueError):
+                    abs_price = 0.0
+                if clabel and abs_price > 0:
+                    watch_colors.append({"label": clabel, "_abs_price_yuan": abs_price})
+
+            if watch_colors and settings["ProductType"] == "watches":
+                watch_stock = settings["Stock"]
+                watch_attr_id = str(settings["WatchColorAttributeId"])
+                watch_attr_title = settings["WatchColorTitle"]
+                variant_price_rows = []
+                for vc in watch_colors:
+                    color_price_sar = round(vc["_abs_price_yuan"] * settings["ExchangeRate"])
+                    variant_price_rows.append({"type": vc["label"], "price": color_price_sar, "stock": watch_stock})
+                if not variant_price_rows:
+                    default_yuan = safe_float(data.get("OriginalPrice"), 0) + settings["WatchFlatFeeYuan"]
+                    variant_price_rows = [{"type": "Default", "price": round(default_yuan * settings["ExchangeRate"]), "stock": watch_stock}]
+                variations = json_cell(variant_price_rows)
+                choice_options = json_cell([{"name": f"choice_{watch_attr_id}", "title": watch_attr_title, "options": [r["type"] for r in variant_price_rows]}])
+                attributes = json_cell([watch_attr_id])
+                total_stock = watch_stock * len(variant_price_rows)
+            else:
+                variations, choice_options, attributes, total_stock = build_variant_fields(
+                    sizes, data.get("WatchColors"), data.get("PriceSAR"),
+                    settings["Stock"], settings, settings["ProductType"], data.get("OriginalPrice"),
+                )
+                variant_price_rows = json.loads(variations)
             effective_category_id = (
                 settings["WatchCategoryId"] if settings["ProductType"] == "watches" else settings["CategoryId"]
             )

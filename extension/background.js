@@ -13,7 +13,7 @@ const BATCH_QUEUE_KEY = 'alphacodeBatchQueueState';
 const BATCH_ALARM_NAME = 'alphacodeBatchQueueWake';
 // Arabic: مهلة المنتج الواحد أثناء الدفعة - لو صفحة المتجر علّقت (مثلاً تنتظر تسجيل دخول) ولم ترد خلال هذه المدة، يُعتبر فشلاً ويُعاد المنتج آخر القائمة تلقائياً.
 // English: Per-product timeout during a batch - if the store page hangs (e.g. waiting on login) and never responds within this window, it's treated as a failure and requeued at the end automatically.
-const BATCH_PRODUCT_TIMEOUT_MS = 120000; // 2 minutes
+const BATCH_PRODUCT_TIMEOUT_MS = 300000; // 5 minutes
 let batchLaunchLock = false;
 
 // Arabic: تحويل Uint8Array إلى Base64 على دفعات لتجنب تجاوز مكدس الاستدعاء.
@@ -914,7 +914,7 @@ async function handleBatchProductTimeout(state) {
             product: current.product,
             searchCode: current.searchCode,
             styleCode: current.styleCode,
-            error: 'انتهت مهلة الانتظار (دقيقتين) بدون أي رد من صفحة المتجر - على الأغلب الجلسة تحتاج تسجيل دخول يدوي.',
+            error: 'انتهت مهلة الانتظار (5 دقائق) بدون أي رد من صفحة المتجر - على الأغلب الجلسة تحتاج تسجيل دخول يدوي.',
             timedOut: true,
             completedAt: Date.now(),
         });
@@ -1337,6 +1337,54 @@ chrome.alarms.onAlarm.addListener(alarm => {
     if (alarm.name === BATCH_ALARM_NAME) recoverPersistedBatchQueue().catch(() => {});
 });
 recoverPersistedBatchQueue().catch(() => {});
+
+// =========================================================
+// Arabic: فحص دوري لتبويب "إصلاح البيانات" - يتحقق من الباك اند المحلي كل ساعة، وينبّه
+//         المتصفح فقط عند تغيّر حالة المشاكل عن آخر إشعار (لتفادي التكرار المزعج).
+// English: Periodic "Data repair" check - polls the local backend every hour and only
+//          fires a browser notification when the issue-state changes from the last
+//          notice (to avoid repetitive spam).
+// =========================================================
+const DATA_REPAIR_ALARM_NAME = 'alphacode_data_repair_check';
+const DATA_REPAIR_LAST_NOTICE_KEY = 'alphacode_data_repair_last_notice';
+
+async function checkDataRepairIssues() {
+    try {
+        const response = await fetch(`${LOCAL_API_BASE}/api/data-repair/scan`, { cache: 'no-store' });
+        if (!response.ok) return;
+        const data = await response.json();
+        if (!data?.success) return;
+
+        const missingCount = Object.keys(data.missing_fields || {}).length;
+        const extraCount = Object.keys(data.extra_fields || {}).length;
+        const errorsCount = (data.errors || []).length;
+        const signature = `${missingCount}|${extraCount}|${errorsCount}`;
+
+        if (missingCount === 0 && extraCount === 0 && errorsCount === 0) {
+            await chrome.storage.local.remove(DATA_REPAIR_LAST_NOTICE_KEY);
+            return;
+        }
+
+        const stored = await chrome.storage.local.get(DATA_REPAIR_LAST_NOTICE_KEY);
+        if (stored?.[DATA_REPAIR_LAST_NOTICE_KEY] === signature) return;
+
+        await showBatchNotification(
+            'AlphaCode - منتجات تحتاج إصلاح بيانات',
+            `${missingCount} نوع حقل ناقص، ${extraCount} نوع حقل زائد، ${errorsCount} خطأ. افتح تبويب "إصلاح البيانات".`,
+            'alphacode_data_repair_notice',
+        );
+        await chrome.storage.local.set({ [DATA_REPAIR_LAST_NOTICE_KEY]: signature });
+    } catch (_) {
+        // Arabic: الباك اند غير متاح مؤقتاً - تجاهل بصمت وحاول في الدورة التالية.
+        // English: Backend temporarily unavailable - fail silently and retry next cycle.
+    }
+}
+
+chrome.alarms.create(DATA_REPAIR_ALARM_NAME, { periodInMinutes: 60 });
+chrome.alarms.onAlarm.addListener(alarm => {
+    if (alarm.name === DATA_REPAIR_ALARM_NAME) checkDataRepairIssues().catch(() => {});
+});
+checkDataRepairIssues().catch(() => {});
 
 // Arabic: توجيه رسائل الإضافة إلى الوظيفة المناسبة.
 // English: Route extension messages to the proper background action.

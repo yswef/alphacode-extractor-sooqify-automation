@@ -73,13 +73,17 @@
 .alphacode-modal-box {
     background: #fff;
     width: min(760px, calc(100vw - 30px));
+    min-width: 400px;
     max-height: 92vh;
     overflow-y: auto;
+    resize: both;
     border-radius: 12px;
     padding: 20px;
     box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
     color: #2d3748;
     box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
 }
 
 .alphacode-modal-title {
@@ -814,15 +818,16 @@
     color: #475569;
 }
 
-    .alphacode-code-row input,
-    .batch-style-code,
-    #modStyleCode {
-        padding: 6px 8px;
-        border-radius: 6px;
-        border: 1px solid #cbd5e0;
-        min-width: 160px;
-        font-size: 13px;
-    }
+.alphacode-code-row input,
+.batch-style-code,
+#modStyleCode {
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid #cbd5e0;
+    min-width: 160px;
+    font-size: 13px;
+}
+
 .batch-progress-bar {
     height: 8px;
     border-radius: 999px;

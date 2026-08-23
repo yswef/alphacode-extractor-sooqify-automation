@@ -141,6 +141,7 @@
     <button class="tab-button" data-tab="sync">المزامنة والمجلد</button>
     <button class="tab-button" data-tab="reports">التقارير</button>
     <button class="tab-button" data-tab="diagnostics">التشخيص</button>
+    <button class="tab-button" data-tab="data-repair">إصلاح البيانات</button>
 </nav>
 
 <div id="folderSetupBanner" class="result-box warning" style="display:none; margin:10px 14px 0;">
@@ -430,6 +431,30 @@
             <div id="logPath"></div>
             <div class="actions" style="margin-bottom:10px;"><button class="btn btn-outline btn-grow" id="refreshLogsBtn" type="button">تحديث</button><button class="btn btn-accent btn-grow" id="downloadLogsBtn" type="button">تنزيل السجل</button></div>
             <pre id="logBox">اضغط تحديث لعرض السجل.</pre>
+        </article>
+    </section>
+
+    <section class="tab-panel" id="tab-data-repair">
+        <article class="card">
+            <h2>فحص المنتجات الناقصة حقول</h2>
+            <p class="hint">يقارن كل منتج محلي (ونسخة السيرفر إن كانت المزامنة مفعّلة) بالشكل الكامل للمنتج، ويكتشف الحقول الناقصة والزائدة والأخطاء - بدون أي تعديل تلقائي.</p>
+            <button class="btn btn-outline btn-block" id="dataRepairScanBtn" type="button">فحص الآن</button>
+            <div class="result-box" id="dataRepairScanSummary"></div>
+        </article>
+
+        <article class="card" id="dataRepairFieldsCard" style="display:none;">
+            <h2>حقول ناقصة - أدخل القيمة الافتراضية لكل حقل</h2>
+            <p class="hint">يُطبَّق فقط على المنتجات الناقصة لهذا الحقل تحديداً، ولا يُستبدل أي قيمة موجودة أصلاً. تُؤخذ نسخة احتياطية كاملة من archive_db.json تلقائياً قبل التطبيق، ثم يُرفع كل منتج مُعدَّل للسيرفر.</p>
+            <div id="dataRepairFieldsList"></div>
+            <button class="btn btn-primary btn-block" id="dataRepairApplyBtn" type="button">موافقة - تطبيق الإصلاح الآن</button>
+            <div class="result-box" id="dataRepairApplyResult"></div>
+        </article>
+
+        <article class="card">
+            <h2>تقارير</h2>
+            <p class="hint">ملفان منفصلان: تقرير الأخطاء (منتج بدون id، id مكرر، سجل تالف، أو تعارض مع السيرفر)، وتقرير الحقول الزائدة (موجودة بالمنتج وغير موجودة بالشكل المرجعي).</p>
+            <button class="btn btn-accent btn-block" id="dataRepairReportBtn" type="button">توليد وتنزيل التقارير</button>
+            <div class="result-box" id="dataRepairReportResult"></div>
         </article>
     </section>
 </main>

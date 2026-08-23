@@ -1223,6 +1223,147 @@ async function generateReport() {
     chrome.tabs.create({ url: data.download_url });
 }
 
+// =========================================================
+// Arabic: تبويب "إصلاح البيانات" - فحص المنتجات الناقصة/الزائدة حقولاً والأخطاء، تطبيق
+//         قيم افتراضية بعد موافقة صريحة، وتنزيل تقريرين منفصلين (أخطاء / حقول زائدة).
+// English: "Data repair" tab - scans products for missing/extra fields and errors,
+//          applies default values after explicit confirmation, and downloads two
+//          separate report files (errors / extra fields).
+// =========================================================
+
+let lastDataRepairScan = null;
+
+// Arabic: تسمية عربية مقروءة لكل حقل من الشكل المرجعي. English: A readable Arabic label for each reference-shape field.
+function fieldLabelArabic(fieldName) {
+    const labels = {
+        id: 'المعرّف (id)', product_type: 'نوع المنتج', name: 'الاسم', description: 'الوصف',
+        name_en: 'الاسم بالإنجليزية', description_en: 'الوصف بالإنجليزية', name_ar: 'الاسم بالعربية',
+        description_ar: 'الوصف بالعربية', brand_name: 'اسم البراند', brand_id: 'معرّف البراند',
+        style_code: 'Style Code', search_code: 'Search Code', price: 'السعر', variants: 'المقاسات والأسعار',
+        sizes: 'المقاسات', date: 'التاريخ', created_at: 'تاريخ الإنشاء', workflow_status: 'حالة التجهيز',
+        store_submission_status: 'حالة الإرسال للمتجر', folder: 'مجلد المنتج', brand_folder: 'مجلد البراند',
+        date_folder: 'مجلد التاريخ', added_by: 'أضافه', id_source: 'مصدر الـ ID',
+        upload_main_image_only: 'رفع الصورة الرئيسية فقط', images: 'الصور', store_images: 'صور المتجر',
+        store_main_image: 'الصورة الرئيسية', selected_image_indexes: 'فهارس الصور المختارة',
+        download_selected_images_only: 'تنزيل الصور المختارة فقط', source_image_count: 'عدد صور المصدر',
+        downloaded_image_count: 'عدد الصور المنزّلة', source_url: 'رابط المصدر',
+        supplier_store_name: 'اسم متجر المورد', supplier_store_id: 'معرّف متجر المورد', settings: 'الإعدادات',
+    };
+    return labels[fieldName] || fieldName;
+}
+
+// Arabic: فحص الأرشيف وعرض ملخص الحقول الناقصة/الزائدة والأخطاء، مع حقل إدخال لكل نوع حقل ناقص.
+// English: Scan the archive and render the missing/extra-fields and errors summary, with one input per missing field type.
+async function scanDataRepair() {
+    const summaryBox = byId('dataRepairScanSummary');
+    const fieldsCard = byId('dataRepairFieldsCard');
+    const fieldsList = byId('dataRepairFieldsList');
+    if (summaryBox) { summaryBox.className = 'result-box'; summaryBox.textContent = 'جارٍ الفحص...'; }
+
+    const response = await fetch(`${API_BASE}/api/data-repair/scan`, { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+        throw new Error(data.error || 'تعذر فحص البيانات.');
+    }
+
+    lastDataRepairScan = data;
+    const missingCount = Object.keys(data.missing_fields || {}).length;
+    const extraCount = Object.keys(data.extra_fields || {}).length;
+    const errorsCount = (data.errors || []).length;
+
+    if (summaryBox) {
+        const hasIssues = missingCount || extraCount || errorsCount;
+        summaryBox.className = hasIssues ? 'result-box warning' : 'result-box success';
+        summaryBox.innerHTML = hasIssues
+            ? `تم اكتشاف: ${missingCount} نوع حقل ناقص، ${extraCount} نوع حقل زائد، ${errorsCount} خطأ. راجع القسم أدناه وحمّل التقارير للتفاصيل.`
+            : 'لا توجد مشاكل - كل المنتجات مطابقة للشكل المرجعي.';
+    }
+
+    if (fieldsList) fieldsList.innerHTML = '';
+    if (missingCount > 0 && fieldsCard && fieldsList) {
+        fieldsCard.style.display = '';
+        Object.entries(data.missing_fields).forEach(([field, entries]) => {
+            const row = document.createElement('div');
+            row.className = 'field';
+            row.innerHTML = `
+                <label>${escapeHtmlForPopup(fieldLabelArabic(field))} <span class="hint">(${entries.length} منتج ناقصه)</span></label>
+                <input type="text" class="data-repair-field-input" data-field="${escapeHtmlForPopup(field)}" placeholder="القيمة الافتراضية لهذا الحقل">
+            `;
+            fieldsList.appendChild(row);
+        });
+    } else if (fieldsCard) {
+        fieldsCard.style.display = 'none';
+    }
+}
+
+// Arabic: تطبيق القيم الافتراضية اللي أدخلها المشغّل على الحقول الناقصة، بعد تأكيد صريح.
+// English: Apply the operator-entered default values to the missing fields, after explicit confirmation.
+async function applyDataRepairFix() {
+    const resultBox = byId('dataRepairApplyResult');
+    const inputs = document.querySelectorAll('.data-repair-field-input');
+    const values = {};
+    inputs.forEach(input => {
+        const field = input.dataset.field;
+        const value = input.value.trim();
+        if (field && value) values[field] = value;
+    });
+
+    if (Object.keys(values).length === 0) {
+        throw new Error('عبّئ قيمة واحدة على الأقل قبل الموافقة على الإصلاح.');
+    }
+
+    const confirmed = confirm(
+        `سيتم تعبئة ${Object.keys(values).length} نوع حقل على المنتجات الناقصة لها فقط، ثم رفعها للسيرفر. ` +
+        `سيُؤخذ نسخة احتياطية تلقائياً من archive_db.json قبل ذلك. متابعة؟`
+    );
+    if (!confirmed) return;
+
+    if (resultBox) { resultBox.className = 'result-box'; resultBox.textContent = 'جارٍ التطبيق...'; }
+
+    const response = await fetch(`${API_BASE}/api/data-repair/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ values }),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+        throw new Error(data.error || 'تعذر تطبيق الإصلاح.');
+    }
+
+    if (resultBox) {
+        resultBox.className = 'result-box success';
+        resultBox.innerHTML = `تم تعديل ${data.updated_products} منتج، ورُفع ${data.pushed} منها للسيرفر.` +
+            (data.push_errors && data.push_errors.length
+                ? `<br>تحذير: فشل رفع ${data.push_errors.length} منتج للسيرفر الآن (سيُعاد تلقائياً عبر طابور المزامنة).`
+                : '') +
+            (data.backup_path ? `<br>نسخة احتياطية: ${escapeHtmlForPopup(data.backup_path)}` : '');
+    }
+
+    await scanDataRepair();
+}
+
+// Arabic: توليد تقريري الأخطاء والحقول الزائدة وفتح رابطي التنزيل مباشرة.
+// English: Generate the errors and extra-fields reports and open both download links directly.
+async function downloadDataRepairReports() {
+    const resultBox = byId('dataRepairReportResult');
+    if (resultBox) { resultBox.className = 'result-box'; resultBox.textContent = 'جارٍ توليد التقارير...'; }
+
+    const response = await fetch(`${API_BASE}/api/data-repair/report`, { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+        throw new Error(data.error || 'تعذر توليد التقارير.');
+    }
+
+    if (resultBox) {
+        resultBox.className = 'result-box success';
+        resultBox.innerHTML =
+            `<a href="${data.errors_report.download_url}" target="_blank">تنزيل تقرير الأخطاء</a> — ` +
+            `<a href="${data.extra_fields_report.download_url}" target="_blank">تنزيل تقرير الحقول الزائدة</a>`;
+    }
+    chrome.tabs.create({ url: data.errors_report.download_url });
+    chrome.tabs.create({ url: data.extra_fields_report.download_url });
+}
+
 // Arabic: ربط حدث بأمان حتى لا تتعطل اللوحة إذا غاب عنصر اختياري.
 // English: Safely bind an event so optional missing controls cannot break the popup.
 function bindClick(id, handler) {
@@ -1438,6 +1579,9 @@ async function initializePopup() {
     bindClick('loginBtnCheck', handleLoginOverlay);
     bindClick('logoutBtn', handleLogout);
     bindClick('copyBatchNamesBtn', copyAdminBatchNames);
+    bindClick('dataRepairScanBtn', scanDataRepair);
+    bindClick('dataRepairApplyBtn', applyDataRepairFix);
+    bindClick('dataRepairReportBtn', downloadDataRepairReports);
 
     byId('AIProvider')?.addEventListener('change', handleAiProviderChange);
 

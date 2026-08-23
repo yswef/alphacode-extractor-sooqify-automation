@@ -14,6 +14,21 @@ const PRODUCT_CARD_SELECTOR = [
     '.feed-item'
 ].join(', ');
 
+const AlphaConsole = {
+    log: (msg, data = '') => console.log(`%c[AlphaCode] ${msg}`, 'color: #4CAF50; font-weight: bold; font-size: 13px;', data),
+    warn: (msg, data = '') => console.warn(`%c[AlphaCode] ${msg}`, 'color: #FF9800; font-weight: bold; font-size: 13px;', data),
+    error: (msg, data = '') => console.error(`%c[AlphaCode ❌] ${msg}`, 'color: #F44336; font-weight: bold; font-size: 14px;', data),
+    info: (msg, data = '') => console.info(`%c[AlphaCode] ${msg}`, 'color: #2196F3; font-weight: bold; font-size: 13px;', data)
+};
+
+// Task 5: Force SZWEGO to display prices in USD and Language in Chinese instead of relying on VPN dynamically
+try {
+    const domain = window.location.hostname.includes('szwego.com') ? '.szwego.com' : window.location.hostname;
+    document.cookie = `hl=zh; domain=${domain}; path=/; max-age=31536000`;
+    document.cookie = `language=zh; domain=${domain}; path=/; max-age=31536000`;
+    document.cookie = `currency=USD; domain=${domain}; path=/; max-age=31536000`;
+} catch (e) { }
+
 const DEFAULT_CONFIG = globalThis.ALPHACODE_DEFAULT_CONFIG || {
     CategoryId: 41, SubCategoryId: 42, UnitId: 1, Stock: 100,
     ExchangeRate: 0.5, AddedFeeYuan: 250, Discount: 0, DiscountType: 'percent',
@@ -46,6 +61,7 @@ const selectedBatchProducts = new Map();
 let activeBatchReviewOverlay = null;
 let latestBatchQueueState = null;
 let batchAiCooldownUntil = 0;
+let externalPricePatterns = null;
 
 // Arabic: حفظ اختيارات الدفعة كبيانات مستقلة عن عناصر DOM التي يعيد SZWEGO تدويرها أثناء التمرير.
 // English: Persist batch selections independently from DOM nodes recycled by SZWEGO virtualization.
@@ -167,9 +183,28 @@ async function logExtractorEvent(level, event, message, details = {}) {
             body: JSON.stringify(payload)
         });
     } catch (error) {
-        console.warn('AlphaCode log forwarding failed:', error);
+        AlphaConsole.warn('log forwarding failed:', error);
     }
 }
+
+// Arabic: تسجيل أخطاء المتصفح غير المعالجة لتسهيل المتابعة من قبل المطور.
+window.addEventListener('error', async (event) => {
+    try {
+        await logExtractorEvent('ERROR', 'browser_error', event.message || 'Unknown error', {
+            stack: event.error ? event.error.stack : 'No stack',
+            filename: event.filename,
+            lineno: event.lineno,
+            colno: event.colno
+        });
+    } catch (_) { }
+});
+window.addEventListener('unhandledrejection', async (event) => {
+    try {
+        await logExtractorEvent('ERROR', 'browser_error', event.reason?.message || 'Unhandled Promise Rejection', {
+            stack: event.reason?.stack
+        });
+    } catch (_) { }
+});
 
 // Arabic: تحميل الإعدادات أو القيم الافتراضية عند إعادة تحميل الإضافة.
 // English: Load saved configuration or defaults after an extension reload.
@@ -182,6 +217,19 @@ async function loadConfiguration() {
     if (!extractorConfig.SupplierStoreName) {
         extractorConfig.SupplierStoreName = 'BRANDKINGDOM';
     }
+
+    try {
+        if (isExtensionContextAvailable()) {
+            const url = chrome.runtime.getURL('price_patterns.json');
+            const res = await fetch(url);
+            if (res.ok) {
+                externalPricePatterns = await res.json();
+            }
+        }
+    } catch (e) {
+        console.warn('[AlphaCode] Could not load external price patterns:', e);
+    }
+
     return extractorConfig;
 }
 
@@ -254,6 +302,12 @@ function extractSearchCode(productBox) {
         );
         const match = value.match(/[A-Za-z0-9_-]{3,}/);
         if (match) return match[0];
+        // Arabic: تشخيص مؤقت - لقينا كتلة بعنوان مطابق لكن ما قدرنا نطلع منها كود صالح.
+        // English: Temporary diagnostic - found a matching-labeled block but couldn't extract a valid code from it.
+        AlphaConsole.info('[SearchCode] Stage 1: label matched but value extraction failed.', { label, rawValue: value, block });
+    }
+    if (attributeBlocks.length === 0) {
+        AlphaConsole.info('[SearchCode] Stage 1: no attribute blocks found at all with current selectors.', { productBox });
     }
 
     const clipboardCandidates = productBox.querySelectorAll('[data-clipboard-text]');
@@ -263,11 +317,22 @@ function extractSearchCode(productBox) {
         const value = normalizeText(candidate.getAttribute('data-clipboard-text'));
         const match = value.match(/[A-Za-z0-9_-]{3,}/);
         if (match) return match[0];
+        AlphaConsole.info('[SearchCode] Stage 2: clipboard candidate matched but value extraction failed.', { parentText, rawValue: value });
     }
 
     const fallbackMatch = normalizeText(productBox.innerText).match(
         /(?:Search\s*Code|搜索码|搜索代码|检索码)\s*[:：#]?\s*([A-Za-z0-9_-]{3,})/i
     );
+    if (!fallbackMatch) {
+        // Arabic: تشخيص مؤقت - فشلت كل المراحل الثلاث. لتشخيص السبب افتح Console بمتصفحك على
+        //         صفحة SZWEGO، وابحث عن سطور تبدأ بـ[AlphaCode][SearchCode] وأرسلها لنا.
+        // English: Temporary diagnostic - all three stages failed. To diagnose, open your
+        //          browser Console on the SZWEGO page, find lines starting with
+        //          [AlphaCode][SearchCode], and send them to us.
+        AlphaConsole.warn('[SearchCode] Stage 3: fallback regex on innerText also failed.', {
+            innerTextSample: normalizeText(productBox.innerText).slice(0, 400),
+        });
+    }
     return fallbackMatch ? fallbackMatch[1] : null;
 }
 
@@ -566,19 +631,51 @@ function extractWatchColorDeltas(sourceText) {
     return results;
 }
 
-// Arabic: منطق السعر محفوظ كما كان، حسب طلب المستخدم.
-// English: Price extraction intentionally remains unchanged.
+// Arabic: استخراج السعر باستخدام أنماط من ملف JSON خارجي مستندين للأنماط الافتراضية كحد أدنى.
+// English: Price extraction using patterns from an external JSON file with fallback defaults.
 function extractOriginalPrice(sourceText) {
     let originalPrice = 0;
-    const yuanMatch = sourceText.match(/(?:💰|¥|Y|يوان)\s*(\d+)/i);
-    if (yuanMatch) {
-        originalPrice = parseInt(yuanMatch[1], 10);
-    } else {
-        const possiblePrices = sourceText.match(/\b\d{2,4}\b/g);
-        if (possiblePrices && possiblePrices.length > 0) {
-            originalPrice = parseInt(possiblePrices[0], 10);
+
+    if (externalPricePatterns && Array.isArray(externalPricePatterns)) {
+        for (const config of externalPricePatterns) {
+            try {
+                const regex = new RegExp(config.pattern, config.flags || '');
+                const match = sourceText.match(regex);
+                if (match) {
+                    const priceStr = match[1] || match[0];
+                    if (priceStr) {
+                        const parsed = parseInt(priceStr.replace(/\D/g, ''), 10);
+                        if (!isNaN(parsed) && parsed > 0) {
+                            return parsed;
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn('[AlphaCode] Invalid price pattern:', config, e);
+            }
         }
     }
+
+    if (!originalPrice) {
+        const yuanMatch = sourceText.match(/(?:💰|¥|Y|يوان)\s*(\d+)/i);
+        if (yuanMatch) {
+            originalPrice = parseInt(yuanMatch[1], 10);
+        } else {
+            const possiblePrices = sourceText.match(/\b\d{2,4}\b/g);
+            if (possiblePrices && possiblePrices.length > 0) {
+                originalPrice = parseInt(possiblePrices[0], 10);
+            }
+        }
+    }
+
+    if (!originalPrice && sourceText && sourceText.length > 3) {
+        // Log missed prices natively via the API if it contains numbers or emojis
+        if (/[0-9🔥💰¥]/u.test(sourceText)) {
+            let possibleMiss = sourceText.slice(0, 50);
+            logExtractorEvent('WARNING', 'pricing_miss', possibleMiss, {}).catch(() => { });
+        }
+    }
+
     return originalPrice;
 }
 
@@ -940,7 +1037,14 @@ async function extractAllImages(productBox, searchCode, styleCode) {
     const combined = new Map();
     visibleImages.forEach(url => addUniqueImage(combined, url));
     bridgeImages.forEach(url => addUniqueImage(combined, url));
-    return Array.from(combined.values()).slice(0, Number(extractorConfig.MaxImages || 30));
+    let finalImages = Array.from(combined.values());
+
+    // Arabic: استبعاد الصورة الخامسة التي فيها إعلانات المورد التلقائية
+    if (finalImages.length >= 5) {
+        finalImages.splice(4, 1);
+    }
+
+    return finalImages.slice(0, Number(extractorConfig.MaxImages || 30));
 }
 
 // Arabic: دالة checkArchive جزء من تدفق الاستخراج ويمكن تخصيصها عند نقل الأداة.
@@ -1309,6 +1413,35 @@ function initializeStoreImageSelector(modalBox, images, configuredLimit) {
     });
 
     refresh();
+
+    const selectAllBtn = modalBox.querySelector('#selectAllMainImagesBtn');
+    const deselectAllBtn = modalBox.querySelector('#deselectAllMainImagesBtn');
+
+    if (selectAllBtn) {
+        selectAllBtn.addEventListener('click', () => {
+            selected.clear();
+            for (let i = 0; i < Math.min(limit, images.length); i++) {
+                selected.add(i);
+            }
+            if (!selected.has(mainIndex)) mainIndex = Array.from(selected)[0] ?? 0;
+            refresh();
+        });
+    }
+
+    if (deselectAllBtn) {
+        deselectAllBtn.addEventListener('click', () => {
+            selected.clear();
+            if (images.length) {
+                const newMain = mainIndex >= 0 && mainIndex < images.length ? mainIndex : 0;
+                selected.add(newMain);
+                mainIndex = newMain;
+            } else {
+                mainIndex = 0;
+            }
+            refresh();
+        });
+    }
+
     return {
         getSelectedIndexes() {
             const ordered = Array.from(selected).sort((a, b) => a - b);
@@ -1390,6 +1523,10 @@ function renderNewProductForm(context) {
         <section class="alphacode-image-selector-section">
             <div class="alphacode-image-selector-heading">
                 <div><strong>اختيار صور المتجر</strong><small>سيتم تنزيل كل الصور محلياً، ويمكن رفع ${Math.min(Number(extractorConfig.StoreImageLimit || 6), 6)} صور فقط إلى المتجر.</small></div>
+                <div class="batch-image-selector-actions">
+                    <button class="batch-select-first-images" type="button" id="selectAllMainImagesBtn">اختيار الكل</button>
+                    <button class="batch-clear-images" type="button" id="deselectAllMainImagesBtn">إلغاء التحديد</button>
+                </div>
                 <span id="alphacodeSelectedImageCounter"></span>
             </div>
             <div id="alphacodeImageSelector" class="alphacode-image-selector-grid"></div>
@@ -2865,8 +3002,8 @@ function renderBatchReviewSlides(modalBox, drafts) {
                             <span class="batch-image-counter"></span>
                         </div>
                         <div class="batch-image-selector-actions">
-                            <button class="batch-select-first-images" type="button">اختيار أول 6</button>
-                            <button class="batch-clear-images" type="button">الإبقاء على الرئيسية فقط</button>
+                            <button class="batch-select-first-images" type="button">اختيار الكل</button>
+                            <button class="batch-clear-images" type="button">إلغاء التحديد</button>
                         </div>
                         <div class="batch-image-selector-grid"></div>
                     </section>

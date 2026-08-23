@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 from urllib.parse import urlsplit, urlunsplit, unquote
 import Reports
@@ -140,6 +140,30 @@ EXCEL_COLUMNS = [
     "Variations", "ChoiceOptions", "AddOns", "Attributes", "StoreId", "ModuleId", "Status",
     "Veg", "Recommended",
 ]
+
+# Arabic: الشكل المرجعي الكامل لعنصر منتج (تبويب "إصلاح البيانات")، يُستخدم فقط لاكتشاف
+#         الحقول الناقصة/الزائدة مقارنة بمنتج مكتمل - لا يُستخدم في أي مكان آخر من التطبيق.
+# English: The canonical product-item shape (used by the "Data repair" tab) to detect
+#          missing/extra fields against a complete product - not used anywhere else.
+REFERENCE_PRODUCT_FIELDS = [
+    "id", "product_type", "name", "description", "name_en", "description_en",
+    "name_ar", "description_ar", "brand_name", "brand_id", "style_code", "search_code",
+    "price", "variants", "sizes", "date", "created_at", "workflow_status",
+    "store_submission_status", "folder", "brand_folder", "date_folder", "added_by",
+    "id_source", "upload_main_image_only", "images", "store_images", "store_main_image",
+    "selected_image_indexes", "download_selected_images_only", "source_image_count",
+    "downloaded_image_count", "source_url", "supplier_store_name", "supplier_store_id",
+    "settings",
+]
+
+# Arabic: حقول ميتاداتا/حالة متغيرة بطبيعتها، تُستبعد من مقارنة "تعارض بيانات مع السيرفر"
+#         حتى لا يُعتبر كل منتج متزامن حديثاً "تعارضاً" لمجرد اختلاف وقت المزامنة.
+# English: Naturally-volatile metadata/status fields, excluded from the "conflict with
+#          server" comparison so a recently-synced product isn't flagged for a timestamp diff.
+DATA_REPAIR_CONFLICT_IGNORED_FIELDS = {
+    "synced_at", "reserved_at", "workflow_status", "store_submission_status",
+    "workflow_updated_at", "workflow_details",
+}
 
 
 def normalize_text(value):
@@ -416,6 +440,16 @@ def get_product_image_dir(product):
 SYNC_LOCK = threading.RLock()
 SYNC_HTTP_TIMEOUT = (5, 10)  # (connect, read) seconds - short so the UI never hangs on a bad connection.
 
+# Arabic: مدة التهدئة بعد استقبال حظر 403 من الاستضافة (بالثواني) - قابلة للتعديل حسب سياسة استضافتك.
+# English: Cooldown after receiving a 403 host block (seconds) - tune to match your host's policy.
+SYNC_THROTTLE_COOLDOWN_SECONDS = 300
+
+# Arabic: تأخير بسيط بين الطلبات المتتالية أثناء المزامنة الجماعية (دفعات كبيرة)، لتفادي
+#         إغراق الاستضافة بعدد طلبات كبير خلال ثوانٍ قليلة والوصول لحد الحظر أصلاً.
+# English: A small pacing delay between consecutive requests during bulk syncing, so a
+#          large batch never floods the host fast enough to trigger a block in the first place.
+SYNC_REQUEST_PACING_SECONDS = 0.3
+
 
 def load_sync_config():
     """Arabic: قراءة إعدادات المزامنة (تفعيل، رابط، مفتاح، اسم المستخدم). English: Read sync settings (enabled, URL, token, user name)."""
@@ -452,10 +486,22 @@ def save_sync_queue(queue):
 
 
 def sync_call(action, payload=None, method="POST"):
-    """Arabic: نداء موحّد لسكربت sync.php مع مهلة قصيرة وأخطاء واضحة. English: A single call point into sync.php with a short timeout and clear errors."""
+    """Arabic: نداء موحّد لسكربت sync.php مع مهلة قصيرة وأخطاء واضحة، ودائرة أمان تمنع تكرار الطلبات لفترة بعد حظر 403 من الاستضافة. English: A single call point into sync.php with a short timeout and clear errors, plus a circuit breaker that stops retrying for a while after a host 403 block."""
     config = load_sync_config()
     if not config["Enabled"] or not config["ServerUrl"] or not config["Token"]:
         return None, "sync_disabled"
+
+    # Arabic: لو الاستضافة حظرتنا مؤخراً (403)، لا نعيد المحاولة فوراً حتى لا نطيل مدة الحظر.
+    # English: If the host recently blocked us (403), don't retry immediately or we extend the block.
+    state = load_sync_state()
+    throttled_until = state.get("throttled_until")
+    if throttled_until:
+        try:
+            if datetime.fromisoformat(throttled_until) > datetime.now():
+                return None, "sync_throttled"
+        except ValueError:
+            pass
+
     url = f"{config['ServerUrl']}/sync.php"
     headers = {"X-Sync-Token": config["Token"], "Content-Type": "application/json"}
     try:
@@ -463,6 +509,18 @@ def sync_call(action, payload=None, method="POST"):
             response = requests.get(url, params={"action": action}, headers=headers, timeout=SYNC_HTTP_TIMEOUT)
         else:
             response = requests.post(url, params={"action": action}, headers=headers, json=payload or {}, timeout=SYNC_HTTP_TIMEOUT)
+
+        if response.status_code == 403:
+            block_state = load_sync_state()
+            block_state["throttled_until"] = (datetime.now() + timedelta(seconds=SYNC_THROTTLE_COOLDOWN_SECONDS)).isoformat()
+            block_state["last_error"] = (
+                f"الاستضافة حظرت الطلبات مؤقتاً (403) بسبب كثرة/كبر الطلبات - "
+                f"توقفت المزامنة تلقائياً لمدة {SYNC_THROTTLE_COOLDOWN_SECONDS // 60} دقيقة."
+            )
+            save_sync_state(block_state)
+            logger.warning("Sync got HTTP 403 from host, backing off for %s seconds.", SYNC_THROTTLE_COOLDOWN_SECONDS)
+            return None, "sync_blocked_403"
+
         data = response.json()
         if response.status_code >= 400 and not data.get("duplicate"):
             return data, data.get("error") or f"HTTP {response.status_code}"
@@ -641,6 +699,9 @@ def sync_reconcile_full():
         except Exception as exc:
             logger.warning("Reconcile push failed for %s: %s", key, exc)
             errors.append({"key": key, "error": str(exc)})
+        # Arabic: تأخير بسيط بين كل طلب أثناء دفعة كبيرة، لتفادي إغراق الاستضافة والوصول لحد الحظر.
+        # English: A small pacing delay between requests during a large batch, to avoid flooding the host into a block.
+        time.sleep(SYNC_REQUEST_PACING_SECONDS)
 
     # Update sync state with pull time
     with SYNC_LOCK:
@@ -688,6 +749,187 @@ def clean_code_for_path(value):
     """Arabic: تحويل الكود إلى جزء آمن من اسم المسار. English: Convert a code into a path-safe suffix."""
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", normalize_text(value)).strip("-._")
     return cleaned[:40] or "NO-CODE"
+
+
+# =========================================================
+# Arabic: تبويب "إصلاح البيانات" - فحص المنتجات القديمة الناقصة حقولاً مقارنة بالشكل
+#         المرجعي الكامل، تصحيحها بقيم افتراضية يدخلها المشغّل بعد موافقة صريحة، وتوليد
+#         تقريري أخطاء/حقول-زائدة. قراءة فقط في الفحص - لا يُكتب أي شيء إلا داخل apply.
+# English: "Data repair" tab - scans older products missing fields against the full
+#          reference shape, fixes them with operator-entered default values after explicit
+#          confirmation, and generates errors/extra-fields reports. Scanning is read-only -
+#          nothing is written except inside apply.
+# =========================================================
+
+def scan_data_repair_issues():
+    """
+    Arabic: يفحص الأرشيف المحلي (وقاعدة السيرفر عند تفعيل المزامنة) ويرجّع:
+            missing_fields: كل حقل مرجعي ناقص مع قائمة المنتجات (key/id) الناقصة له.
+            extra_fields: كل حقل زائد غير موجود بالشكل المرجعي (للتبليغ فقط بدون تعديل).
+            errors: منتج بدون id، id مكرر، سجل تالف (ليس Object)، أو تعارض بيانات مع السيرفر.
+    English: Scans the local archive (and the server when sync is enabled) and returns
+             missing_fields (each missing reference field with the affected product
+             key/id), extra_fields (fields outside the reference shape, report-only), and
+             errors (no id, duplicate id, a corrupted non-dict entry, or a real data
+             conflict against the server copy of the same product).
+    """
+    raw_archive = load_archive()
+
+    missing_fields = {}
+    extra_fields = {}
+    errors = []
+    seen_ids = {}
+
+    for key, item in raw_archive.items():
+        if str(key).startswith("_"):
+            continue
+        if not isinstance(item, dict):
+            errors.append({
+                "type": "corrupted_entry", "key": key, "id": None,
+                "message": "هذا السجل ليس بصيغة منتج صالحة (Corrupted / not a JSON object).",
+            })
+            continue
+
+        product_id = item.get("id")
+        if product_id is None:
+            errors.append({
+                "type": "missing_id", "key": key, "id": None,
+                "message": "منتج بدون id (قد يكون سجل حجز معلّق).",
+            })
+        elif product_id in seen_ids:
+            errors.append({
+                "type": "duplicate_id", "key": key, "id": product_id,
+                "message": f"id مكرر مع المفتاح {seen_ids[product_id]}.",
+            })
+        else:
+            seen_ids[product_id] = key
+
+        for field in REFERENCE_PRODUCT_FIELDS:
+            if field not in item:
+                missing_fields.setdefault(field, []).append({"key": key, "id": product_id})
+
+        for field in item.keys():
+            if field not in REFERENCE_PRODUCT_FIELDS:
+                extra_fields.setdefault(field, []).append({"key": key, "id": product_id})
+
+    # Arabic: مقارنة مع نسخة السيرفر إن كانت المزامنة مفعّلة - قراءة فقط، بدون أي تعديل.
+    # English: Compare against the server copy when sync is enabled - read-only, no writes.
+    sync_config = load_sync_config()
+    if sync_config.get("Enabled"):
+        data, error = sync_call("pull", {"since": ""}, method="POST")
+        if error:
+            errors.append({
+                "type": "server_unreachable", "key": None, "id": None,
+                "message": f"تعذر الوصول للسيرفر لمقارنة البيانات: {error}",
+            })
+        else:
+            remote_items = (data or {}).get("items") or {}
+            for key, local_item in raw_archive.items():
+                if str(key).startswith("_") or not isinstance(local_item, dict):
+                    continue
+                remote_item = remote_items.get(key)
+                if not remote_item:
+                    continue
+                local_compare = {k: v for k, v in local_item.items() if k not in DATA_REPAIR_CONFLICT_IGNORED_FIELDS}
+                remote_compare = {k: v for k, v in remote_item.items() if k not in DATA_REPAIR_CONFLICT_IGNORED_FIELDS}
+                if local_compare != remote_compare:
+                    errors.append({
+                        "type": "server_conflict", "key": key, "id": local_item.get("id"),
+                        "message": "بيانات المنتج على الجهاز تختلف عن نسخة السيرفر.",
+                    })
+
+    return {"missing_fields": missing_fields, "extra_fields": extra_fields, "errors": errors}
+
+
+def apply_data_repair_fix(field_values):
+    """
+    Arabic: يعبّئ كل حقل ناقص بالقيمة الافتراضية اللي أدخلها المشغّل، لكل المنتجات المحلية
+            الناقصة لذلك الحقل فقط (لا يلمس منتجاً آخر ولا يستبدل قيمة موجودة أصلاً). يأخذ
+            نسخة احتياطية كاملة من archive_db.json قبل أي تعديل، يحفظ، ثم يرفع كل منتج
+            تم تعديله للسيرفر عبر آلية المزامنة الموجودة.
+    English: Fills each missing field with the operator-entered default value, only for
+             local products actually missing that field (never touches other products or
+             overwrites an existing value). Takes a full backup of archive_db.json before
+             any change, saves, then pushes every changed product to the server through
+             the existing sync mechanism.
+    """
+    if not isinstance(field_values, dict) or not field_values:
+        return {"success": False, "error": "No field values were provided."}
+
+    with SAVE_LOCK:
+        archive = load_archive()
+
+        backup_path = None
+        if os.path.exists(ARCHIVE_PATH):
+            backup_name = f"archive_db.backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            backup_path = os.path.join(os.path.dirname(ARCHIVE_PATH), backup_name)
+            shutil.copy2(ARCHIVE_PATH, backup_path)
+
+        updated_keys = []
+        per_field_counts = {}
+        for field, default_value in field_values.items():
+            count = 0
+            for key, item in archive.items():
+                if str(key).startswith("_") or not isinstance(item, dict):
+                    continue
+                if field not in item:
+                    item[field] = default_value
+                    if key not in updated_keys:
+                        updated_keys.append(key)
+                    count += 1
+            per_field_counts[field] = count
+
+        save_json_atomic(ARCHIVE_PATH, archive)
+
+    push_errors = []
+    pushed = 0
+    for key in updated_keys:
+        try:
+            sync_push_product(key, archive.get(key))
+            pushed += 1
+        except Exception as exc:
+            logger.warning("Data-repair sync push failed for %s: %s", key, exc)
+            push_errors.append({"key": key, "error": str(exc)})
+        # Arabic: نفس تأخير التهدئة المستخدم في المزامنة الجماعية، لتفادي إغراق الاستضافة.
+        # English: Same pacing delay used in bulk sync, to avoid flooding the host.
+        time.sleep(SYNC_REQUEST_PACING_SECONDS)
+
+    logger.info(
+        "Data repair applied. fields=%s updated_products=%s pushed=%s backup=%s",
+        per_field_counts, len(updated_keys), pushed, backup_path,
+    )
+    return {
+        "success": True, "backup_path": backup_path, "updated_products": len(updated_keys),
+        "per_field_counts": per_field_counts, "pushed": pushed, "push_errors": push_errors,
+    }
+
+
+def generate_data_repair_reports():
+    """Arabic: يولّد ملفي Excel: تقرير الأخطاء وتقرير الحقول الزائدة، داخل مجلد reports. English: Generates two Excel files - an errors report and an extra-fields report - inside the reports folder."""
+    scan = scan_data_repair_issues()
+    reports_dir = os.path.join(ROOT_DIR, "reports")
+    os.makedirs(reports_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    errors_filename = f"data_repair_errors_{timestamp}.xlsx"
+    errors_rows = [
+        {"النوع / Type": e["type"], "المفتاح / Key": e["key"], "ID": e["id"], "التفاصيل / Details": e["message"]}
+        for e in scan["errors"]
+    ]
+    pd.DataFrame(errors_rows, columns=["النوع / Type", "المفتاح / Key", "ID", "التفاصيل / Details"]).to_excel(
+        os.path.join(reports_dir, errors_filename), index=False
+    )
+
+    extra_filename = f"data_repair_extra_fields_{timestamp}.xlsx"
+    extra_rows = [
+        {"الحقل الزائد / Extra field": field, "المفتاح / Key": entry["key"], "ID": entry["id"]}
+        for field, entries in scan["extra_fields"].items() for entry in entries
+    ]
+    pd.DataFrame(extra_rows, columns=["الحقل الزائد / Extra field", "المفتاح / Key", "ID"]).to_excel(
+        os.path.join(reports_dir, extra_filename), index=False
+    )
+
+    return errors_filename, extra_filename
 
 
 def archive_entries(archive):
@@ -1603,6 +1845,19 @@ def login_sync():
             return jsonify({"success": True, "member": {"role": "admin", "display_name": "Admin (Local)"}})
         return jsonify({"success": False, "error": "المزامنة غير مفعلة أو الرابط غير متوفر."}), 400
 
+    # Arabic: السيرفر يرفض أي طلب بدون كود مزامنة (X-Sync-Token) على أي أكشن، حتى whoami -
+    #         فبدون الكود، تسجيل الدخول سيفشل دائماً برسالة عامة "Unauthorized" غير مفهومة.
+    #         لذلك نمنع المحاولة من الأساس ونعطي رسالة واضحة توجّه المستخدم لتبويب الإعدادات.
+    # English: The server rejects every request without a sync token (X-Sync-Token) on any
+    #          action, including whoami - so without the token, login would always fail with
+    #          a generic "Unauthorized" message. We stop the attempt upfront instead and
+    #          point the user to the settings tab.
+    if not token:
+        return jsonify({
+            "success": False,
+            "error": "المزامنة مفعّلة لكن كود المزامنة فاضي. أدخل كود المزامنة من تبويب الإعدادات أولاً ثم حاول تسجيل الدخول مرة أخرى.",
+        }), 400
+
     import urllib.request
     import urllib.error
     
@@ -1702,6 +1957,24 @@ def record_client_log():
     details = sanitize_log_value(data.get("details") or {})
     level = getattr(logging, level_name, logging.INFO)
     logger.log(level, "CLIENT | event=%s | message=%s | details=%s", event_name, message, json.dumps(details, ensure_ascii=False))
+
+    try:
+        import os
+        from datetime import datetime
+        
+        # Save specific events to separate files (for developers)
+        if event_name == 'browser_error':
+            error_file = os.path.join(ROOT_DIR, "browser_errors.json") if ROOT_DIR_CONFIGURED else "browser_errors.json"
+            error_entry = {"time": datetime.now().isoformat(), "event": event_name, "message": message, "details": details}
+            with open(error_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(error_entry, ensure_ascii=False) + "\n")
+        elif event_name == 'pricing_miss':
+            price_file = os.path.join(ROOT_DIR, "unrecognized_prices.txt") if ROOT_DIR_CONFIGURED else "unrecognized_prices.txt"
+            with open(price_file, "a", encoding="utf-8") as f:
+                f.write(f"[{datetime.now().isoformat()}] Unrecognized price string: {message}\n")
+    except Exception as e:
+        logger.error("Failed to write to specialized log files: %s", e)
+
     return jsonify({"success": True})
 
 
@@ -1929,6 +2202,64 @@ def clear_archive_data():
         except Exception as exc:
             logger.exception("Could not clear archive: %s", exc)
             return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route("/api/data-repair/scan", methods=["GET"])
+def api_data_repair_scan():
+    """Arabic: فحص الأرشيف المحلي (والسيرفر) وإرجاع الحقول الناقصة/الزائدة والأخطاء. English: Scan the local archive (and server) and return missing/extra fields plus errors."""
+    try:
+        result = scan_data_repair_issues()
+        return jsonify({"success": True, **result})
+    except Exception as exc:
+        logger.exception("Data-repair scan failed: %s", exc)
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route("/api/data-repair/apply", methods=["POST"])
+def api_data_repair_apply():
+    """Arabic: تطبيق القيم الافتراضية على الحقول الناقصة بعد موافقة صريحة من المشغّل. English: Apply default values to missing fields after explicit operator confirmation."""
+    data = request.get_json(silent=True) or {}
+    field_values = data.get("values") or {}
+    try:
+        result = apply_data_repair_fix(field_values)
+        return jsonify(result), (200 if result.get("success") else 400)
+    except Exception as exc:
+        logger.exception("Data-repair apply failed: %s", exc)
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route("/api/data-repair/report", methods=["POST"])
+def api_data_repair_report():
+    """Arabic: توليد تقريري الأخطاء والحقول الزائدة كملفي Excel. English: Generate the errors and extra-fields Excel reports."""
+    if not ROOT_DIR_CONFIGURED:
+        return jsonify({"success": False, "needs_folder_setup": True, "error": "No save folder is configured yet."}), 409
+    try:
+        errors_filename, extra_filename = generate_data_repair_reports()
+        return jsonify({
+            "success": True,
+            "errors_report": {
+                "filename": errors_filename,
+                "download_url": f"http://127.0.0.1:5000/api/data-repair/download/{errors_filename}",
+            },
+            "extra_fields_report": {
+                "filename": extra_filename,
+                "download_url": f"http://127.0.0.1:5000/api/data-repair/download/{extra_filename}",
+            },
+        })
+    except Exception as exc:
+        logger.exception("Data-repair report generation failed: %s", exc)
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route("/api/data-repair/download/<path:filename>", methods=["GET"])
+def api_data_repair_download(filename):
+    """Arabic: تنزيل ملف تقرير إصلاح بيانات مولّد مسبقاً. English: Download a previously generated data-repair report file."""
+    safe_filename = os.path.basename(unquote(filename))
+    reports_dir = os.path.join(ROOT_DIR, "reports")
+    file_path = os.path.join(reports_dir, safe_filename)
+    if not os.path.isfile(file_path):
+        return jsonify({"success": False, "error": "Report not found. Generate it first."}), 404
+    return send_from_directory(reports_dir, safe_filename, as_attachment=True)
 
 
 @app.route("/api/pending/<int:product_id>", methods=["GET"])

@@ -17,6 +17,8 @@
 - Add one product manually or select several products and run a persistent batch queue.
 - Notify the operating system after each submitted product and after batch completion.
 - Optionally sync two machines working on the same store, preventing duplicate product IDs and duplicate product additions.
+- Detect and repair older products missing newer fields via the **إصلاح البيانات** (Data Repair) tab, with operator-approved defaults, an automatic backup before any write, and downloadable error/extra-field reports.
+- Automatically back off for a cooldown period when the sync host returns HTTP 403 (rate-limit/anti-flood block), instead of hammering it with more requests.
 
 ## Batch workflow
 
@@ -51,13 +53,19 @@ extension/
   icons/
 hostinger/
   alphacode_storage/
-    sync.php             Central two-user sync endpoint (upload to your own hosting)
+    sync.php               Central sync endpoint (MySQL edition — same API contract as before)
+    db.php                 PDO connection helper (MySQL in production, SQLite for local tests)
+    db_config.php           Database credentials (fill in on the host, never commit real values)
+    sync_write_helpers.php Shared write/lock helpers used by sync.php
+    migrate_json_to_mysql.php  One-time import from an old archive_shared.json/id_counter.json
+    test_connection.php    Temporary connection debug tool — delete from the host after use
+    check_db_health.php    Read-only diagnostic: connection, required tables/columns, orphan rows, product counts
 docs/
   AlphaCode_Project_Documentation_AR.pdf
   AlphaCode_Project_Documentation_EN.pdf
 ```
 
-`sync.php` does not live in the extension or backend folders because it is not run locally — it is uploaded once to a PHP-capable web host and shared by both machines. It creates its own `archive_shared.json` and `id_counter.json` next to itself on first use.
+`sync.php` (and the rest of the `hostinger/alphacode_storage/` files) do not live in the extension or backend folders because they are not run locally — they are uploaded once to a PHP-capable web host with a MySQL database and shared by every machine. Run `schema.sql` once, fill in `db_config.php`, and change `$SECRET_TOKEN` in `sync.php` before going live.
 
 The backend also creates a few small runtime files next to `app.py` on first run — `paths_config.json`, `sync_config.json`, `sync_queue.json`, `sync_state.json`. These are machine-specific and should stay out of version control (add them to `.gitignore`).
 
@@ -110,6 +118,27 @@ Lets two operators run AlphaCode on two separate machines against the same Sooqi
 4. Save. From then on, new products are ID-reserved and duplicate-checked centrally before any image is downloaded, and every finished product is pushed to the shared archive automatically.
 
 If the sync server is unreachable, AlphaCode keeps working locally: it falls back to local ID numbering (flagged as `local_fallback` in the diagnostics list) and queues the push for automatic retry once the connection returns. Sync only covers products added after it is enabled — products already in an existing local archive are not retroactively uploaded.
+
+Every action on `sync.php`, including sign-in (`whoami`), requires the same secret token — so login is blocked upfront with a clear message ("أدخل كود المزامنة من تبويب الإعدادات أولاً") if the token field is empty, instead of failing later with a generic server rejection.
+
+### Sync resilience & host rate-limiting
+
+Shared hosts (Hostinger included) commonly rate-limit or briefly block a client that sends many requests in a short burst — this can happen the first time a device with a large local archive reconciles against the server, since every missing product is pushed one request at a time. To avoid that:
+
+- A short pacing delay (`SYNC_REQUEST_PACING_SECONDS`, default `0.3s`) is applied between consecutive push requests during a full reconcile or a Data Repair apply, so a big batch never floods the host fast enough to trigger a block in the first place.
+- If the host still responds with HTTP 403, AlphaCode stops calling it immediately, records a cooldown (`SYNC_THROTTLE_COOLDOWN_SECONDS`, default `300s` / 5 minutes) in `sync_state.json`, and shows a plain-language explanation in the sync status panel instead of retrying and extending the block. Normal syncing resumes automatically once the cooldown passes.
+
+Both values are constants near the top of `backend/app.py` and can be tuned to match your host's specific rate-limit policy.
+
+## Data repair tab (optional maintenance)
+
+Older products saved before a field existed can be missing it entirely. The **إصلاح البيانات** tab in the popup:
+
+1. Scans the local archive (and the server copy, when sync is enabled) against the full reference product shape.
+2. Shows one input per missing field type, and reports extra/unexpected fields and errors (no `id`, duplicate `id`, a corrupted entry, or a real data conflict with the server copy) without changing anything yet.
+3. After you fill in a default value per field and confirm, it fills that value **only** into the products actually missing it (never overwrites an existing value), takes an automatic timestamped backup of `archive_db.json` first, then pushes every changed product to the server.
+4. A background check runs every 60 minutes and shows a browser notification only when the issue state changes since the last notice, so it never repeats the same alert every hour.
+5. Two separate downloadable reports — errors and extra fields — are generated as `.xlsx` files inside the `reports/` folder.
 
 ## Important defaults
 
@@ -209,6 +238,18 @@ Check:
 ```
 
 Confirm Category ID, Subcategory ID, Brand ID, Unit ID, Size Attribute ID, and the current Sooqify session.
+
+### "المزامنة مفعّلة لكن كود المزامنة فاضي" on login
+
+Open the popup's **المزامنة والمجلد** tab, enter the secret token from `sync.php`, save, then try logging in again. The server rejects every request without it, including sign-in.
+
+### Sync host returning 403 / connection blocked for a while
+
+This is normally the shared host's own anti-flood protection reacting to a burst of requests (e.g., a large first-time reconcile). AlphaCode now backs off automatically for a few minutes and shows the reason in the sync status panel — no action needed beyond waiting. See **Sync resilience & host rate-limiting** above to tune the cooldown/pacing values.
+
+### Search Code keeps coming back empty
+
+`extension/content.js` logs each extraction stage to the browser Console under the `[AlphaCode][SearchCode]` prefix whenever it fails to find a value. Open DevTools Console on the SZWEGO product page, trigger the extraction, and check those log lines (they include the raw HTML/text AlphaCode looked at) to see exactly which stage — and which selector — is not matching the site's current markup.
 
 ## Documentation
 

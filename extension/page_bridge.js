@@ -305,8 +305,29 @@
     }
 
     function collectCapturedUrls(markers, visibleBasenames, output) {
+        // Arabic: لو ما عندنا أي علامة (searchCode/styleCode/صور ظاهرة)، لا نجمع أي شيء
+        //         من الشبكة — الاستجابات المخزّنة قد تحوي منتجات وبانرات وإعلانات لا علاقة لها
+        //         بالمنتج الحالي، والجمع بدون فلتر يسبب تلوث الصور.
+        // English: If we have no markers at all (no searchCode/styleCode/visible images),
+        //          do not collect anything from the network — cached responses may contain
+        //          products, banners and ads from other sessions, and collecting without a
+        //          filter causes image contamination.
+        const normalizedMarkers = markers
+            .map(m => String(m || '').trim().toLowerCase())
+            .filter(Boolean);
+        if (!normalizedMarkers.length) return;
+
         for (let index = capturedPayloads.length - 1; index >= 0; index -= 1) {
             const entry = capturedPayloads[index];
+            // Arabic: نتحقق أولاً أن URL مصدر الاستجابة نفسها تحوي إحدى العلامات (مستوى أعلى)
+            //         قبل الغوص في محتواها. يقضي على معظم التلوث من قوائم/بانرات لا صلة لها.
+            // English: First verify the response's own source URL contains at least one marker
+            //          (high-level pre-check) before diving into its content. This eliminates
+            //          most contamination from unrelated lists/banners cached in the same session.
+            const sourceUrl = String(entry.sourceUrl || '').toLowerCase();
+            const sourceMatches = normalizedMarkers.some(m => sourceUrl.includes(m));
+            if (!sourceMatches && sourceUrl) continue;
+
             collectImagesNearMarkers(entry.payload, markers, visibleBasenames, output);
         }
     }
@@ -329,10 +350,32 @@
             .map(value => String(value || '').trim())
             .filter(Boolean);
 
-        const urls = new Set();
-        collectDomUrls(target, urls);
-        collectReactUrls(target, markers, visibleBasenames, urls);
-        collectCapturedUrls(markers, visibleBasenames, urls);
+        // Arabic: تشخيص مؤقت - نجمع من كل مصدر بشكل منفصل (بدون تغيير النتيجة النهائية) عشان
+        //         نعرف بالضبط أي مصدر (DOM / React / استجابات شبكة سابقة) يجيب صور من منتج
+        //         مختلف، حتى لو searchCode/styleCode موجودين فعلاً.
+        // English: Temporary diagnostic - we collect from each source separately (without
+        //          changing the final result) to identify exactly which source (DOM / React
+        //          / previously-captured network responses) is pulling in images from a
+        //          different product, even when searchCode/styleCode are present.
+        const domUrls = new Set();
+        collectDomUrls(target, domUrls);
+
+        const reactUrls = new Set();
+        collectReactUrls(target, markers, visibleBasenames, reactUrls);
+
+        const capturedUrls = new Set();
+        collectCapturedUrls(markers, visibleBasenames, capturedUrls);
+
+        console.debug('[AlphaCode][ImageBridge] markers used:', markers, {
+            searchCode: request.searchCode, styleCode: request.styleCode, visibleBasenames,
+        });
+        console.debug('[AlphaCode][ImageBridge] DOM source found:', domUrls.size, Array.from(domUrls));
+        console.debug('[AlphaCode][ImageBridge] React-state source found:', reactUrls.size, Array.from(reactUrls));
+        console.debug('[AlphaCode][ImageBridge] Captured-network source found:', capturedUrls.size, Array.from(capturedUrls),
+            `(searched ${capturedPayloads.length} payloads, skipped those with unmatched sourceUrl)`
+        );
+
+        const urls = new Set([...domUrls, ...reactUrls, ...capturedUrls]);
 
         const response = {
             token,
@@ -346,4 +389,4 @@
 
     window.addEventListener('alphacode-bridge-request', respondToInspection);
     window.dispatchEvent(new Event('alphacode-bridge-ready'));
-})();
+})();   

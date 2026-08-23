@@ -14,21 +14,6 @@ const PRODUCT_CARD_SELECTOR = [
     '.feed-item'
 ].join(', ');
 
-const AlphaConsole = {
-    log: (msg, data = '') => console.log(`%c[AlphaCode] ${msg}`, 'color: #4CAF50; font-weight: bold; font-size: 13px;', data),
-    warn: (msg, data = '') => console.warn(`%c[AlphaCode] ${msg}`, 'color: #FF9800; font-weight: bold; font-size: 13px;', data),
-    error: (msg, data = '') => console.error(`%c[AlphaCode ❌] ${msg}`, 'color: #F44336; font-weight: bold; font-size: 14px;', data),
-    info: (msg, data = '') => console.info(`%c[AlphaCode] ${msg}`, 'color: #2196F3; font-weight: bold; font-size: 13px;', data)
-};
-
-// Task 5: Force SZWEGO to display prices in USD and Language in Chinese instead of relying on VPN dynamically
-try {
-    const domain = window.location.hostname.includes('szwego.com') ? '.szwego.com' : window.location.hostname;
-    document.cookie = `hl=zh; domain=${domain}; path=/; max-age=31536000`;
-    document.cookie = `language=zh; domain=${domain}; path=/; max-age=31536000`;
-    document.cookie = `currency=USD; domain=${domain}; path=/; max-age=31536000`;
-} catch (e) { }
-
 const DEFAULT_CONFIG = globalThis.ALPHACODE_DEFAULT_CONFIG || {
     CategoryId: 41, SubCategoryId: 42, UnitId: 1, Stock: 100,
     ExchangeRate: 0.5, AddedFeeYuan: 250, Discount: 0, DiscountType: 'percent',
@@ -61,7 +46,6 @@ const selectedBatchProducts = new Map();
 let activeBatchReviewOverlay = null;
 let latestBatchQueueState = null;
 let batchAiCooldownUntil = 0;
-let externalPricePatterns = null;
 
 // Arabic: حفظ اختيارات الدفعة كبيانات مستقلة عن عناصر DOM التي يعيد SZWEGO تدويرها أثناء التمرير.
 // English: Persist batch selections independently from DOM nodes recycled by SZWEGO virtualization.
@@ -183,31 +167,62 @@ async function logExtractorEvent(level, event, message, details = {}) {
             body: JSON.stringify(payload)
         });
     } catch (error) {
-        AlphaConsole.warn('log forwarding failed:', error);
+        console.warn('AlphaCode log forwarding failed:', error);
     }
 }
 
-// Arabic: تسجيل أخطاء المتصفح غير المعالجة لتسهيل المتابعة من قبل المطور.
-window.addEventListener('error', async (event) => {
-    try {
-        await logExtractorEvent('ERROR', 'browser_error', event.message || 'Unknown error', {
-            stack: event.error ? event.error.stack : 'No stack',
-            filename: event.filename,
-            lineno: event.lineno,
-            colno: event.colno
-        });
-    } catch (_) { }
-});
-window.addEventListener('unhandledrejection', async (event) => {
-    try {
-        await logExtractorEvent('ERROR', 'browser_error', event.reason?.message || 'Unhandled Promise Rejection', {
-            stack: event.reason?.stack
-        });
-    } catch (_) { }
-});
-
 // Arabic: تحميل الإعدادات أو القيم الافتراضية عند إعادة تحميل الإضافة.
 // English: Load saved configuration or defaults after an extension reload.
+// Arabic: ألوان Console للتمييز البصري السريع بين مستويات السجل.
+// English: Console colour helpers for quick visual distinction between log levels.
+const CONSOLE_STYLES = {
+    info:  'color:#3b82f6;font-weight:bold',
+    ok:    'color:#22c55e;font-weight:bold',
+    warn:  'color:#f59e0b;font-weight:bold',
+    error: 'color:#ef4444;font-weight:bold',
+    debug: 'color:#a855f7;font-weight:bold',
+    price: 'color:#f97316;font-weight:bold',
+};
+const acLog = (level, ...args) => console.log(`%c[AlphaCode][${level.toUpperCase()}]`, CONSOLE_STYLES[level] || '', ...args);
+
+// Arabic: كاش للبراندات المُحمَّلة من السيرفر — يُحدَّث مرة واحدة عند فتح الإضافة وعند طلب
+//         تحديث يدوي. يُستخدم لتعبئة قائمة الاختيار في واجهة المراجعة بدل الخريطة الثابتة.
+// English: Cache of brands loaded from the server - refreshed once on extension open and
+//          on manual refresh requests. Used to populate the review UI dropdown instead of
+//          a static hard-coded map.
+let _brandsCache = null;
+
+async function fetchBrandsFromServer(force = false) {
+    if (_brandsCache && !force) return _brandsCache;
+    try {
+        const res = await fetch(`${API_BASE_URL}/api/brands`, { cache: 'no-store' });
+        const data = await res.json();
+        if (res.ok && data.success && Array.isArray(data.brands)) {
+            _brandsCache = data.brands;
+            acLog('ok', `Brands loaded from ${data.source}: ${data.brands.length} brands`);
+            return _brandsCache;
+        }
+    } catch (err) {
+        acLog('warn', 'Could not load brands from server, using config fallback.', err);
+    }
+    _brandsCache = null;
+    return null;
+}
+
+// Arabic: يسجّل نمط سعر جديد صادفه المستخرج في ملف price_patterns.jsonl عبر الباك اند.
+// English: Records a newly-encountered price pattern to price_patterns.jsonl via the backend.
+function logPricePattern(rawToken, parsedPrice, productType, styleCode, searchCode, sourceSample) {
+    logExtractorEvent('info', 'price_pattern_new', `New price pattern: ${rawToken} → ${parsedPrice}`, {
+        raw_token: String(rawToken || '').slice(0, 200),
+        parsed_price: parsedPrice,
+        product_type: productType,
+        style_code: styleCode || '',
+        search_code: searchCode || '',
+        source_sample: String(sourceSample || '').slice(0, 300),
+    }).catch(() => {});
+    acLog('price', `Price pattern: "${rawToken}" → ${parsedPrice} (${productType})`);
+}
+
 async function loadConfiguration() {
     const result = await safeStorageGet(['extractorConfig']);
     extractorConfig = { ...DEFAULT_CONFIG, ...(result.extractorConfig || {}) };
@@ -217,19 +232,6 @@ async function loadConfiguration() {
     if (!extractorConfig.SupplierStoreName) {
         extractorConfig.SupplierStoreName = 'BRANDKINGDOM';
     }
-
-    try {
-        if (isExtensionContextAvailable()) {
-            const url = chrome.runtime.getURL('price_patterns.json');
-            const res = await fetch(url);
-            if (res.ok) {
-                externalPricePatterns = await res.json();
-            }
-        }
-    } catch (e) {
-        console.warn('[AlphaCode] Could not load external price patterns:', e);
-    }
-
     return extractorConfig;
 }
 
@@ -304,10 +306,10 @@ function extractSearchCode(productBox) {
         if (match) return match[0];
         // Arabic: تشخيص مؤقت - لقينا كتلة بعنوان مطابق لكن ما قدرنا نطلع منها كود صالح.
         // English: Temporary diagnostic - found a matching-labeled block but couldn't extract a valid code from it.
-        AlphaConsole.info('[SearchCode] Stage 1: label matched but value extraction failed.', { label, rawValue: value, block });
+        console.debug('[AlphaCode][SearchCode] Stage 1: label matched but value extraction failed.', { label, rawValue: value, block });
     }
     if (attributeBlocks.length === 0) {
-        AlphaConsole.info('[SearchCode] Stage 1: no attribute blocks found at all with current selectors.', { productBox });
+        console.debug('[AlphaCode][SearchCode] Stage 1: no attribute blocks found at all with current selectors.', { productBox });
     }
 
     const clipboardCandidates = productBox.querySelectorAll('[data-clipboard-text]');
@@ -317,7 +319,7 @@ function extractSearchCode(productBox) {
         const value = normalizeText(candidate.getAttribute('data-clipboard-text'));
         const match = value.match(/[A-Za-z0-9_-]{3,}/);
         if (match) return match[0];
-        AlphaConsole.info('[SearchCode] Stage 2: clipboard candidate matched but value extraction failed.', { parentText, rawValue: value });
+        console.debug('[AlphaCode][SearchCode] Stage 2: clipboard candidate matched but value extraction failed.', { parentText, rawValue: value });
     }
 
     const fallbackMatch = normalizeText(productBox.innerText).match(
@@ -329,7 +331,7 @@ function extractSearchCode(productBox) {
         // English: Temporary diagnostic - all three stages failed. To diagnose, open your
         //          browser Console on the SZWEGO page, find lines starting with
         //          [AlphaCode][SearchCode], and send them to us.
-        AlphaConsole.warn('[SearchCode] Stage 3: fallback regex on innerText also failed.', {
+        console.debug('[AlphaCode][SearchCode] Stage 3: fallback regex on innerText also failed.', {
             innerTextSample: normalizeText(productBox.innerText).slice(0, 400),
         });
     }
@@ -631,52 +633,75 @@ function extractWatchColorDeltas(sourceText) {
     return results;
 }
 
-// Arabic: استخراج السعر باستخدام أنماط من ملف JSON خارجي مستندين للأنماط الافتراضية كحد أدنى.
-// English: Price extraction using patterns from an external JSON file with fallback defaults.
+// Arabic: منطق السعر محفوظ كما كان، حسب طلب المستخدم.
+// English: Price extraction intentionally remains unchanged.
 function extractOriginalPrice(sourceText) {
     let originalPrice = 0;
-
-    if (externalPricePatterns && Array.isArray(externalPricePatterns)) {
-        for (const config of externalPricePatterns) {
-            try {
-                const regex = new RegExp(config.pattern, config.flags || '');
-                const match = sourceText.match(regex);
-                if (match) {
-                    const priceStr = match[1] || match[0];
-                    if (priceStr) {
-                        const parsed = parseInt(priceStr.replace(/\D/g, ''), 10);
-                        if (!isNaN(parsed) && parsed > 0) {
-                            return parsed;
-                        }
-                    }
-                }
-            } catch (e) {
-                console.warn('[AlphaCode] Invalid price pattern:', config, e);
-            }
+    const yuanMatch = sourceText.match(/(?:💰|¥|Y|يوان)\s*(\d+)/i);
+    if (yuanMatch) {
+        originalPrice = parseInt(yuanMatch[1], 10);
+    } else {
+        const possiblePrices = sourceText.match(/\b\d{2,4}\b/g);
+        if (possiblePrices && possiblePrices.length > 0) {
+            originalPrice = parseInt(possiblePrices[0], 10);
         }
     }
-
-    if (!originalPrice) {
-        const yuanMatch = sourceText.match(/(?:💰|¥|Y|يوان)\s*(\d+)/i);
-        if (yuanMatch) {
-            originalPrice = parseInt(yuanMatch[1], 10);
-        } else {
-            const possiblePrices = sourceText.match(/\b\d{2,4}\b/g);
-            if (possiblePrices && possiblePrices.length > 0) {
-                originalPrice = parseInt(possiblePrices[0], 10);
-            }
-        }
-    }
-
-    if (!originalPrice && sourceText && sourceText.length > 3) {
-        // Log missed prices natively via the API if it contains numbers or emojis
-        if (/[0-9🔥💰¥]/u.test(sourceText)) {
-            let possibleMiss = sourceText.slice(0, 50);
-            logExtractorEvent('WARNING', 'pricing_miss', possibleMiss, {}).catch(() => { });
-        }
-    }
-
     return originalPrice;
+}
+
+// Arabic: استخراج السعر من حقل "Selling price" الصريح داخل تفاصيل الخصائص (أدق من تخمين
+//         النص الحر) - يدعم رموز عملات متعددة (¥ $ ₣ إلخ) وفواصل الآلاف والكسور العشرية.
+//         لو المنتج فيه أكثر من سعر (أكثر من نتيجة "Selling price" لأكثر من نسخة/منشور)،
+//         يرجّع أول سعر فقط - القيم الباقية تظهر لاحقًا داخل تقرير الخصائص لمراجعة يدوية.
+// English: Extract the price from the explicit "Selling price" attribute field (more
+//          reliable than guessing from free text) - supports multiple currency symbols
+//          (¥ $ ₣ etc.) plus thousands separators and decimals. If the product has more
+//          than one "Selling price" match (more than one variant/post), only the first
+//          is returned here - the rest surface later in the attributes report for manual review.
+function extractStructuredPrice(productBox) {
+    if (!productBox) return 0;
+    const priceElements = productBox.querySelectorAll('[class*="AttributePrice_value"]');
+    for (const element of priceElements) {
+        const raw = normalizeText(element.getAttribute('data-clipboard-text') || element.textContent).replace(/,/g, '');
+        const match = raw.match(/(\d+(?:\.\d+)?)/);
+        if (match) return parseFloat(match[1]);
+    }
+    return 0;
+}
+
+// Arabic: كل الأسعار الصريحة الموجودة على المصدر (مو أول سعر بس) - لو أكثر من واحد، غالباً
+//         معناه إن المنشور فيه أكثر من نسخة/سعر (مثلاً ألوان مختلفة بأسعار مختلفة)، فتظهر
+//         كلها في لوحة المراجعة عشان المشغّل يراجعها يدوياً بدل ما نخمّن أيها الصحيح.
+// English: Every explicit price found on the source (not just the first) - more than one
+//          usually means the post has more than one version/price (e.g. different colors
+//          at different prices), so they all surface in the review panel for the operator
+//          to reconcile manually instead of us guessing which one is right.
+function extractAllStructuredPrices(productBox) {
+    if (!productBox) return [];
+    const priceElements = productBox.querySelectorAll('[class*="AttributePrice_value"]');
+    const values = [];
+    priceElements.forEach(element => {
+        const raw = normalizeText(element.getAttribute('data-clipboard-text') || element.textContent).replace(/,/g, '');
+        const match = raw.match(/(\d+(?:\.\d+)?)/);
+        if (match) values.push(parseFloat(match[1]));
+    });
+    return [...new Set(values)];
+}
+
+// Arabic: قائمة "Specs" الصريحة إن وجدت (مثل مقاس أو نسخة مختصرة) - حقل موجود أحياناً على
+//         SZWEGO تحت خصائص المنتج، منفصل عن Search Code والسعر.
+// English: The explicit "Specs" tag list when present (e.g. a size or short format code) -
+//          a field SZWEGO sometimes shows under a product's attributes, separate from the
+//          Search Code and price.
+function extractSpecs(productBox) {
+    if (!productBox) return [];
+    const specElements = productBox.querySelectorAll('[class*="AttributeFormats_item"]');
+    const values = [];
+    specElements.forEach(element => {
+        const value = normalizeText(element.getAttribute('data-clipboard-text') || element.textContent);
+        if (value) values.push(value);
+    });
+    return [...new Set(values)];
 }
 
 
@@ -1037,14 +1062,7 @@ async function extractAllImages(productBox, searchCode, styleCode) {
     const combined = new Map();
     visibleImages.forEach(url => addUniqueImage(combined, url));
     bridgeImages.forEach(url => addUniqueImage(combined, url));
-    let finalImages = Array.from(combined.values());
-
-    // Arabic: استبعاد الصورة الخامسة التي فيها إعلانات المورد التلقائية
-    if (finalImages.length >= 5) {
-        finalImages.splice(4, 1);
-    }
-
-    return finalImages.slice(0, Number(extractorConfig.MaxImages || 30));
+    return Array.from(combined.values()).slice(0, Number(extractorConfig.MaxImages || 30));
 }
 
 // Arabic: دالة checkArchive جزء من تدفق الاستخراج ويمكن تخصيصها عند نقل الأداة.
@@ -1201,7 +1219,7 @@ async function openExtractionModal(productBox, buttonElement) {
     const originalProductName = extractOriginalProductName(productBox);
     const searchCode = extractSearchCode(productBox);
     const styleCode = extractStyleCode(sourceText);
-    const originalPrice = extractOriginalPrice(sourceText);
+    const originalPrice = extractStructuredPrice(productBox) || extractOriginalPrice(sourceText);
 
     try {
         const [archiveData, images] = await Promise.all([
@@ -1413,35 +1431,6 @@ function initializeStoreImageSelector(modalBox, images, configuredLimit) {
     });
 
     refresh();
-
-    const selectAllBtn = modalBox.querySelector('#selectAllMainImagesBtn');
-    const deselectAllBtn = modalBox.querySelector('#deselectAllMainImagesBtn');
-
-    if (selectAllBtn) {
-        selectAllBtn.addEventListener('click', () => {
-            selected.clear();
-            for (let i = 0; i < Math.min(limit, images.length); i++) {
-                selected.add(i);
-            }
-            if (!selected.has(mainIndex)) mainIndex = Array.from(selected)[0] ?? 0;
-            refresh();
-        });
-    }
-
-    if (deselectAllBtn) {
-        deselectAllBtn.addEventListener('click', () => {
-            selected.clear();
-            if (images.length) {
-                const newMain = mainIndex >= 0 && mainIndex < images.length ? mainIndex : 0;
-                selected.add(newMain);
-                mainIndex = newMain;
-            } else {
-                mainIndex = 0;
-            }
-            refresh();
-        });
-    }
-
     return {
         getSelectedIndexes() {
             const ordered = Array.from(selected).sort((a, b) => a - b);
@@ -1523,10 +1512,6 @@ function renderNewProductForm(context) {
         <section class="alphacode-image-selector-section">
             <div class="alphacode-image-selector-heading">
                 <div><strong>اختيار صور المتجر</strong><small>سيتم تنزيل كل الصور محلياً، ويمكن رفع ${Math.min(Number(extractorConfig.StoreImageLimit || 6), 6)} صور فقط إلى المتجر.</small></div>
-                <div class="batch-image-selector-actions">
-                    <button class="batch-select-first-images" type="button" id="selectAllMainImagesBtn">اختيار الكل</button>
-                    <button class="batch-clear-images" type="button" id="deselectAllMainImagesBtn">إلغاء التحديد</button>
-                </div>
                 <span id="alphacodeSelectedImageCounter"></span>
             </div>
             <div id="alphacodeImageSelector" class="alphacode-image-selector-grid"></div>
@@ -2471,7 +2456,9 @@ function createBatchSelectionSnapshot(card, button, key) {
         originalProductName,
         searchCode,
         styleCode,
-        originalPrice: extractOriginalPrice(sourceText),
+        originalPrice: extractStructuredPrice(card) || extractOriginalPrice(sourceText),
+        allPrices: extractAllStructuredPrices(card),
+        specs: extractSpecs(card),
         sizes: extractSizes(sourceText),
         images: extractDomImages(card),
         imagePromise: null,
@@ -2808,9 +2795,14 @@ function initializeBatchDraftImageSelector(slide, draft) {
         grid.appendChild(card);
     });
 
+    const selectAllButton = slide.querySelector('.batch-select-all-images');
+    const deselectAllButton = slide.querySelector('.batch-deselect-all-images');
+
     if (selectionLocked) {
         if (selectFirstButton) selectFirstButton.disabled = true;
         if (clearButton) clearButton.disabled = true;
+        if (selectAllButton) selectAllButton.disabled = true;
+        if (deselectAllButton) deselectAllButton.disabled = true;
     }
 
     selectFirstButton?.addEventListener('click', () => {
@@ -2818,6 +2810,22 @@ function initializeBatchDraftImageSelector(slide, draft) {
         selected.clear();
         for (let index = 0; index < Math.min(limit, draft.images.length); index += 1) selected.add(index);
         mainIndex = Array.from(selected)[0] ?? 0;
+        refresh();
+    });
+
+    selectAllButton?.addEventListener('click', () => {
+        if (selectionLocked) return;
+        selected.clear();
+        for (let index = 0; index < Math.min(limit, draft.images.length); index += 1) selected.add(index);
+        refresh();
+    });
+
+    deselectAllButton?.addEventListener('click', () => {
+        if (selectionLocked) return;
+        const keep = mainIndex >= 0 && mainIndex < draft.images.length ? mainIndex : 0;
+        selected.clear();
+        selected.add(keep);
+        mainIndex = keep;
         refresh();
     });
 
@@ -2829,8 +2837,45 @@ function initializeBatchDraftImageSelector(slide, draft) {
         refresh();
     });
 
+    // Arabic: حساب السعر بالريال السعودي تلقائياً عند تغيير السعر اليوان أو الرسوم
+    // English: Auto-calculate SAR price when Yuan price or fee changes
+    const priceInput = slide.querySelector('.batch-price');
+    const feeInput = slide.querySelector('.batch-fee-yuan');
+    const sarPreview = slide.querySelector('.batch-price-sar-preview');
+
+    const updateSarPreview = () => {
+        const yuan = parseFloat(priceInput?.value || 0) || 0;
+        const fee = parseFloat(feeInput?.value || 0) || 0;
+        const rate = parseFloat(extractorConfig.ExchangeRate || 1);
+        const feePercent = parseFloat(extractorConfig.FeePercent || 0);
+        const type = slide.querySelector('.batch-type-btn.active')?.dataset.type || draft.productType;
+        let sar;
+        if (type === 'watches') {
+            sar = Math.round((yuan + fee) * rate);
+        } else {
+            sar = Math.round(yuan * rate * (1 + feePercent / 100));
+        }
+        if (sarPreview) sarPreview.textContent = `${sar} ر.س`;
+    };
+
+    priceInput?.addEventListener('input', updateSarPreview);
+    feeInput?.addEventListener('input', updateSarPreview);
+
+    // Arabic: زر نوع المنتج (shoes/watches) يدوي — يُحدّث نوع المسودة ويعيد حساب السعر
+    // English: Manual product type toggle — updates the draft type and recalculates the price
+    slide.querySelectorAll('.batch-type-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            slide.querySelectorAll('.batch-type-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            draft.productType = btn.dataset.type;
+            const variantsSection = slide.querySelector('.batch-variants')?.closest('.alphacode-field');
+            if (variantsSection) variantsSection.style.display = btn.dataset.type === 'watches' ? '' : 'none';
+            updateSarPreview();
+        });
+    });
+
+    updateSarPreview();
     refresh();
-}
 
 async function requestBatchAiCopy(draft, officialResearch = false) {
     const response = await fetch(`${API_BASE_URL}/api/ai/generate`, {
@@ -2881,7 +2926,9 @@ async function buildBatchDraft(entry, index, total, updateProgress) {
     const originalProductName = entry.originalProductName || (card ? extractOriginalProductName(card) : sourceText);
     const searchCode = entry.searchCode || (card ? extractSearchCode(card) : '');
     const styleCode = entry.styleCode || extractStyleCode(sourceText);
-    const originalPrice = Number(entry.originalPrice || extractOriginalPrice(sourceText));
+    const originalPrice = Number(entry.originalPrice) || (card ? extractStructuredPrice(card) : 0) || extractOriginalPrice(sourceText);
+    const allPrices = entry.allPrices?.length ? entry.allPrices : (card ? extractAllStructuredPrices(card) : []);
+    const specs = entry.specs?.length ? entry.specs : (card ? extractSpecs(card) : []);
     const sizes = uniqueSizes(entry.sizes?.length ? entry.sizes : extractSizes(sourceText));
 
     updateProgress?.(`قراءة المنتج ${index + 1} من ${total}...`);
@@ -2912,6 +2959,8 @@ async function buildBatchDraft(entry, index, total, updateProgress) {
         searchCode,
         styleCode,
         originalPrice,
+        allPrices,
+        specs,
         sizes,
         images,
         imageSelection: defaultBatchImageSelection(images),
@@ -2922,6 +2971,8 @@ async function buildBatchDraft(entry, index, total, updateProgress) {
         brandName: canonicalBrandName(sourceText),
         brandId: 0,
         aiStatus: archiveData.exists ? 'archived' : 'fallback',
+        productType: detectProductType(sourceText),
+        variants: [],
     };
     draft.brandId = resolveBrandId(draft.brandName);
 
@@ -2942,11 +2993,55 @@ async function buildBatchDraft(entry, index, total, updateProgress) {
                 draft.brandId = resolveBrandId(draft.brandName);
                 draft.sizes = uniqueSizes(archived.sizes || draft.sizes);
                 draft.originalPrice = Number(archived.original_price || draft.originalPrice || 0);
+                draft.variants = Array.isArray(archived.variants) ? archived.variants : draft.variants;
             }
         } catch (_) { }
     }
 
-    if (
+    // Arabic: مسار خاص بالساعات فقط - نلغي توليد الاسم/الوصف بالذكاء الاصطناعي كلياً (تبقى
+    //         فاضية للإدخال اليدوي أو لصق قالب JSON)، ونستخرج الألوان وسعر كل لون تلقائياً
+    //         مباشرة بعد سحب بيانات المنتج. لو ما رجع أي لون أو سعر صريح، نستبعد المنتج
+    //         تلقائياً من الدفعة بدل ما نعرضه فاضي.
+    // English: Watches-only path - AI name/description generation is skipped entirely
+    //          (left empty for manual entry or a pasted JSON template), and colors/prices
+    //          are extracted automatically right after the product data is pulled. If
+    //          nothing usable comes back, the product is auto-excluded from the batch
+    //          instead of being shown empty.
+    if (!archiveData.exists && draft.productType === 'watches') {
+        draft.nameEN = '';
+        draft.descriptionEN = '';
+        draft.nameAR = '';
+        draft.descriptionAR = '';
+        draft.aiStatus = 'watch_variant_pending';
+
+        updateProgress?.(`استخراج ألوان وأسعار الساعة ${index + 1} من ${total}...`);
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/ai/extract-watch-variants`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    SourceText: sourceText,
+                    OriginalProductName: originalProductName,
+                    StyleCode: styleCode,
+                    SearchCode: searchCode,
+                    AIProvider: extractorConfig.AIProvider,
+                    AIModel: extractorConfig.AIModel,
+                    AIBaseUrl: extractorConfig.AIBaseUrl,
+                    AIKeyEnv: extractorConfig.AIKeyEnv,
+                }),
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.success || !data.found) {
+                throw new Error(data.error || 'ما لقى الذكاء الاصطناعي أي لون أو سعر صريح بالنص.');
+            }
+            draft.variants = data.variants || [];
+            draft.originalPrice = Number(data.base_price) || (draft.variants[0]?.price) || draft.originalPrice;
+            draft.aiStatus = 'watch_variant_extracted';
+            draft.aiWatchNotes = data.notes || '';
+        } catch (error) {
+            return { error: new Error(`تم استبعاد المنتج ${index + 1} (ساعة) تلقائياً: ${error.message}`) };
+        }
+    } else if (
         !archiveData.exists
         && extractorConfig.AIAutoGenerate
         && Date.now() >= batchAiCooldownUntil
@@ -2994,7 +3089,8 @@ function renderBatchReviewSlides(modalBox, drafts) {
                 <section class="alphacode-batch-slide" data-index="${index}">
                     <div class="alphacode-batch-slide-top">
                         <label><input class="batch-include" type="checkbox" ${draft.include ? 'checked' : ''} ${draft.archiveData.workflow_status === 'submitted' ? 'disabled' : ''}> ${draft.archiveData.workflow_status === 'submitted' ? 'مضاف سابقاً للمتجر' : 'إضافة هذا المنتج'}</label>
-                        <span class="batch-draft-status ${draft.aiStatus}">${draft.archiveData.exists ? `مؤرشف ID ${draft.archiveData.id}` : (draft.aiStatus === 'generated' ? 'تم إنشاء المحتوى' : 'صياغة محلية احتياطية')}</span>
+                        <span class="batch-draft-status ${draft.aiStatus}">${draft.archiveData.exists ? `مؤرشف ID ${draft.archiveData.id}` : (draft.aiStatus === 'watch_variant_extracted' ? `ساعة - ${draft.variants.length} لون مستخرج` : draft.aiStatus === 'generated' ? 'تم إنشاء المحتوى' : 'صياغة محلية احتياطية')}</span>
+                        ${draft.aiWatchNotes ? `<span class="alphacode-note">${escapeHtml(draft.aiWatchNotes)}</span>` : ''}
                     </div>
                     <section class="batch-image-selector-section">
                         <div class="batch-image-selector-heading">
@@ -3002,8 +3098,10 @@ function renderBatchReviewSlides(modalBox, drafts) {
                             <span class="batch-image-counter"></span>
                         </div>
                         <div class="batch-image-selector-actions">
-                            <button class="batch-select-first-images" type="button">اختيار الكل</button>
-                            <button class="batch-clear-images" type="button">إلغاء التحديد</button>
+                            <button class="batch-select-first-images" type="button">اختيار أول 6</button>
+                            <button class="batch-select-all-images" type="button">تحديد الكل</button>
+                            <button class="batch-deselect-all-images" type="button">إلغاء الكل</button>
+                            <button class="batch-clear-images" type="button">الرئيسية فقط</button>
                         </div>
                         <div class="batch-image-selector-grid"></div>
                     </section>
@@ -3031,14 +3129,43 @@ function renderBatchReviewSlides(modalBox, drafts) {
                     </div>
                     <div class="alphacode-inline-grid">
                         <div class="alphacode-field"><label>البراند المتاح في المتجر</label><select class="batch-brand">${brandOptions}</select></div>
-                        <div class="alphacode-field"><label>السعر باليوان</label><input class="batch-price" type="number" value="${Number(draft.originalPrice || 0)}"></div>
+                        <div class="alphacode-field">
+                            <label>نوع المنتج</label>
+                            <div class="alphacode-type-toggle">
+                                <button class="batch-type-btn ${draft.productType === 'shoes' ? 'active' : ''}" data-type="shoes" type="button">👟 أحذية</button>
+                                <button class="batch-type-btn ${draft.productType === 'watches' ? 'active' : ''}" data-type="watches" type="button">⌚ ساعات</button>
+                            </div>
+                        </div>
+                        <div class="alphacode-field">
+                            <label>السعر باليوان (أساسي)</label>
+                            <input class="batch-price" type="number" step="0.01" value="${Number(draft.originalPrice || 0)}">
+                        </div>
+                        <div class="alphacode-field">
+                            <label>رسوم ثابتة إضافية (يوان)</label>
+                            <input class="batch-fee-yuan" type="number" step="0.01" value="${draft.productType === 'watches' ? Number(extractorConfig.WatchFlatFeeYuan || 0) : 0}">
+                        </div>
+                        <div class="alphacode-field alphacode-readonly-item">
+                            <span>الإجمالي بالريال السعودي</span>
+                            <strong class="batch-price-sar-preview">—</strong>
+                        </div>
                         <div class="alphacode-field alphacode-wide-field"><label>المقاسات</label><input class="batch-sizes" dir="ltr" value="${escapeHtml(draft.sizes.join(', '))}"></div>
                     </div>
+                    ${draft.productType === 'watches' ? `
+                    <div class="alphacode-field alphacode-wide-field">
+                        <label>الألوان والأسعار المستخرجة (سطر لكل لون: اللون : السعر - عدّل أو أضف يدوياً)</label>
+                        <textarea class="batch-variants" dir="rtl" rows="4" placeholder="أبيض : 199.99&#10;أسود : 249.99">${escapeHtml((draft.variants || []).map(v => `${v.color} : ${v.price}`).join('\n'))}</textarea>
+                    </div>` : ''}
                     <div class="alphacode-readonly-group">
                         <div class="alphacode-readonly-item"><span>Style Code</span><input class="batch-style-code" type="text" placeholder="ادخل/عدّل كود الستايل" value="${escapeHtml(draft.styleCode || '')}"></div>
                         <div class="alphacode-readonly-item"><span>Search Code</span><strong>${escapeHtml(draft.searchCode || '-')}</strong></div>
                         <div class="alphacode-readonly-item"><span>الصور المكتشفة</span><strong>${draft.images.length}</strong></div>
+                        ${draft.specs?.length ? `<div class="alphacode-readonly-item"><span>Specs (من المصدر)</span><strong>${escapeHtml(draft.specs.join(', '))}</strong></div>` : ''}
                     </div>
+                    ${draft.allPrices?.length > 1 ? `
+                    <div class="alphacode-batch-price-warning">
+                        ⚠️ لُقيت أكثر من سعر على منشور المصدر: <strong>${draft.allPrices.map(p => escapeHtml(String(p))).join(' / ')}</strong> يوان.
+                        غالباً يعني هذا إن للمنتج نسخ/ألوان بأسعار مختلفة - راجعها يدوياً واختر السعر الصحيح في حقل "السعر باليوان" أعلاه قبل الإضافة.
+                    </div>` : ''}
                     <button class="alphacode-ai-btn batch-official-regenerate" type="button" ${draft.archiveData.exists ? 'disabled' : ''}>🔎 بحث رسمي وإعادة صياغة هذا المنتج</button>
                     <span class="alphacode-ai-status batch-ai-status">${escapeHtml(draft.aiError || '')}</span>
                 </section>`).join('')}
@@ -3050,6 +3177,7 @@ function renderBatchReviewSlides(modalBox, drafts) {
         </div>
         <div class="alphacode-actions">
             <button class="alphacode-btn-submit" id="alphacodeStartBatch" type="button">بدء التجهيز والإضافة المتتابعة</button>
+            <button class="alphacode-btn-dry-run" id="alphacodeStartDryRun" type="button">🧪 تجريبي (Dry Run)</button>
             <button class="alphacode-btn-cancel" id="alphacodeCancelBatchReview" type="button">إلغاء</button>
         </div>`;
 
@@ -3132,8 +3260,9 @@ function renderBatchReviewSlides(modalBox, drafts) {
     };
 
     content.querySelector('#alphacodeCancelBatchReview').onclick = () => activeBatchReviewOverlay?.remove();
-    content.querySelector('#alphacodeStartBatch').onclick = async event => {
-        const includedDrafts = [];
+
+    const collectDraftsFromSlides = () => {
+        const included = [];
         drafts.forEach((draft, index) => {
             const slide = slides[index];
             draft.include = slide.querySelector('.batch-include').checked;
@@ -3144,10 +3273,64 @@ function renderBatchReviewSlides(modalBox, drafts) {
             draft.brandName = canonicalBrandName(slide.querySelector('.batch-brand').value);
             draft.brandId = resolveBrandId(draft.brandName);
             draft.originalPrice = Number(slide.querySelector('.batch-price').value || 0);
+            draft.feeYuan = Number(slide.querySelector('.batch-fee-yuan')?.value || 0);
+            draft.productType = slide.querySelector('.batch-type-btn.active')?.dataset.type || draft.productType;
             draft.sizes = uniqueSizes(slide.querySelector('.batch-sizes').value.split(/[,،\s]+/).filter(Boolean));
             draft.styleCode = (slide.querySelector('.batch-style-code')?.value || '').trim();
-            if (draft.include) includedDrafts.push(draft);
+            const variantsField = slide.querySelector('.batch-variants');
+            if (variantsField) {
+                draft.variants = variantsField.value.split('\n')
+                    .map(line => {
+                        const [color, price] = line.split(':').map(part => (part || '').trim());
+                        return { color, price: Number(price) };
+                    })
+                    .filter(item => item.color && item.price > 0);
+            }
+            if (draft.include) included.push(draft);
         });
+        return included;
+    };
+
+    // Arabic: Dry Run - يرسل كل مسودة لـ/api/dry-run ويعرض تقريراً شاملاً بدون رفع أي شيء.
+    // English: Dry Run - sends every draft to /api/dry-run and shows a comprehensive report
+    //          without uploading anything.
+    content.querySelector('#alphacodeStartDryRun').onclick = async event => {
+        const includedDrafts = collectDraftsFromSlides();
+        if (!includedDrafts.length) { alert('لم يتم اختيار أي منتج.'); return; }
+        event.currentTarget.disabled = true;
+        event.currentTarget.textContent = '⏳ جارٍ التجريب...';
+        const reports = [];
+        for (const draft of includedDrafts) {
+            try {
+                const res = await fetch(`${API_BASE_URL}/api/dry-run`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        NameEN: draft.nameEN, DescriptionEN: draft.descriptionEN,
+                        StyleCode: draft.styleCode, SearchCode: draft.searchCode,
+                        ProductType: draft.productType, OriginalPrice: draft.originalPrice,
+                        Sizes: draft.sizes, Variants: draft.variants || [],
+                        Images: draft.imageSelection?.selectedIndexes?.map(i => draft.images[i]).filter(Boolean) || [],
+                    }),
+                });
+                const data = await res.json();
+                reports.push({ draft_key: draft.key, style: draft.styleCode, ...data });
+            } catch (err) {
+                reports.push({ draft_key: draft.key, style: draft.styleCode, success: false, error: String(err) });
+            }
+        }
+        const blob = new Blob([JSON.stringify(reports, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = `alphacode_dry_run_${Date.now()}.json`; a.click();
+        URL.revokeObjectURL(url);
+        acLog('ok', 'Dry run complete', reports);
+        event.currentTarget.disabled = false;
+        event.currentTarget.textContent = '🧪 تجريبي (Dry Run)';
+    };
+
+    content.querySelector('#alphacodeStartBatch').onclick = async event => {
+        const includedDrafts = collectDraftsFromSlides();
 
         if (!includedDrafts.length) {
             alert('لم يتم اختيار أي منتج داخل شاشة المراجعة.');
@@ -3242,6 +3425,7 @@ async function prepareBatchDraftForStore(draft, batchId, batchIndex, batchTotal)
             BrandId: draft.brandId,
             Sizes: draft.sizes,
             OriginalPrice: draft.originalPrice,
+            Variants: draft.variants || [],
             PriceAfterFee: priceAfterFee,
             PriceSAR: priceSAR,
             SearchCode: draft.searchCode || 'NONE',
@@ -3589,6 +3773,9 @@ async function initializeExtractor() {
         }, 400);
     });
     observer.observe(document.body, { childList: true, subtree: true });
+    fetchBrandsFromServer().catch(() => {});
+}
+
 }
 
 initializeExtractor().catch(async error => {

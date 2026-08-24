@@ -633,31 +633,70 @@ function extractWatchColorDeltas(sourceText) {
     return results;
 }
 
-// Arabic: منطق السعر محفوظ كما كان، حسب طلب المستخدم.
-// English: Price extraction intentionally remains unchanged.
-function extractOriginalPrice(sourceText) {
-    let originalPrice = 0;
-    const yuanMatch = sourceText.match(/(?:💰|¥|Y|يوان)\s*(\d+)/i);
-    if (yuanMatch) {
-        originalPrice = parseInt(yuanMatch[1], 10);
-    } else {
-        const possiblePrices = sourceText.match(/\b\d{2,4}\b/g);
-        if (possiblePrices && possiblePrices.length > 0) {
-            originalPrice = parseInt(possiblePrices[0], 10);
-        }
+// Arabic: أنماط الأسعار المحمّلة من price_patterns.json — تُحمَّل مرة واحدة عند بدء التشغيل.
+// English: Price patterns loaded from price_patterns.json — loaded once at startup.
+let _pricePatterns = null;
+
+async function loadPricePatterns() {
+    if (_pricePatterns) return _pricePatterns;
+    try {
+        const url = chrome.runtime.getURL('price_patterns.json');
+        const res = await fetch(url);
+        const data = await res.json();
+        _pricePatterns = data.patterns || [];
+        acLog('ok', `Loaded ${_pricePatterns.length} price patterns from price_patterns.json`);
+    } catch (_) {
+        _pricePatterns = [];
     }
-    return originalPrice;
+    return _pricePatterns;
 }
 
-// Arabic: استخراج السعر من حقل "Selling price" الصريح داخل تفاصيل الخصائص (أدق من تخمين
-//         النص الحر) - يدعم رموز عملات متعددة (¥ $ ₣ إلخ) وفواصل الآلاف والكسور العشرية.
-//         لو المنتج فيه أكثر من سعر (أكثر من نتيجة "Selling price" لأكثر من نسخة/منشور)،
-//         يرجّع أول سعر فقط - القيم الباقية تظهر لاحقًا داخل تقرير الخصائص لمراجعة يدوية.
-// English: Extract the price from the explicit "Selling price" attribute field (more
-//          reliable than guessing from free text) - supports multiple currency symbols
-//          (¥ $ ₣ etc.) plus thousands separators and decimals. If the product has more
-//          than one "Selling price" match (more than one variant/post), only the first
-//          is returned here - the rest surface later in the attributes report for manual review.
+// Arabic: استخراج السعر باليوان من نص المنتج الخام. يُجرِّب الأنماط المحمّلة من price_patterns.json
+//         بالترتيب (أول تطابق يفوز)، ثم يسقط للمنطق الاحتياطي لو ما لقى شيء. لو اكتشف نمطاً
+//         غير مُعرَّف (رقم بدون رمز عملة صريح)، يُسجّله في price_patterns.jsonl للمراجعة.
+// English: Extracts the CNY price from the raw product text. Tries loaded patterns in order
+//          (first match wins), then falls back if nothing found. If it falls back to a bare
+//          number (no explicit currency symbol), it logs it to price_patterns.jsonl for review.
+function extractOriginalPrice(sourceText, styleCode, searchCode, productType) {
+    if (!sourceText) return 0;
+
+    const patterns = _pricePatterns || [];
+    for (const p of patterns) {
+        try {
+            const flags = p.flags || '';
+            const regex = new RegExp(p.regex, flags);
+            const match = sourceText.match(regex);
+            if (match && match[p.group]) {
+                const value = parseFloat(match[p.group]);
+                if (value > 0) return value;
+            }
+        } catch (_) {}
+    }
+
+    // Arabic: Fallback قديم — اليوان بالنص العربي أو رقم عريان (غير موثوق تماماً).
+    // English: Legacy fallback — Arabic "yuan" text or a bare number (less reliable).
+    const yuanMatch = sourceText.match(/(?:يوان)\s*(\d+)/i);
+    if (yuanMatch) return parseInt(yuanMatch[1], 10);
+
+    const bareMatch = sourceText.match(/\b(\d{2,4})\b/);
+    if (bareMatch) {
+        const value = parseInt(bareMatch[1], 10);
+        // Arabic: رقم عريان بدون رمز عملة — سجّل كنمط مجهول للمراجعة.
+        // English: Bare number with no currency symbol — log as unknown pattern for review.
+        if (typeof logPricePattern === 'function') {
+            logPricePattern(bareMatch[0], value, productType || 'unknown', styleCode, searchCode, sourceText.slice(0, 300));
+        }
+        return value;
+    }
+
+    return 0;
+}
+
+// Arabic: استخراج السعر من حقل "Selling price" الصريح — يُستخدم كـfallback فقط لو النص
+//         ما فيه سعر باليوان صريح (💰/¥/Y)، لأن حقل السعر قد يكون بالدولار حسب إعدادات VPN/لغة المتصفح.
+// English: Extract price from the explicit "Selling price" field — used as a fallback only
+//          when the text has no explicit CNY price, because the field currency depends on
+//          the browser's VPN/language settings and may show USD instead of CNY.
 function extractStructuredPrice(productBox) {
     if (!productBox) return 0;
     const priceElements = productBox.querySelectorAll('[class*="AttributePrice_value"]');
@@ -1205,9 +1244,44 @@ function createModalShell() {
         </div>
     `;
 
+    // Arabic: تطبيق الحجم الافتراضي المحفوظ مسبقًا (أو الحجم الأصلي إن لم يُحفظ بعد).
+    // English: Apply the previously saved default size (or the original size if not yet saved).
+    const savedW = localStorage.getItem('alphacode_modal_w');
+    const savedH = localStorage.getItem('alphacode_modal_h');
+    if (savedW) modalBox.style.width = savedW;
+    if (savedH) modalBox.style.height = savedH;
+
     overlay.appendChild(modalBox);
     document.body.appendChild(overlay);
     modalBox.querySelector('.alphacode-close-btn').onclick = () => overlay.remove();
+
+    // Arabic: تمدد شاشة المراجعة بسحب الحافة السفلية اليمنى + حفظ الحجم تلقائيًا.
+    // English: Resize the review panel by dragging the bottom-right corner + auto-save size.
+    const resizeHandle = document.createElement('div');
+    resizeHandle.className = 'alphacode-resize-handle';
+    modalBox.appendChild(resizeHandle);
+
+    let isResizing = false, startX = 0, startY = 0, startW = 0, startH = 0;
+    resizeHandle.addEventListener('mousedown', e => {
+        isResizing = true;
+        startX = e.clientX; startY = e.clientY;
+        startW = modalBox.offsetWidth; startH = modalBox.offsetHeight;
+        e.preventDefault();
+    });
+    document.addEventListener('mousemove', e => {
+        if (!isResizing) return;
+        const newW = Math.max(360, startW + (e.clientX - startX));
+        const newH = Math.max(300, startH + (e.clientY - startY));
+        modalBox.style.width = `${newW}px`;
+        modalBox.style.height = `${newH}px`;
+    });
+    document.addEventListener('mouseup', () => {
+        if (!isResizing) return;
+        isResizing = false;
+        localStorage.setItem('alphacode_modal_w', modalBox.style.width);
+        localStorage.setItem('alphacode_modal_h', modalBox.style.height);
+    });
+
     return { overlay, modalBox };
 }
 
@@ -1219,7 +1293,7 @@ async function openExtractionModal(productBox, buttonElement) {
     const originalProductName = extractOriginalProductName(productBox);
     const searchCode = extractSearchCode(productBox);
     const styleCode = extractStyleCode(sourceText);
-    const originalPrice = extractStructuredPrice(productBox) || extractOriginalPrice(sourceText);
+    const originalPrice = extractOriginalPrice(sourceText) || extractStructuredPrice(productBox);
 
     try {
         const [archiveData, images] = await Promise.all([
@@ -2456,7 +2530,7 @@ function createBatchSelectionSnapshot(card, button, key) {
         originalProductName,
         searchCode,
         styleCode,
-        originalPrice: extractStructuredPrice(card) || extractOriginalPrice(sourceText),
+        originalPrice: extractOriginalPrice(sourceText) || extractStructuredPrice(card),
         allPrices: extractAllStructuredPrices(card),
         specs: extractSpecs(card),
         sizes: extractSizes(sourceText),
@@ -2876,6 +2950,7 @@ function initializeBatchDraftImageSelector(slide, draft) {
 
     updateSarPreview();
     refresh();
+}
 
 async function requestBatchAiCopy(draft, officialResearch = false) {
     const response = await fetch(`${API_BASE_URL}/api/ai/generate`, {
@@ -2926,7 +3001,7 @@ async function buildBatchDraft(entry, index, total, updateProgress) {
     const originalProductName = entry.originalProductName || (card ? extractOriginalProductName(card) : sourceText);
     const searchCode = entry.searchCode || (card ? extractSearchCode(card) : '');
     const styleCode = entry.styleCode || extractStyleCode(sourceText);
-    const originalPrice = Number(entry.originalPrice) || (card ? extractStructuredPrice(card) : 0) || extractOriginalPrice(sourceText);
+    const originalPrice = Number(entry.originalPrice) || extractOriginalPrice(sourceText) || (card ? extractStructuredPrice(card) : 0);
     const allPrices = entry.allPrices?.length ? entry.allPrices : (card ? extractAllStructuredPrices(card) : []);
     const specs = entry.specs?.length ? entry.specs : (card ? extractSpecs(card) : []);
     const sizes = uniqueSizes(entry.sizes?.length ? entry.sizes : extractSizes(sourceText));
@@ -3774,8 +3849,7 @@ async function initializeExtractor() {
     });
     observer.observe(document.body, { childList: true, subtree: true });
     fetchBrandsFromServer().catch(() => {});
-}
-
+    loadPricePatterns().catch(() => {});
 }
 
 initializeExtractor().catch(async error => {

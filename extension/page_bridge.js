@@ -15,6 +15,20 @@
     const MAX_CAPTURE_TEXT = 4 * 1024 * 1024;
     const capturedPayloads = [];
 
+    // Arabic: نفس منطق تلوين الـConsole المستخدم في content.js، لكن مستقل لأن page_bridge.js
+    //         يعمل في عالم (MAIN world) منفصل ولا يستطيع الوصول لدوال content.js مباشرة.
+    // English: Same console-colouring logic used in content.js, kept standalone because
+    //          page_bridge.js runs in the isolated MAIN world and can't reach content.js's helpers.
+    const BRIDGE_STYLES = {
+        debug: 'background:#4c1d95;color:#d8b4fe;font-weight:bold;padding:2px 6px;border-radius:3px',
+        warn:  'background:#78350f;color:#fcd34d;font-weight:bold;padding:2px 6px;border-radius:3px',
+        error: 'background:#7f1d1d;color:#fca5a5;font-weight:bold;padding:2px 6px;border-radius:3px',
+    };
+    const BRIDGE_ICONS = { debug: '🔎', warn: '⚠️', error: '❌' };
+    const bridgeLog = (level, ...args) => {
+        console.log(`%c${BRIDGE_ICONS[level] || '🧩'} AlphaCode·Bridge · ${level.toUpperCase()}`, BRIDGE_STYLES[level] || BRIDGE_STYLES.debug, ...args);
+    };
+
     const IMAGE_URL_RE = /https?:\\?\/\\?\/[^\s"'<>\\]+?\.(?:jpe?g|png|webp|gif|avif)(?:\?[^\s"'<>\\]*)?/gi;
 
     function normalizeEscapedText(value) {
@@ -92,7 +106,7 @@
         walk(root, 0);
     }
 
-    function collectImagesNearMarkers(root, markers, visibleBasenames, output) {
+    function collectImagesNearMarkers(root, markers, visibleBasenames, output, diagnosticsOut) {
         const normalizedMarkers = markers
             .map(marker => String(marker || '').trim().toLowerCase())
             .filter(Boolean);
@@ -183,13 +197,27 @@
         }
 
         if (!evaluated.length) return;
-        evaluated.sort((left, right) => {
-            if (right.visibleMatches !== left.visibleMatches) return right.visibleMatches - left.visibleMatches;
-            return left.images.length - right.images.length;
+        // Arabic: تراجعنا عن فلتر visibleMatches (كان يزيد المشكلة سوءاً حسب اختبار المشغّل
+        //         الفعلي: نفس صورة البانر استمرت بالظهور + صور حقيقية انحذفت). رجعنا لدمج كل
+        //         المرشحين (السلوك المعروف والآمن)، ونكتفي الآن بتسجيل تفاصيل كل مرشح
+        //         بـ diagnosticsOut بدل التعديل على المنطق بناءً على تخمين تاني.
+        // English: Reverted the visibleMatches>0 filter — confirmed by the operator's live
+        //          test to make things worse (the same banner still got through AND real
+        //          images were dropped). Back to merging every evaluated candidate (the known,
+        //          safe baseline). We now only record per-candidate detail into diagnosticsOut
+        //          instead of changing behavior based on another guess.
+        evaluated.forEach((candidate, index) => {
+            candidate.images.forEach(url => output.add(url));
+            if (diagnosticsOut) {
+                diagnosticsOut.push({
+                    candidateIndex: index,
+                    imageCount: candidate.images.length,
+                    visibleMatches: candidate.visibleMatches,
+                    sampleUrls: candidate.images.slice(0, 5),
+                });
+            }
         });
-
-        const best = evaluated[0];
-        best.images.forEach(url => output.add(url));
+        bridgeLog('debug', `[ImageBridge] merged ${evaluated.length} candidate(s) → ${output.size} total image(s) so far.`);
     }
 
     function rememberPayload(payload, sourceUrl = '') {
@@ -267,7 +295,7 @@
         collectUrlsFromString(target.outerHTML || '', output);
     }
 
-    function collectReactUrls(target, markers, visibleBasenames, output) {
+    function collectReactUrls(target, markers, visibleBasenames, output, diagnosticsOut) {
         if (!target) return;
 
         const candidateNodes = [
@@ -288,14 +316,14 @@
             for (const key of keys) {
                 if (key.startsWith('__reactProps$')) {
                     const props = node[key];
-                    collectImagesNearMarkers(props, markers, visibleBasenames, output);
+                    collectImagesNearMarkers(props, markers, visibleBasenames, output, diagnosticsOut);
                 }
 
                 if (key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$')) {
                     let fiber = node[key];
                     for (let level = 0; fiber && level < 12; level += 1) {
                         for (const candidate of [fiber.memoizedProps, fiber.pendingProps, fiber.memoizedState]) {
-                            if (candidate) collectImagesNearMarkers(candidate, markers, visibleBasenames, output);
+                            if (candidate) collectImagesNearMarkers(candidate, markers, visibleBasenames, output, diagnosticsOut);
                         }
                         fiber = fiber.return;
                     }
@@ -304,14 +332,17 @@
         }
     }
 
-    function collectCapturedUrls(markers, visibleBasenames, output) {
-        // Arabic: لو ما عندنا أي علامة (searchCode/styleCode/صور ظاهرة)، لا نجمع أي شيء
-        //         من الشبكة — الاستجابات المخزّنة قد تحوي منتجات وبانرات وإعلانات لا علاقة لها
-        //         بالمنتج الحالي، والجمع بدون فلتر يسبب تلوث الصور.
-        // English: If we have no markers at all (no searchCode/styleCode/visible images),
-        //          do not collect anything from the network — cached responses may contain
-        //          products, banners and ads from other sessions, and collecting without a
-        //          filter causes image contamination.
+    function collectCapturedUrls(markers, visibleBasenames, output, diagnosticsOut) {
+        // Arabic: يجمع الصور من الاستجابات المخزّنة بشرط أن يوجد marker واحد على الأقل
+        //         (searchCode أو styleCode أو صورة ظاهرة) - بدون ذلك الشرط ستُجمع صور
+        //         كل المنتجات في الصفحة معاً. الفلترة الفعلية تحصل داخل
+        //         collectImagesNearMarkers التي تبحث عن صور قريبة من الmarkers فقط.
+        //         حُذف فلتر sourceUrl لأنه كان يمنع استجابات صحيحة كثيرة.
+        // English: Collects images from cached payloads only when at least one marker
+        //          exists (searchCode/styleCode/visible image). Without this guard all
+        //          products on the page would be merged into one. Actual narrowing happens
+        //          inside collectImagesNearMarkers which only picks images near a marker.
+        //          The sourceUrl pre-filter was removed because it blocked too many valid responses.
         const normalizedMarkers = markers
             .map(m => String(m || '').trim().toLowerCase())
             .filter(Boolean);
@@ -319,16 +350,7 @@
 
         for (let index = capturedPayloads.length - 1; index >= 0; index -= 1) {
             const entry = capturedPayloads[index];
-            // Arabic: نتحقق أولاً أن URL مصدر الاستجابة نفسها تحوي إحدى العلامات (مستوى أعلى)
-            //         قبل الغوص في محتواها. يقضي على معظم التلوث من قوائم/بانرات لا صلة لها.
-            // English: First verify the response's own source URL contains at least one marker
-            //          (high-level pre-check) before diving into its content. This eliminates
-            //          most contamination from unrelated lists/banners cached in the same session.
-            const sourceUrl = String(entry.sourceUrl || '').toLowerCase();
-            const sourceMatches = normalizedMarkers.some(m => sourceUrl.includes(m));
-            if (!sourceMatches && sourceUrl) continue;
-
-            collectImagesNearMarkers(entry.payload, markers, visibleBasenames, output);
+            collectImagesNearMarkers(entry.payload, markers, visibleBasenames, output, diagnosticsOut);
         }
     }
 
@@ -360,27 +382,62 @@
         const domUrls = new Set();
         collectDomUrls(target, domUrls);
 
+        const reactDiagnostics = [];
         const reactUrls = new Set();
-        collectReactUrls(target, markers, visibleBasenames, reactUrls);
+        collectReactUrls(target, markers, visibleBasenames, reactUrls, reactDiagnostics);
 
+        const capturedDiagnostics = [];
         const capturedUrls = new Set();
-        collectCapturedUrls(markers, visibleBasenames, capturedUrls);
+        collectCapturedUrls(markers, visibleBasenames, capturedUrls, capturedDiagnostics);
 
-        console.debug('[AlphaCode][ImageBridge] markers used:', markers, {
+        bridgeLog('debug', '[ImageBridge] markers used:', markers, {
             searchCode: request.searchCode, styleCode: request.styleCode, visibleBasenames,
         });
-        console.debug('[AlphaCode][ImageBridge] DOM source found:', domUrls.size, Array.from(domUrls));
-        console.debug('[AlphaCode][ImageBridge] React-state source found:', reactUrls.size, Array.from(reactUrls));
-        console.debug('[AlphaCode][ImageBridge] Captured-network source found:', capturedUrls.size, Array.from(capturedUrls),
+        bridgeLog('debug', '[ImageBridge] DOM source found:', domUrls.size, Array.from(domUrls));
+        bridgeLog('debug', '[ImageBridge] React-state source found:', reactUrls.size, Array.from(reactUrls));
+        bridgeLog('debug', '[ImageBridge] Captured-network source found:', capturedUrls.size, Array.from(capturedUrls),
             `(searched ${capturedPayloads.length} payloads, skipped those with unmatched sourceUrl)`
         );
 
         const urls = new Set([...domUrls, ...reactUrls, ...capturedUrls]);
 
+        // Arabic: تقرير تشخيصي كامل - يُرسل تلقائياً لسجل Python (alphacode.log) عبر content.js،
+        //         بدون أي حاجة لفتح DevTools يدوياً. يوضح بالضبط أي مصدر (DOM/React/شبكة) جاب
+        //         كل صورة، وكم مرشح داخل React/الشبكة اجتاز فلتر العلامة، وكم صورة/تطابق ظاهر
+        //         عند كل مرشح - عشان نحدد سبب التلوث أو النقص بدقة بدل التخمين.
+        // English: Full diagnostic report - automatically sent to the Python log
+        //          (alphacode.log) via content.js, no manual DevTools needed. Shows exactly
+        //          which source (DOM/React/network) contributed each image, how many
+        //          React/network candidates passed the marker filter, and how many
+        //          images/visible-matches each candidate had - to pin down contamination or
+        //          under-capture precisely instead of guessing.
+        const diagnostics = {
+            markersUsed: markers,
+            searchCode: request.searchCode || '',
+            styleCode: request.styleCode || '',
+            visibleBasenames,
+            sources: {
+                dom: { count: domUrls.size, urls: Array.from(domUrls) },
+                react: {
+                    count: reactUrls.size,
+                    urls: Array.from(reactUrls),
+                    candidates: reactDiagnostics,
+                },
+                captured: {
+                    count: capturedUrls.size,
+                    urls: Array.from(capturedUrls),
+                    candidates: capturedDiagnostics,
+                    totalPayloadsBuffered: capturedPayloads.length,
+                },
+            },
+            mergedTotal: urls.size,
+        };
+
         const response = {
             token,
             images: Array.from(urls).map(normalizeImageUrl).filter(Boolean),
-            capturedPayloadCount: capturedPayloads.length
+            capturedPayloadCount: capturedPayloads.length,
+            diagnostics,
         };
 
         mailbox.setAttribute('data-response', JSON.stringify(response));
@@ -389,4 +446,4 @@
 
     window.addEventListener('alphacode-bridge-request', respondToInspection);
     window.dispatchEvent(new Event('alphacode-bridge-ready'));
-})();   
+})();

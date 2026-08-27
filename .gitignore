@@ -19,6 +19,7 @@ __pycache__/
 venv/
 env/
 ENV/
+zimp/
 .pytest_cache/
 *.egg-info/
 dist/
@@ -35,15 +36,19 @@ backend/archive_db.json
 backend/archive_db.backup_*.json
 backend/sync_queue.json
 backend/sync_state.json
+backend/data/sync_queue.json
+backend/data/sync_state.json
 backend/id_counter.json
 
 # ملف تكوين المسارات يحتوي على مسارات الجهاز المحلي
 # paths_config contains local machine paths
 backend/paths_config.json
+backend/config/paths_config.json
 
 # ملفات التكوين الحساسة (فيها URLs وتوكنات)
 # Sensitive config files (contain URLs & tokens)
 backend/sync_config.json
+backend/config/sync_config.json
 
 
 # ─────────────────────────────────────────

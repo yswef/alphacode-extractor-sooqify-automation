@@ -211,16 +211,12 @@
         </article>
 
         <article class="card">
-            <h2>الأسعار والتصنيف</h2>
+            <h2>الأسعار والمخزون (مشترك بين الأحذية والساعات)</h2>
+            <p class="hint">Category ID والرسوم صارت خاصة بكل نوع منتج على حدة — شوفها في تبويب "نوع المنتج" حيث تظهر تلقائياً حسب النوع المختار.</p>
             <div class="grid-3">
-                <div class="field"><label for="CategoryId">Category ID</label><input id="CategoryId" type="number"></div>
-                <div class="field"><label for="SubCategoryId">SubCategory ID</label><input id="SubCategoryId" type="number"></div>
                 <div class="field"><label for="UnitId">Unit ID</label><input id="UnitId" type="number"></div>
-            </div>
-            <div class="grid-3">
                 <div class="field"><label for="Stock">المخزون لكل مقاس</label><input id="Stock" type="number" min="0"></div>
                 <div class="field"><label for="ExchangeRate">سعر صرف اليوان</label><input id="ExchangeRate" type="number" step="0.01"></div>
-                <div class="field"><label for="AddedFeeYuan">الرسوم باليوان</label><input id="AddedFeeYuan" type="number" step="0.01"></div>
             </div>
             <div class="grid-2">
                 <div class="field"><label for="Discount">الخصم</label><input id="Discount" type="number" step="0.01"></div>
@@ -248,13 +244,23 @@
     <section class="tab-panel" id="tab-product-type">
         <article class="card">
             <h2>نوع المنتج</h2>
-            <p class="hint">يُستخدم كافتراض عند تعذّر تحديد النوع تلقائياً من صفحة المورد؛ تقدر تتجاوزه لكل منتج من شاشة الاستخراج نفسها.</p>
+            <p class="hint">يُستخدم كافتراض عند تعذّر تحديد النوع تلقائياً من صفحة المورد؛ تقدر تتجاوزه لكل منتج من شاشة الاستخراج نفسها. اختيارك هنا يتحكم بأي بطاقة تصنيف تظهر تحت.</p>
             <div class="field"><label for="ProductType">النوع الافتراضي</label><select id="ProductType"><option value="shoes">أحذية</option><option value="watches">ساعات</option></select></div>
         </article>
 
-        <article class="card">
+        <article class="card" data-producttype-card="shoes">
+            <h2>تصنيف ورسوم الأحذية</h2>
+            <p class="hint">تظهر هذه البطاقة فقط عندما يكون "النوع الافتراضي" أعلاه = أحذية.</p>
+            <div class="grid-3">
+                <div class="field"><label for="CategoryId">Category ID</label><input id="CategoryId" type="number"></div>
+                <div class="field"><label for="SubCategoryId">SubCategory ID</label><input id="SubCategoryId" type="number"></div>
+                <div class="field"><label for="AddedFeeYuan">الرسوم باليوان</label><input id="AddedFeeYuan" type="number" step="0.01"></div>
+            </div>
+        </article>
+
+        <article class="card" data-producttype-card="watches">
             <h2>إعدادات الساعات</h2>
-            <p class="hint">الساعات بدون مقاسات وبدون فئة فرعية؛ كل لون يُضاف كخيار بسعره الخاص، ويُضاف رسم ثابت على كل ساعة بدل فكرة الدرجة الأولى/الثانية.</p>
+            <p class="hint">تظهر هذه البطاقة فقط عندما يكون "النوع الافتراضي" أعلاه = ساعات. الساعات بدون مقاسات وبدون فئة فرعية؛ كل لون يُضاف كخيار بسعره الخاص، ويُضاف رسم ثابت على كل ساعة بدل فكرة الدرجة الأولى/الثانية.</p>
             <div class="grid-2">
                 <div class="field"><label for="WatchCategoryId">Category ID (Timepieces)</label><input id="WatchCategoryId" type="number"></div>
                 <div class="field"><label for="WatchFlatFeeYuan">رسم ثابت باليوان لكل ساعة</label><input id="WatchFlatFeeYuan" type="number" step="1"></div>
@@ -263,6 +269,30 @@
                 <div class="field"><label for="WatchColorAttributeId">Color Attribute ID</label><input id="WatchColorAttributeId" type="number"></div>
                 <div class="field"><label for="WatchColorTitle">عنوان الخاصية</label><input id="WatchColorTitle" type="text"></div>
             </div>
+        </article>
+
+        <article class="card">
+            <h2>البراندات والمقاسات</h2>
+            <div class="grid-2">
+                <div class="field"><label for="BrandName">البراند الافتراضي</label><input id="BrandName" type="text"></div>
+                <div class="field"><label for="BrandId">Brand ID</label>
+                    <select id="BrandId" style="width:100%"><option value="">— اختر براند —</option></select>
+                </div>
+            </div>
+            <div class="field"><label for="BrandMapJson">خريطة البراندات JSON (احتياطي)</label><textarea id="BrandMapJson" dir="ltr"></textarea></div>
+            <div class="grid-3">
+                <div class="field"><label for="SizeAttributeId">Size Attribute ID</label><input id="SizeAttributeId" type="number"></div>
+                <div class="field"><label for="SizeChoiceNo">Choice No</label><input id="SizeChoiceNo" type="number"></div>
+                <div class="field"><label for="SizeTitle">عنوان الخاصية</label><input id="SizeTitle" type="text"></div>
+            </div>
+            <hr style="margin:14px 0">
+            <h3 style="margin-bottom:8px;font-size:14px">إضافة براند جديد (يُحفظ على السيرفر)</h3>
+            <div class="grid-2">
+                <div class="field"><label for="NewBrandName">اسم البراند</label><input id="NewBrandName" type="text" placeholder="مثال: Casio"></div>
+                <div class="field"><label for="NewBrandId">Brand ID في المتجر</label><input id="NewBrandId" type="number" min="1"></div>
+            </div>
+            <button class="btn btn-accent btn-block" id="addBrandBtn" type="button">إضافة البراند للسيرفر</button>
+            <div class="result-box" id="addBrandResult" style="margin-top:8px;display:none"></div>
         </article>
     </section>
 
@@ -287,20 +317,6 @@
             <div class="field"><label for="AIBaseUrl">Base URL للمزود المخصص</label><input id="AIBaseUrl" dir="ltr" type="url" placeholder="https://provider.example/v1/chat/completions"></div>
             <div class="field"><label for="AIKeyEnv">اسم متغير البيئة للمفتاح</label><input id="AIKeyEnv" dir="ltr" type="text" placeholder="GROQ_API_KEY"></div>
             <div class="field"><label for="ArabicCopyStyle">أسلوب الصياغة العربية</label><select id="ArabicCopyStyle"><option value="sales-natural">تجاري طبيعي وجذاب</option><option value="premium">فاخر وهادئ</option><option value="concise">مختصر ومباشر</option><option value="seo">متوازن لمحركات البحث</option></select></div>
-        </article>
-
-        <article class="card">
-            <h2>البراند والمقاسات</h2>
-            <div class="grid-2">
-                <div class="field"><label for="BrandName">البراند الافتراضي</label><input id="BrandName" type="text"></div>
-                <div class="field"><label for="BrandId">Brand ID</label><input id="BrandId" type="number"></div>
-            </div>
-            <div class="field"><label for="BrandMapJson">خريطة البراندات JSON</label><textarea id="BrandMapJson" dir="ltr"></textarea></div>
-            <div class="grid-3">
-                <div class="field"><label for="SizeAttributeId">Size Attribute ID</label><input id="SizeAttributeId" type="number"></div>
-                <div class="field"><label for="SizeChoiceNo">Choice No</label><input id="SizeChoiceNo" type="number"></div>
-                <div class="field"><label for="SizeTitle">عنوان الخاصية</label><input id="SizeTitle" type="text"></div>
-            </div>
         </article>
     </section>
 

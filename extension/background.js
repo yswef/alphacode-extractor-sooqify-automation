@@ -1380,11 +1380,12 @@ async function checkDataRepairIssues() {
     }
 }
 
-chrome.alarms.create(DATA_REPAIR_ALARM_NAME, { periodInMinutes: 60 });
+chrome.alarms.create(DATA_REPAIR_ALARM_NAME, { delayInMinutes: 60, periodInMinutes: 60 });
 chrome.alarms.onAlarm.addListener(alarm => {
     if (alarm.name === DATA_REPAIR_ALARM_NAME) checkDataRepairIssues().catch(() => {});
 });
-checkDataRepairIssues().catch(() => {});
+// Arabic: لا نستدعيها فوراً عند بدء التشغيل — الـalarm سيُشغّلها بعد ساعة.
+// English: Do not call immediately on startup — the alarm will trigger it after one hour.
 
 // Arabic: توجيه رسائل الإضافة إلى الوظيفة المناسبة.
 // English: Route extension messages to the proper background action.

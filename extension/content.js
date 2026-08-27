@@ -167,7 +167,7 @@ async function logExtractorEvent(level, event, message, details = {}) {
             body: JSON.stringify(payload)
         });
     } catch (error) {
-        console.warn('AlphaCode log forwarding failed:', error);
+        acLog('warn', 'AlphaCode log forwarding failed:', error);
     }
 }
 
@@ -176,14 +176,26 @@ async function logExtractorEvent(level, event, message, details = {}) {
 // Arabic: ألوان Console للتمييز البصري السريع بين مستويات السجل.
 // English: Console colour helpers for quick visual distinction between log levels.
 const CONSOLE_STYLES = {
-    info:  'color:#3b82f6;font-weight:bold',
-    ok:    'color:#22c55e;font-weight:bold',
-    warn:  'color:#f59e0b;font-weight:bold',
-    error: 'color:#ef4444;font-weight:bold',
-    debug: 'color:#a855f7;font-weight:bold',
-    price: 'color:#f97316;font-weight:bold',
+    info:  'background:#1e3a8a;color:#93c5fd;font-weight:bold;padding:2px 6px;border-radius:3px',
+    ok:    'background:#14532d;color:#86efac;font-weight:bold;padding:2px 6px;border-radius:3px',
+    warn:  'background:#78350f;color:#fcd34d;font-weight:bold;padding:2px 6px;border-radius:3px',
+    error: 'background:#7f1d1d;color:#fca5a5;font-weight:bold;padding:2px 6px;border-radius:3px',
+    debug: 'background:#4c1d95;color:#d8b4fe;font-weight:bold;padding:2px 6px;border-radius:3px',
+    price: 'background:#7c2d12;color:#fdba74;font-weight:bold;padding:2px 6px;border-radius:3px',
+    batch: 'background:#0f766e;color:#5eead4;font-weight:bold;padding:2px 6px;border-radius:3px',
 };
-const acLog = (level, ...args) => console.log(`%c[AlphaCode][${level.toUpperCase()}]`, CONSOLE_STYLES[level] || '', ...args);
+const CONSOLE_ICONS = { info: 'ℹ️', ok: '✅', warn: '⚠️', error: '❌', debug: '🔎', price: '💰', batch: '📦' };
+const acLog = (level, ...args) => {
+    const style = CONSOLE_STYLES[level] || CONSOLE_STYLES.info;
+    const icon = CONSOLE_ICONS[level] || '';
+    console.log(`%c${icon} AlphaCode · ${level.toUpperCase()}`, style, ...args);
+};
+// Arabic: عنوان قسم كبير في الـConsole لتمييز مراحل العمل الكبرى (بدء الدفعة، الرفع، ...).
+// English: A large section banner in the console to mark major workflow stages (batch start, upload, ...).
+const acBanner = (title, level = 'batch') => {
+    const style = CONSOLE_STYLES[level] || CONSOLE_STYLES.batch;
+    console.log(`%c${CONSOLE_ICONS[level] || '🧩'} ${title}`, `${style};font-size:13px`);
+};
 
 // Arabic: كاش للبراندات المُحمَّلة من السيرفر — يُحدَّث مرة واحدة عند فتح الإضافة وعند طلب
 //         تحديث يدوي. يُستخدم لتعبئة قائمة الاختيار في واجهة المراجعة بدل الخريطة الثابتة.
@@ -409,10 +421,10 @@ function extractSearchCode(productBox) {
         if (match) return match[0];
         // Arabic: تشخيص مؤقت - لقينا كتلة بعنوان مطابق لكن ما قدرنا نطلع منها كود صالح.
         // English: Temporary diagnostic - found a matching-labeled block but couldn't extract a valid code from it.
-        console.debug('[AlphaCode][SearchCode] Stage 1: label matched but value extraction failed.', { label, rawValue: value, block });
+        acLog('debug', '[SearchCode] Stage 1: label matched but value extraction failed.', { label, rawValue: value, block });
     }
     if (attributeBlocks.length === 0) {
-        console.debug('[AlphaCode][SearchCode] Stage 1: no attribute blocks found at all with current selectors.', { productBox });
+        acLog('debug', '[SearchCode] Stage 1: no attribute blocks found at all with current selectors.', { productBox });
     }
 
     const clipboardCandidates = productBox.querySelectorAll('[data-clipboard-text]');
@@ -422,7 +434,7 @@ function extractSearchCode(productBox) {
         const value = normalizeText(candidate.getAttribute('data-clipboard-text'));
         const match = value.match(/[A-Za-z0-9_-]{3,}/);
         if (match) return match[0];
-        console.debug('[AlphaCode][SearchCode] Stage 2: clipboard candidate matched but value extraction failed.', { parentText, rawValue: value });
+        acLog('debug', '[SearchCode] Stage 2: clipboard candidate matched but value extraction failed.', { parentText, rawValue: value });
     }
 
     const fallbackMatch = normalizeText(productBox.innerText).match(
@@ -434,7 +446,7 @@ function extractSearchCode(productBox) {
         // English: Temporary diagnostic - all three stages failed. To diagnose, open your
         //          browser Console on the SZWEGO page, find lines starting with
         //          [AlphaCode][SearchCode], and send them to us.
-        console.debug('[AlphaCode][SearchCode] Stage 3: fallback regex on innerText also failed.', {
+        acLog('debug', '[SearchCode] Stage 3: fallback regex on innerText also failed.', {
             innerTextSample: normalizeText(productBox.innerText).slice(0, 400),
         });
     }
@@ -1184,6 +1196,21 @@ function requestBridgeImages(productBox, searchCode, styleCode, visibleImages) {
             try {
                 const response = JSON.parse(mailbox.getAttribute('data-response') || '{}');
                 if (response.token !== token) return;
+                // Arabic: توصيل تشخيص الجسر (لكل مرشح: عدد صوره وعينة روابطه) لسجل بايثون -
+                //         كان يُبنى داخل page_bridge.js ويصل هنا لكنه يُتجاهَل بالكامل، بلا
+                //         أي تعديل على نتيجة الصور نفسها أو منطق الاختيار.
+                // English: Forward the bridge diagnostics (per-candidate image count and
+                //          sample URLs) to the Python log - it was already built inside
+                //          page_bridge.js and reaches here but was fully discarded; this
+                //          does not change the returned images or the selection logic.
+                if (response.diagnostics) {
+                    logExtractorEvent(
+                        'debug',
+                        'image_bridge_diagnostics',
+                        'Per-candidate image source breakdown from page_bridge.js',
+                        response.diagnostics
+                    ).catch(() => {});
+                }
                 finish(response.images || []);
             } catch (_) {
                 finish([]);
@@ -1198,16 +1225,20 @@ function requestBridgeImages(productBox, searchCode, styleCode, visibleImages) {
 
 // Arabic: دالة extractAllImages جزء من تدفق الاستخراج ويمكن تخصيصها عند نقل الأداة.
 // English: extractAllImages is part of the extraction flow and can be adapted for another store.
+// Arabic: تم تعطيل حد MaxImages وفلتر perceptual-hash عمداً — كل الصور المكتشفة تُعاد كاملة
+//         بدون قصّ أو حظر تلقائي؛ زر 🚫 اليدوي في واجهة المراجعة يبقى القناة الوحيدة للاستبعاد.
+// English: MaxImages cap and the perceptual-hash filter are intentionally disabled — every
+//          discovered image is returned in full, with no automatic trimming or blocking; the
+//          manual 🚫 button in the review UI remains the only exclusion channel.
 async function extractAllImages(productBox, searchCode, styleCode) {
     const visibleImages = extractDomImages(productBox);
     const bridgeImages = await requestBridgeImages(productBox, searchCode, styleCode, visibleImages);
     const combined = new Map();
     visibleImages.forEach(url => addUniqueImage(combined, url));
     bridgeImages.forEach(url => addUniqueImage(combined, url));
-    const all = Array.from(combined.values()).slice(0, Number(extractorConfig.MaxImages || 30));
-    // Arabic: تصفية الصور الملوثة قبل إرجاع القائمة.
-    // English: Filter contaminated images before returning.
-    return filterBannedImages(all);
+    const all = Array.from(combined.values());
+    acLog('debug', `extractAllImages: ${all.length} unique image(s) found, no cap/filter applied.`);
+    return all;
 }
 
 // Arabic: دالة checkArchive جزء من تدفق الاستخراج ويمكن تخصيصها عند نقل الأداة.
@@ -3688,6 +3719,12 @@ async function prepareBatchDraftForStore(draft, batchId, batchIndex, batchTotal)
 }
 
 async function startBatchPipeline(drafts) {
+    // Arabic: مزامنة خفيفة عند بدء الدفعة — pull فقط (لا reconcile كامل) لضمان أن
+    //         قاعدة بيانات الـIDs محدّثة قبل حجز IDs جديدة. لا تنتظر إذا فشلت.
+    // English: Light sync at batch start — pull only (not full reconcile) to ensure
+    //          the ID database is current before reserving new IDs. Failure is silent.
+    fetch(`${API_BASE_URL}/api/sync/pull`, { method: 'POST' }).catch(() => {});
+
     const batchId = `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const startResponse = await safeRuntimeMessage({
         action: 'START_BATCH_QUEUE',
@@ -3973,6 +4010,6 @@ async function initializeExtractor() {
 }
 
 initializeExtractor().catch(async error => {
-    console.error('AlphaCode Extractor initialization failed:', error);
+    acLog('error', 'AlphaCode Extractor initialization failed:', error);
     await logExtractorEvent('ERROR', 'extractor_initialization_failed', error.message, { stack: error.stack || '' });
 });

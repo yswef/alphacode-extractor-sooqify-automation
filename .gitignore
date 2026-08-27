@@ -1,4 +1,16 @@
-# Python
+# =============================================================
+# AlphaCode Extractor — .gitignore
+# =============================================================
+# القاعدة: كل ما هو بيانات محلية، مفاتيح، ملفات بيئة، مخرجات
+# مؤقتة، أو أدوات تطوير لا يجب أن يصل لـgit.
+# Rule: local data, secrets, env files, temporary outputs,
+# and dev tooling stay out of git.
+# =============================================================
+
+
+# ─────────────────────────────────────────
+# Python — bytecode & caches
+# ─────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyo
@@ -8,14 +20,35 @@ venv/
 env/
 ENV/
 .pytest_cache/
+*.egg-info/
+dist/
+build/
 .mypy_cache/
 .ruff_cache/
 
-# Local backend runtime data
-backend/product_archive.json
-backend/products_archive.json
-backend/products_database.xlsx
-backend/ai_copy_cache.json
+
+# ─────────────────────────────────────────
+# بيانات المنتجات المحلية (لا ترفعها أبداً)
+# Local product data — never commit
+# ─────────────────────────────────────────
+backend/archive_db.json
+backend/archive_db.backup_*.json
+backend/sync_queue.json
+backend/sync_state.json
+backend/id_counter.json
+
+# ملف تكوين المسارات يحتوي على مسارات الجهاز المحلي
+# paths_config contains local machine paths
+backend/paths_config.json
+
+# ملفات التكوين الحساسة (فيها URLs وتوكنات)
+# Sensitive config files (contain URLs & tokens)
+backend/sync_config.json
+
+
+# ─────────────────────────────────────────
+# سجلات اللوق — Log files
+# ─────────────────────────────────────────
 backend/logs/
 backend/images/
 backend/downloads/
@@ -24,61 +57,94 @@ backend/.env
 Build_history.sh
 .env
 *.log
+*.jsonl
 
-# Generated product data
-products_database.xlsx
-product_archive.json
-ai_copy_cache.json
-logs/
-images/
-downloads/
-tmp/
-zimp/
 
-# API keys and secrets
-*.env
+# ─────────────────────────────────────────
+# تقارير Excel وPDF المولّدة
+# Generated Excel / PDF reports
+# ─────────────────────────────────────────
+backend/reports/
+*.xlsx
+*.pdf
+
+
+# ─────────────────────────────────────────
+# كاش الذكاء الاصطناعي
+# AI response cache
+# ─────────────────────────────────────────
+backend/ai_cache.json
+backend/ai_cache.backup_*.json
+
+
+# ─────────────────────────────────────────
+# أرشيف الصور المحلية (مجلد حفظ المنتجات)
+# Local product image archive
+# ─────────────────────────────────────────
+# أضف مسار مجلد الحفظ الخاص بك هنا لو كان داخل المشروع
+# Add your save-folder path here if it's inside the project
+# e.g.: Products/
+
+
+# ─────────────────────────────────────────
+# أدوات التطوير والمحررات
+# IDEs & editors
+# ─────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.user
+.continue/
+.cursor/
+*.code-workspace
+
+
+# ─────────────────────────────────────────
+# ملفات البيئة (مفاتيح API)
+# Environment files (API keys)
+# ─────────────────────────────────────────
+.env
 .env.*
-secrets.json
-credentials.json
-*.pem
-*.key
-*.crt
-
-# Chrome extension packaging
-*.crx
-*.pem
-extension/dist/
-extension/build/
-
-# Node / tooling
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+!.env.example
 
 
-# ملفات التكوين وقاعدة البيانات المحلية الخاصة بالإضافة
-paths_config.json
-sync_config.json
-sync_queue.json
-sync_state.json
-archive_db.json
-ai_copy_cache.json
-reports_config.json
-
-# OS/editor
+# ─────────────────────────────────────────
+# نظام التشغيل
+# OS artifacts
+# ─────────────────────────────────────────
 .DS_Store
 Thumbs.db
 desktop.ini
-.vscode/
-.idea/
-*.swp
-*.swo
+ehthumbs.db
 
-# Excel temporary files
-~$*.xlsx
-~$*.xls
 
-# PDF/HTML render caches
-_renders/
-_tmp/
+# ─────────────────────────────────────────
+# ملفات التوثيق التلقائي (مولّدة بأدوات خارجية)
+# Auto-generated per-file docs (external tooling)
+# ─────────────────────────────────────────
+DOCS/
+
+
+# ─────────────────────────────────────────
+# ملفات اختبار مؤقتة
+# Temporary test files
+# ─────────────────────────────────────────
+backend/test_*.py
+!backend/test_upload_main_image_only.py
+
+
+# ─────────────────────────────────────────
+# Node.js (لو استُخدم)
+# Node.js (if ever used)
+# ─────────────────────────────────────────
+node_modules/
+package-lock.json
+
+
+# ─────────────────────────────────────────
+# ملفات ضغط مؤقتة
+# Temporary archives
+# ─────────────────────────────────────────
+*.zip
+*.tar.gz
+*.rar

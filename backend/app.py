@@ -91,15 +91,67 @@ AI_PROMPT_VERSION = "4.5-batch-official-brand-guard-fast-json"
 SAVE_LOCK = threading.RLock()
 AI_CACHE_LOCK = threading.RLock()
 
+class ColoredConsoleFormatter(logging.Formatter):
+    """
+    Arabic: منسّق ألوان لطرفية التطوير فقط (لا يُستخدم لملف السجل الخارجي حتى لا تُكتب
+            رموز ANSI داخل ملف نصي). كل مستوى له لون خلفية مميز لتسهيل تتبّع السجل بالعين.
+    English: Colour formatter for the developer terminal only (never used for the rotating
+             file handler, so ANSI escape codes never end up inside a plain-text log file).
+             Each level gets a distinct background colour for fast at-a-glance scanning.
+    """
+
+    RESET = "\x1b[0m"
+    LEVEL_STYLES = {
+        logging.DEBUG:    "\x1b[45m\x1b[97m",  # magenta bg, white text
+        logging.INFO:     "\x1b[44m\x1b[97m",  # blue bg, white text
+        logging.WARNING:  "\x1b[43m\x1b[30m",  # yellow bg, black text
+        logging.ERROR:    "\x1b[41m\x1b[97m",  # red bg, white text
+        logging.CRITICAL: "\x1b[101m\x1b[97m", # bright red bg, white text
+    }
+    LEVEL_ICONS = {
+        logging.DEBUG: "🔎", logging.INFO: "ℹ️", logging.WARNING: "⚠️",
+        logging.ERROR: "❌", logging.CRITICAL: "🔥",
+    }
+
+    def format(self, record):
+        style = self.LEVEL_STYLES.get(record.levelno, "")
+        icon = self.LEVEL_ICONS.get(record.levelno, "")
+        timestamp = self.formatTime(record, "%H:%M:%S")
+        level_tag = f"{style} {icon} {record.levelname:<8}{self.RESET}"
+        name_tag = f"\x1b[36m{record.name}\x1b[0m"  # cyan module name
+        message = record.getMessage()
+        if record.exc_info:
+            message = f"{message}\n{self.formatException(record.exc_info)}"
+        return f"\x1b[90m{timestamp}\x1b[0m {level_tag} {name_tag} | {message}"
+
+
+def _enable_windows_ansi_support():
+    """Arabic: تفعيل دعم ANSI على طرفية Windows القديمة (cmd.exe). English: Enable ANSI support on legacy Windows terminals (cmd.exe)."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        mode = ctypes.c_uint32()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            kernel32.SetConsoleMode(handle, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+    except Exception:
+        pass  # Arabic: فشل غير حرج - يستمر السجل بدون ألوان. English: Non-critical failure - logging continues without colour.
+
+
 def configure_application_logging():
-    """Arabic: تهيئة سجل خارجي دوّار مع استمرار الطباعة في الطرفية. English: Configure rotating external logs while preserving console output."""
-    log_format = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    """Arabic: تهيئة سجل خارجي دوّار مع طباعة ملوّنة وواضحة في الطرفية. English: Configure rotating external logs with a clear, colourful console output."""
+    _enable_windows_ansi_support()
+    file_format = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    console_format = ColoredConsoleFormatter()
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
 
     if not any(getattr(handler, "_alphacode_console", False) for handler in root_logger.handlers):
         console_handler = logging.StreamHandler()
-        console_handler.setFormatter(log_format)
+        console_handler.setFormatter(console_format)
         console_handler._alphacode_console = True
         root_logger.addHandler(console_handler)
 
@@ -112,7 +164,7 @@ def configure_application_logging():
                 backupCount=5,
                 encoding="utf-8",
             )
-            file_handler.setFormatter(log_format)
+            file_handler.setFormatter(file_format)
             file_handler._alphacode_file = True
             root_logger.addHandler(file_handler)
     except OSError as exc:
@@ -722,6 +774,17 @@ def sync_reconcile_full():
         "pushed_immediate": pushed,
         "errors": errors,
     }
+
+
+@app.route("/api/sync/pull", methods=["POST"])
+def api_sync_pull():
+    """Arabic: pull خفيف فقط (بدون reconcile كامل) — يُستدعى تلقائياً عند بدء كل دفعة جديدة. English: Light pull-only (no full reconcile) — called automatically when a new batch starts."""
+    try:
+        sync_pull_updates()
+        return jsonify({"success": True})
+    except Exception as exc:
+        logger.warning("sync/pull endpoint failed: %s", exc)
+        return jsonify({"success": False, "error": str(exc)}), 502
 
 
 @app.route('/api/sync/reconcile', methods=['POST'])
@@ -3671,15 +3734,16 @@ if __name__ == "__main__":
     sync_settings = load_sync_config()
     if sync_settings["Enabled"]:
         logger.info("Two-user sync ENABLED. server=%s", sync_settings["ServerUrl"])
-        threading.Thread(target=sync_background_worker, daemon=True).start()
-        # Start a one-off reconcile at startup to pull server archive and push local-only items.
+        # Arabic: المزامنة تحصل مرة واحدة فقط عند البدء (pull + reconcile).
+        #         لا يوجد خيط دوري — المزامنة التالية تحصل عند بدء دفعة جديدة أو طلب يدوي.
+        # English: Sync happens once at startup (pull + reconcile only).
+        #          No periodic thread — next sync happens when a new batch starts or on manual request.
         def _startup_reconcile():
             try:
                 res = sync_reconcile_full()
-                logger.info("Initial sync reconcile result: %s", res)
+                logger.info("Startup sync reconcile result: %s", res)
             except Exception as exc:
-                logger.warning("Initial sync reconcile failed: %s", exc)
-
+                logger.warning("Startup sync reconcile failed: %s", exc)
         threading.Thread(target=_startup_reconcile, daemon=True).start()
     else:
         logger.info("Two-user sync is disabled. Configure it from the extension settings to enable it.")

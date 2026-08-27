@@ -10,30 +10,13 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta
-from io import BytesIO
-from urllib.parse import urlsplit, urlunsplit, unquote
-import Reports
-import watch_variant_extractor
-
+from datetime import datetime
+from urllib.parse import unquote
 import certifi
 import pandas as pd
 import requests
 from flask import Flask, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
-from PIL import Image, ImageOps
-
-# Arabic: تقارير PDF اختيارية - الوحدة بملف منفصل (reports.py) حتى لا يكبر هذا الملف أكثر.
-# لو reportlab غير مثبّت بعد، التطبيق يستمر بالعمل بشكل طبيعي وتُرجع مسارات /api/reports خطأ واضحاً بدل تعطّل السيرفر.
-# English: Optional PDF reports - kept in a separate module (reports.py) so this file doesn't grow further.
-# If reportlab isn't installed yet, the app keeps running normally and /api/reports routes return a clear
-# error instead of crashing the server.
-try:
-    import Reports as reports_module
-    REPORTS_AVAILABLE = True
-except ImportError:
-    reports_module = None
-    REPORTS_AVAILABLE = False
 
 app = Flask(__name__)
 
@@ -57,10 +40,65 @@ def handle_local_request_too_large(_error):
 # English: Core paths are no longer fixed constants; recompute_paths() below
 # recalculates them from paths_config.json (env var is only the first-run default).
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PATHS_CONFIG_PATH = os.path.join(SCRIPT_DIR, "paths_config.json")
-SYNC_CONFIG_PATH = os.path.join(SCRIPT_DIR, "sync_config.json")
-SYNC_QUEUE_PATH = os.path.join(SCRIPT_DIR, "sync_queue.json")
-SYNC_STATE_PATH = os.path.join(SCRIPT_DIR, "sync_state.json")
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+from app.core.config import (  # noqa: E402
+    PATHS_CONFIG_PATH,
+    SYNC_CONFIG_PATH,
+    SYNC_QUEUE_PATH,
+    SYNC_STATE_PATH,
+    load_json_file,
+    load_sync_config,
+    save_json_atomic,
+    save_sync_config,
+    write_json_temp,
+)
+from app.repositories.paths_repository import load_paths_config, save_paths_config  # noqa: E402
+from app.repositories.sync_queue_repository import load_sync_queue, save_sync_queue  # noqa: E402
+from app.repositories.sync_state_repository import load_sync_state, save_sync_state  # noqa: E402
+from app.services.sync_service import (  # noqa: E402
+    SYNC_REQUEST_PACING_SECONDS,
+    bind_archive_runtime,
+    sync_call,
+    sync_flush_queue,
+    sync_pull_updates,
+    sync_push_product,
+    sync_reconcile_full,
+    sync_reserve_id,
+    sync_reserve_key,
+)
+from app.services.upload_service import (  # noqa: E402
+    build_optimized_image_url,
+    build_variant_fields,
+    build_watch_variations_from_absolute_yuan,
+    download_single_image,
+    extract_settings,
+    get_dominant_bg_color,
+    json_cell,
+    normalize_image_format,
+    prepare_image_for_save,
+    resolve_store_images_for_upload,
+    sniff_image_extension,
+    strip_existing_image_transform,
+)
+from app.services.variant_extractor_service import (  # noqa: E402
+    WATCH_VARIANT_SCHEMA,
+    WATCH_VARIANT_SCHEMA_NAME,
+    build_watch_variant_messages,
+    validate_watch_variants,
+)
+
+# Arabic: تقارير PDF اختيارية. السلوك المقصود: try/except حتى لا يتعطل الإقلاع بدون reportlab.
+# English: Optional PDF reports. Intended behavior: try/except so startup survives missing reportlab.
+try:
+    from app.services import report_service as reports_module  # noqa: E402
+    REPORTS_AVAILABLE = True
+except ImportError:
+    reports_module = None
+    REPORTS_AVAILABLE = False
+
+
 IMAGES_FOLDER_NAME = "صور"
 # Arabic: أي منتج فيه عدد صور أقل من هذا الرقم يُرفض ولا يُضاف للمتجر نهائياً (المتجر يحتاج 6 صور: رئيسية + 5 معرض).
 # English: Any product with fewer images than this is rejected and never added to the store (the store needs 6: one main + 5 gallery).
@@ -304,61 +342,18 @@ def read_recent_log_lines(limit=200):
     return [line.rstrip("\n") for line in lines[-safe_limit:]]
 
 
-def load_json_file(path, default):
-    """Arabic: قراءة JSON بأمان مع قيمة افتراضية عند التلف. English: Safely read JSON and fall back when the file is invalid."""
-    if not os.path.exists(path):
-        return default.copy() if isinstance(default, dict) else default
-    try:
-        with open(path, "r", encoding="utf-8") as file:
-            value = json.load(file)
-        return value if isinstance(value, type(default)) else default
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("Could not read JSON file %s: %s", path, exc)
-        return default.copy() if isinstance(default, dict) else default
-
-
 def load_archive():
     """Arabic: تحميل أرشيف المنتجات المحلي. English: Load the local product archive."""
     return load_json_file(ARCHIVE_PATH, {})
 
 
-def write_json_temp(target_path, payload, token):
-    """Arabic: كتابة JSON إلى ملف مؤقت على القرص نفسه. English: Write JSON to a same-volume temporary file."""
-    directory = os.path.dirname(target_path)
-    os.makedirs(directory, exist_ok=True)
-    temp_path = os.path.join(directory, f".{os.path.basename(target_path)}.{token}.tmp")
-    with open(temp_path, "w", encoding="utf-8") as file:
-        json.dump(payload, file, ensure_ascii=False, indent=4)
-        file.flush()
-        os.fsync(file.fileno())
-    return temp_path
-
-
-def save_json_atomic(target_path, payload):
-    """Arabic: استبدال ملف JSON دفعة واحدة لتجنب الملفات الجزئية. English: Atomically replace a JSON file to avoid partial writes."""
-    token = uuid.uuid4().hex
-    temp_path = write_json_temp(target_path, payload, token)
-    try:
-        os.replace(temp_path, target_path)
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+bind_archive_runtime(load_archive, lambda: ARCHIVE_PATH, SAVE_LOCK)
 
 
 # =========================================================
 # Arabic: إدارة المسارات الديناميكية - اختيار مجلد الحفظ يدوياً إن لم يوجد المسار الافتراضي.
 # English: Dynamic path management - manual folder picker when the default path is missing.
 # =========================================================
-
-def load_paths_config():
-    """Arabic: قراءة إعداد المجلد المخصص المحفوظ محلياً. English: Read the locally saved custom-folder setting."""
-    return load_json_file(PATHS_CONFIG_PATH, {})
-
-
-def save_paths_config(config):
-    """Arabic: حفظ إعداد المجلد المخصص. English: Persist the custom-folder setting."""
-    save_json_atomic(PATHS_CONFIG_PATH, config)
-
 
 def is_root_dir_valid(path):
     """Arabic: التحقق الفعلي من أن المسار موجود وقابل للكتابة. English: Actually verify the path exists and is writable."""
@@ -488,56 +483,11 @@ def get_product_image_dir(product):
 # =========================================================
 # Arabic: مزامنة اختيارية بين مستخدمين عبر سكربت PHP بسيط (sync.php) على Hostinger.
 # لا تُفعَّل هذه المزامنة إلا بعد ضبط SyncConfig (رابط + مفتاح) من لوحة الإضافة.
+# منطق المزامنة الحي في app.services.sync_service. الحلقة أدناه كود ميت (قرار الجرد 4) ولا تُشغَّل.
 # English: Optional two-user sync via a small PHP endpoint (sync.php) hosted on Hostinger.
 # Disabled by default until SyncConfig (URL + token) is set from the extension popup.
+# Live sync logic is in app.services.sync_service. The loop below is dead code (inventory decision 4) and is never started.
 # =========================================================
-
-SYNC_LOCK = threading.RLock()
-SYNC_HTTP_TIMEOUT = (5, 10)  # (connect, read) seconds - short so the UI never hangs on a bad connection.
-
-# Arabic: مدة التهدئة بعد استقبال حظر 403 من الاستضافة (بالثواني) - قابلة للتعديل حسب سياسة استضافتك.
-# English: Cooldown after receiving a 403 host block (seconds) - tune to match your host's policy.
-SYNC_THROTTLE_COOLDOWN_SECONDS = 300
-
-# Arabic: تأخير بسيط بين الطلبات المتتالية أثناء المزامنة الجماعية (دفعات كبيرة)، لتفادي
-#         إغراق الاستضافة بعدد طلبات كبير خلال ثوانٍ قليلة والوصول لحد الحظر أصلاً.
-# English: A small pacing delay between consecutive requests during bulk syncing, so a
-#          large batch never floods the host fast enough to trigger a block in the first place.
-SYNC_REQUEST_PACING_SECONDS = 0.3
-
-
-def load_sync_config():
-    """Arabic: قراءة إعدادات المزامنة (تفعيل، رابط، مفتاح، اسم المستخدم). English: Read sync settings (enabled, URL, token, user name)."""
-    defaults = {"Enabled": False, "ServerUrl": "", "Token": "", "AddedByName": ""}
-    stored = load_json_file(SYNC_CONFIG_PATH, {})
-    defaults.update({key: stored.get(key, defaults[key]) for key in defaults})
-    return defaults
-
-
-def save_sync_config(config):
-    """Arabic: حفظ إعدادات المزامنة بعد تنظيفها. English: Persist sanitized sync settings."""
-    save_json_atomic(SYNC_CONFIG_PATH, {
-        "Enabled": safe_bool(config.get("Enabled"), False),
-        "ServerUrl": normalize_text(config.get("ServerUrl")).rstrip("/"),
-        "Token": normalize_text(config.get("Token")),
-        "AddedByName": normalize_text(config.get("AddedByName"))[:60],
-    })
-
-
-def load_sync_state():
-    return load_json_file(SYNC_STATE_PATH, {"last_pull_at": "", "last_push_at": "", "last_error": ""})
-
-
-def save_sync_state(state):
-    save_json_atomic(SYNC_STATE_PATH, state)
-
-
-def load_sync_queue():
-    return load_json_file(SYNC_QUEUE_PATH, [])
-
-
-def save_sync_queue(queue):
-    save_json_atomic(SYNC_QUEUE_PATH, queue)
 
 
 def sync_call(action, payload=None, method="POST"):

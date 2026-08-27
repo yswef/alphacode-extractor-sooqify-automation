@@ -14,6 +14,22 @@ let adminConfig = { ...ADMIN_DEFAULTS };
 let adminPanelObserverTimer = null;
 let automaticRunStarted = false;
 
+// Arabic: نفس منطق تلوين الـConsole المستخدم في content.js، لكن مستقل لأن هذا الملف
+//         يعمل على نطاق Sooqify (صفحة مختلفة تماماً) ولا يشارك السياق مع content.js.
+// English: Same console-colouring logic used in content.js, kept standalone because this
+//          file runs on the Sooqify domain (a completely different page) and shares no
+//          context with content.js.
+const ADMIN_LOG_STYLES = {
+    info:  'background:#1e3a8a;color:#93c5fd;font-weight:bold;padding:2px 6px;border-radius:3px',
+    ok:    'background:#14532d;color:#86efac;font-weight:bold;padding:2px 6px;border-radius:3px',
+    warn:  'background:#78350f;color:#fcd34d;font-weight:bold;padding:2px 6px;border-radius:3px',
+    error: 'background:#7f1d1d;color:#fca5a5;font-weight:bold;padding:2px 6px;border-radius:3px',
+};
+const ADMIN_LOG_ICONS = { info: 'ℹ️', ok: '✅', warn: '⚠️', error: '❌' };
+const adminLog = (level, ...args) => {
+    console.log(`%c${ADMIN_LOG_ICONS[level] || 'ℹ️'} AlphaCode·Admin · ${level.toUpperCase()}`, ADMIN_LOG_STYLES[level] || ADMIN_LOG_STYLES.info, ...args);
+};
+
 // Arabic: الانتظار بين خطوات واجهة المتجر الديناميكية.
 // English: Pause between dynamic store-interface steps.
 function sleep(milliseconds) {
@@ -178,7 +194,7 @@ async function logClientEvent(level, event, message, details = {}) {
             body: JSON.stringify(payload),
         });
     } catch (error) {
-        console.warn('AlphaCode log forwarding failed:', error);
+        adminLog('warn', 'AlphaCode log forwarding failed:', error);
     }
 }
 
@@ -2951,7 +2967,8 @@ async function initializeAdminAutofill() {
 }
 
 initializeAdminAutofill().catch(async error => {
-    console.error(
+    adminLog(
+        'error',
         'AlphaCode admin initialization failed:',
         error,
     );

@@ -128,6 +128,8 @@ function populateForm(config) {
     if (byId('supplierCardName')) {
         byId('supplierCardName').textContent = config.SupplierStoreName || 'BRANDKINGDOM';
     }
+
+    updateProductTypeCardVisibility();
 }
 
 // Arabic: قراءة الحقول مع المحافظة على القيم غير المعروضة.
@@ -198,6 +200,12 @@ function migrateLegacyConfig(config) {
 
     if (!migrated.SupplierStoreName) {
         migrated.SupplierStoreName = 'BRANDKINGDOM';
+    }
+
+    // Arabic: تعديل بطلب المستخدم — تركيب صحيحة سابقاً كانت فارغة تُعبّأ الآن بالرابط الجديد.
+    // English: Changed per operator request — previously-empty saved installs now get the new URL.
+    if (!migrated.SupplierHomeUrl) {
+        migrated.SupplierHomeUrl = 'https://brandkingdoms.com/';
     }
 
     migrated.SizeChoiceNo = Number(
@@ -714,228 +722,6 @@ async function clearAllData() {
     }
 }
 
-// =========================================================
-// Arabic: مجلد الحفظ - عرض الحالة واختيار مجلد جديد.
-// English: Save folder - status display and choosing a new folder.
-// =========================================================
-async function refreshFolderStatus() {
-    const box = byId('folderStatusBox');
-    if (box) {
-        box.className = 'result-box';
-        box.textContent = 'جارِ التحقق...';
-    }
-
-    try {
-        const response = await fetch(`${API_BASE}/api/paths/status`, { cache: 'no-store' });
-        const data = await response.json();
-
-        if (!response.ok || !data.success) {
-            throw new Error(data.error || 'تعذر قراءة حالة المجلد.');
-        }
-
-        if (box) {
-            if (data.configured) {
-                box.className = 'result-box success';
-                box.textContent = `المجلد الحالي: ${data.root_dir}`;
-            } else {
-                box.className = 'result-box warning';
-                box.textContent = 'لم يتم اختيار مجلد حفظ بعد. اضغط الزر أدناه لاختيار مجلد.';
-            }
-        }
-
-        setFolderBannerVisible(!data.configured);
-    } catch (error) {
-        if (box) {
-            box.className = 'result-box error';
-            box.textContent = error.message;
-        }
-    }
-}
-
-// Arabic: يفتح نافذة اختيار مجلد أصلية على جهاز المستخدم عبر خادم Python.
-// English: Opens a native folder picker on the user's machine via the Python server.
-async function chooseFolder() {
-    const box = byId('folderStatusBox');
-    if (box) {
-        box.className = 'result-box';
-        box.textContent = 'افتح نافذة اختيار المجلد على سطح المكتب (قد تكون خلف نافذة المتصفح)...';
-    }
-
-    const response = await fetch(`${API_BASE}/api/paths/choose-folder`, { method: 'POST' });
-    const data = await response.json();
-
-    if (!response.ok || !data.success) {
-        if (data.cancelled) {
-            if (box) {
-                box.className = 'result-box warning';
-                box.textContent = 'تم إلغاء اختيار المجلد.';
-            }
-            return;
-        }
-        throw new Error(data.error || 'تعذر اختيار المجلد.');
-    }
-
-    if (box) {
-        box.className = 'result-box success';
-        box.textContent = `تم ضبط مجلد الحفظ: ${data.root_dir}`;
-    }
-    setFolderBannerVisible(false);
-    showStatus('تم ضبط مجلد الحفظ بنجاح.', 'success');
-    await refreshArchiveStats();
-}
-
-// =========================================================
-// Arabic: المزامنة بين مستخدمين.
-// English: Two-user sync.
-// =========================================================
-async function loadSyncSettings() {
-    try {
-        const response = await fetch(`${API_BASE}/api/sync/config`, { cache: 'no-store' });
-        const data = await response.json();
-        if (!response.ok || !data.success) return;
-
-        if (byId('SyncEnabled')) byId('SyncEnabled').checked = Boolean(data.Enabled);
-        if (byId('SyncServerUrl')) byId('SyncServerUrl').value = data.ServerUrl || '';
-        if (byId('AddedByName')) byId('AddedByName').value = data.AddedByName || '';
-        if (byId('SyncToken')) {
-            byId('SyncToken').placeholder = data.TokenSet
-                ? `مفتاح محفوظ (${data.TokenPreview}) — اتركه فارغاً للإبقاء عليه`
-                : 'أدخل المفتاح السري من sync.php';
-        }
-    } catch (_) {
-        // Arabic: عدم توفر الخادم عند فتح اللوحة لا يجب أن يمنع بقية الوظائف.
-        // English: The server being unavailable when the popup opens should not block the rest of the UI.
-    }
-}
-
-async function saveSyncSettings() {
-    const resultBox = byId('syncSettingsResult');
-    const payload = {
-        Enabled: Boolean(byId('SyncEnabled')?.checked),
-        ServerUrl: (byId('SyncServerUrl')?.value || '').trim(),
-        Token: (byId('SyncToken')?.value || '').trim(),
-        AddedByName: (byId('AddedByName')?.value || '').trim(),
-    };
-
-    try {
-        const response = await fetch(`${API_BASE}/api/sync/config`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-        });
-        const data = await response.json();
-
-        if (!response.ok || !data.success) {
-            throw new Error(data.error || 'تعذر حفظ إعدادات المزامنة.');
-        }
-
-        if (byId('SyncToken')) byId('SyncToken').value = '';
-        if (resultBox) {
-            resultBox.className = 'result-box success';
-            resultBox.textContent = 'تم حفظ إعدادات المزامنة.';
-        }
-        await loadSyncSettings();
-        await refreshSyncStatus();
-    } catch (error) {
-        if (resultBox) {
-            resultBox.className = 'result-box error';
-            resultBox.textContent = error.message;
-        }
-    }
-}
-
-function formatSyncTimestamp(value) {
-    if (!value) return '—';
-    try {
-        return new Date(value).toLocaleString('ar-SA', { hour12: false });
-    } catch (_) {
-        return value;
-    }
-}
-
-async function refreshSyncStatus() {
-    try {
-        const response = await fetch(`${API_BASE}/api/sync/status`, { cache: 'no-store' });
-        const data = await response.json();
-        if (!response.ok || !data.success) throw new Error(data.error || 'تعذر قراءة حالة المزامنة.');
-
-        if (byId('syncPendingCount')) byId('syncPendingCount').textContent = data.pending_queue;
-        if (byId('syncLastPull')) byId('syncLastPull').textContent = formatSyncTimestamp(data.last_pull_at);
-        if (byId('syncLastPush')) byId('syncLastPush').textContent = formatSyncTimestamp(data.last_push_at);
-
-        const statusBox = byId('syncStatusResult');
-        if (statusBox) {
-            if (!data.enabled) {
-                statusBox.className = 'result-box warning';
-                statusBox.textContent = 'المزامنة معطّلة حالياً.';
-            } else if (data.last_error) {
-                statusBox.className = 'result-box error';
-                statusBox.textContent = `آخر خطأ: ${data.last_error}`;
-            } else {
-                statusBox.className = 'result-box success';
-                statusBox.textContent = 'المزامنة تعمل بشكل طبيعي.';
-            }
-        }
-    } catch (error) {
-        const statusBox = byId('syncStatusResult');
-        if (statusBox) {
-            statusBox.className = 'result-box error';
-            statusBox.textContent = error.message;
-        }
-    }
-}
-
-async function triggerSyncNow() {
-    const statusBox = byId('syncStatusResult');
-    const response = await fetch(`${API_BASE}/api/sync/now`, { method: 'POST' });
-    const data = await response.json();
-
-    if (!response.ok || !data.success) {
-        throw new Error(data.error || 'تعذر تشغيل المزامنة الآن.');
-    }
-
-    if (statusBox) {
-        statusBox.className = 'result-box success';
-        statusBox.textContent = 'تمت المزامنة الآن.';
-    }
-    await refreshSyncStatus();
-    await refreshRecentProducts();
-}
-
-// Arabic: شاشة تشخيص صغيرة - آخر المنتجات المضافة من الطرفين مع اسم من أضافها.
-// English: A small diagnostics view - the latest products added by either side, with who added them.
-async function refreshRecentProducts() {
-    const box = byId('recentProductsBox');
-    if (box) box.textContent = 'جارِ التحميل...';
-
-    try {
-        const response = await fetch(`${API_BASE}/api/archive/recent?limit=15`, { cache: 'no-store' });
-        const data = await response.json();
-        if (!response.ok || !data.success) throw new Error(data.error || 'تعذر تحميل القائمة.');
-
-        if (!box) return;
-        if (!data.products.length) {
-            box.textContent = 'لا توجد منتجات مضافة بعد.';
-            return;
-        }
-
-        box.innerHTML = '';
-        for (const product of data.products) {
-            const row = document.createElement('div');
-            row.className = 'store-card';
-            row.innerHTML = `
-                <div>
-                    <strong>#${product.id} — ${product.name_en || 'بدون اسم'}</strong>
-                    <span>${product.brand_name || ''} · بواسطة ${product.added_by || 'غير محدد'}${product.id_source === 'local_fallback' ? ' · ID محلي (بدون اتصال)' : ''}</span>
-                </div>
-                <span class="badge">${product.workflow_status || ''}</span>
-            `;
-            box.appendChild(row);
-        }
-    } catch (error) {
-        if (box) box.textContent = error.message;
-    }
-}
 
 // Arabic: عرض آخر أسطر السجل الخارجي.
 // English: Display recent external-log lines.
@@ -1364,6 +1150,17 @@ async function downloadDataRepairReports() {
     chrome.tabs.create({ url: data.extra_fields_report.download_url });
 }
 
+// Arabic: يعرض بطاقة تصنيف الأحذية أو بطاقة إعدادات الساعات فقط - حسب النوع المختار في "نوع المنتج" -
+//         بدل عرض تصنيفَي الأحذية والساعات معاً دائماً.
+// English: Shows only the shoes-classification card or the watches-settings card - based on the
+//          selected ProductType - instead of always showing both classification cards at once.
+function updateProductTypeCardVisibility() {
+    const productType = byId('ProductType') ? byId('ProductType').value : 'shoes';
+    document.querySelectorAll('[data-producttype-card]').forEach(card => {
+        card.style.display = card.dataset.producttypeCard === productType ? '' : 'none';
+    });
+}
+
 // Arabic: ربط حدث بأمان حتى لا تتعطل اللوحة إذا غاب عنصر اختياري.
 // English: Safely bind an event so optional missing controls cannot break the popup.
 function bindClick(id, handler) {
@@ -1534,6 +1331,10 @@ async function initializePopup() {
         button.addEventListener('click', () => activateTab(button.dataset.tab));
     });
 
+    if (byId('ProductType')) {
+        byId('ProductType').addEventListener('change', updateProductTypeCardVisibility);
+    }
+
     bindClick('saveBtn', saveConfiguration);
     bindClick('searchArchiveBtn', searchArchive);
     bindClick('prepareArchiveBtn', prepareArchivedProduct);
@@ -1579,9 +1380,55 @@ async function initializePopup() {
     bindClick('loginBtnCheck', handleLoginOverlay);
     bindClick('logoutBtn', handleLogout);
     bindClick('copyBatchNamesBtn', copyAdminBatchNames);
+async function loadBrandsIntoSelect() {
+    const select = byId('BrandId');
+    if (!select) return;
+    try {
+        const res = await fetch(`${API_BASE}/api/brands`, { cache: 'no-store' });
+        const data = await res.json();
+        if (!res.ok || !data.success) return;
+        const currentVal = select.value;
+        select.innerHTML = '<option value="">— اختر براند —</option>';
+        (data.brands || []).forEach(b => {
+            const opt = document.createElement('option');
+            opt.value = b.id;
+            opt.textContent = `${b.name} (${b.id})`;
+            select.appendChild(opt);
+        });
+        if (currentVal) select.value = currentVal;
+    } catch (_) {}
+}
+
+async function addBrandToServer() {
+    const name = (byId('NewBrandName')?.value || '').trim();
+    const id = parseInt(byId('NewBrandId')?.value || '0', 10);
+    const resultBox = byId('addBrandResult');
+    if (!name || !id) {
+        if (resultBox) { resultBox.style.display = ''; resultBox.className = 'result-box error'; resultBox.textContent = 'أدخل اسم البراند والـ ID.'; }
+        return;
+    }
+    try {
+        const res = await fetch(`${API_BASE}/api/brands/add`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, id }),
+        });
+        const data = await res.json();
+        if (resultBox) {
+            resultBox.style.display = '';
+            resultBox.className = res.ok && data.success ? 'result-box success' : 'result-box error';
+            resultBox.textContent = res.ok && data.success ? `تمت إضافة "${name}" (${id}) بنجاح.` : (data.error || 'تعذرت الإضافة.');
+        }
+        if (res.ok && data.success) await loadBrandsIntoSelect();
+    } catch (err) {
+        if (resultBox) { resultBox.style.display = ''; resultBox.className = 'result-box error'; resultBox.textContent = String(err); }
+    }
+}
+
     bindClick('dataRepairScanBtn', scanDataRepair);
     bindClick('dataRepairApplyBtn', applyDataRepairFix);
     bindClick('dataRepairReportBtn', downloadDataRepairReports);
+    bindClick('addBrandBtn', addBrandToServer);
+    loadBrandsIntoSelect();
 
     byId('AIProvider')?.addEventListener('change', handleAiProviderChange);
 

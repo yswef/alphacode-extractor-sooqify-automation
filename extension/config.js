@@ -18,7 +18,9 @@
         // English: Supplier settings; the latest SZWEGO URL is remembered automatically.
         SupplierStoreName: 'BRANDKINGDOM',
         SupplierStoreId: '',
-        SupplierHomeUrl: '',
+        // Arabic: تعديل بطلب المستخدم — رابط المورد الاحتياطي الثابت بدل ترك الحقل فارغاً.
+        // English: Changed per operator request — a fixed fallback supplier URL instead of an empty field.
+        SupplierHomeUrl: 'https://brandkingdoms.com/',
         SupplierSearchSelector: '',
         SupplierAutoScrollRounds: 80,
         OpenSupplierAtLastProduct: true,
@@ -58,7 +60,8 @@
     "Air Jordan": 6,
     "Nike": 7,
     "Adidas": 8,
-    "New Balance": 9
+    "New Balance": 9,
+    "Rolex":10
 }`,
         SizeAttributeId: 1,
         SizeChoiceNo: 1,

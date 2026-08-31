@@ -21,7 +21,7 @@
     //          page_bridge.js runs in the isolated MAIN world and can't reach content.js's helpers.
     const BRIDGE_STYLES = {
         debug: 'background:#4c1d95;color:#d8b4fe;font-weight:bold;padding:2px 6px;border-radius:3px',
-        warn:  'background:#78350f;color:#fcd34d;font-weight:bold;padding:2px 6px;border-radius:3px',
+        warn: 'background:#78350f;color:#fcd34d;font-weight:bold;padding:2px 6px;border-radius:3px',
         error: 'background:#7f1d1d;color:#fca5a5;font-weight:bold;padding:2px 6px;border-radius:3px',
     };
     const BRIDGE_ICONS = { debug: '🔎', warn: '⚠️', error: '❌' };
@@ -197,26 +197,40 @@
         }
 
         if (!evaluated.length) return;
-        // Arabic: تراجعنا عن فلتر visibleMatches (كان يزيد المشكلة سوءاً حسب اختبار المشغّل
-        //         الفعلي: نفس صورة البانر استمرت بالظهور + صور حقيقية انحذفت). رجعنا لدمج كل
-        //         المرشحين (السلوك المعروف والآمن)، ونكتفي الآن بتسجيل تفاصيل كل مرشح
-        //         بـ diagnosticsOut بدل التعديل على المنطق بناءً على تخمين تاني.
-        // English: Reverted the visibleMatches>0 filter — confirmed by the operator's live
-        //          test to make things worse (the same banner still got through AND real
-        //          images were dropped). Back to merging every evaluated candidate (the known,
-        //          safe baseline). We now only record per-candidate detail into diagnosticsOut
-        //          instead of changing behavior based on another guess.
-        evaluated.forEach((candidate, index) => {
-            candidate.images.forEach(url => output.add(url));
-            if (diagnosticsOut) {
-                diagnosticsOut.push({
-                    candidateIndex: index,
-                    imageCount: candidate.images.length,
-                    visibleMatches: candidate.visibleMatches,
-                    sampleUrls: candidate.images.slice(0, 5),
-                });
-            }
-        });
+
+        // Arabic: إصلاح تسرب صور الدفعة - لمنع دمج الصور من المنتجات المجاورة إذا كان الكائن الأصلي (Feed Array)
+        //         ضمن المرشحين، نقوم الآن باختيار "أفضل مرشح" واحد فقط: وهو أضيق حاوية (أقل عدد صور) تحتفظ
+        //         بأكبر عدد من الصور المرئية المتطابقة.
+        // English: Batch leakage fix - to prevent merging images from adjacent products when the root
+        //          Feed Array is in candidates, we now strictly select the SINGLE BEST candidate: the
+        //          narrowest container (fewest images) that still holds the maximum visible matches.
+        const maxVisible = Math.max(...evaluated.map(c => c.visibleMatches));
+        let bestCandidate;
+
+        if (maxVisible > 0) {
+            const candidatesWithMax = evaluated.filter(c => c.visibleMatches === maxVisible);
+            bestCandidate = candidatesWithMax.sort((a, b) => a.images.length - b.images.length)[0];
+        } else {
+            // Arabic: لا تشترطي عدد صور أدنى هنا — أي عتبة (زي >3) ممكن تستبعد المرشح الصحيح
+            // لو المعرض لسا ما اكتمل تحميله وقت الفحص، فيقفز الاختيار لحاوية أوسع (Feed Array)
+            // فيها منتجات مجاورة. الأضيق بين كل المرشحين بدون شرط = نفس سلوك النسخة المُثبتة سابقاً.
+            // English: No minimum-image threshold here — any gate (like >3) can exclude the
+            // correct candidate if its gallery hasn't fully loaded yet, causing a fallback to a
+            // wider container (Feed Array) that holds neighboring products. Narrowest among all
+            // candidates with no threshold matches the previously proven-safe behavior.
+            bestCandidate = evaluated.sort((a, b) => a.images.length - b.images.length)[0];
+        }
+
+        bestCandidate.images.forEach(url => output.add(url));
+        if (diagnosticsOut) {
+            diagnosticsOut.push({
+                strategy: 'best-candidate-isolation',
+                imageCount: bestCandidate.images.length,
+                visibleMatches: bestCandidate.visibleMatches,
+                sampleUrls: bestCandidate.images.slice(0, 5),
+                allEvaluatedCount: evaluated.length
+            });
+        }
         bridgeLog('debug', `[ImageBridge] merged ${evaluated.length} candidate(s) → ${output.size} total image(s) so far.`);
     }
 
@@ -246,7 +260,7 @@
             try {
                 const clone = response.clone();
                 const sourceUrl = clone.url || String(args[0] || '');
-                clone.text().then(text => captureResponseText(text, sourceUrl)).catch(() => {});
+                clone.text().then(text => captureResponseText(text, sourceUrl)).catch(() => { });
             } catch (_) {
                 // Observation is optional; never interrupt the website.
             }

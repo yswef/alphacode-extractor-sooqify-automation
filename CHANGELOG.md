@@ -1,117 +1,67 @@
-# AlphaCode Extractor Changelog
+# Changelog - AlphaCode Extractor Sooqify Automation Backend Refactoring
 
-## v5.0.0 — Main Image Only Upload
+This changelog documents the complete architectural migration of the Python Flask backend from a monolithic structure (`app.py`) to a modular, service-oriented architecture, executed in 7 distinct phases. All changes adhere strictly to the initial inventory decisions (`docs/reports/00_inventory.md`).
 
-### Store upload behavior
+## Phase 0: Inventory & Analysis
+- **Goal**: Full discovery and mapping of the monolith before any code modification.
+- **Actions**:
+  - Mapped all functions, classes, and global variables in the 3750-line `app.py`.
+  - Identified all config/state JSON files and their couplings.
+  - User decided on 9 critical architectural directions (e.g., ignoring dead AI cache, keeping `sync` as a startup-only process rather than a timer loop, and handling variant extraction as a pure service instead of a watcher).
+- **Report**: `docs/reports/00_inventory.md`
 
-- Changed the default behavior so the product gallery stays on the local machine and only the selected main image is sent to Sooqify.
-- Kept full local image downloads intact and preserved the toggle for operators who want to re-enable gallery uploads manually.
-- Updated the backend coordination and browser autofill flow so the gallery fields are skipped entirely in main-image-only mode.
+## Phase 1: Setup Structure
+- **Goal**: Establish the foundational directory tree without breaking existing flows.
+- **Actions**:
+  - Created the empty `backend/app/` skeleton with `api`, `core`, `repositories`, and `services` subdirectories.
+  - Successfully moved fundamental settings reading into `backend/config/` avoiding legacy config loading mechanisms.
+- **Report**: `docs/reports/01_phase1.md`
 
-### Release metadata
+## Phase 2: Config & State Layer
+- **Goal**: Isolate configurations and mutable state into dedicated, stateless modules.
+- **Actions**:
+  - Centralized global variables and path recomputation logic into `core/config.py` and state managers.
+  - Decoupled `sync_state.json` and `sync_queue.json` from the main route handlers.
+- **Report**: `docs/reports/02_phase2.md`
 
-- Bumped the backend health version to `5.0.0` and aligned the browser extension manifest and project documentation to the same release number.
+## Phase 3: Extract Services
+- **Goal**: Move business rules out of the HTTP layer.
+- **Actions**:
+  - Migrated variant extraction, report generation, and other core business logic into domain services under `app/services/`.
+  - Identified that the original `watch_variant_extractor.py` was now just re-exporting logic from `app.services.variant_extractor_service.py` (a "shim").
+- **Report**: `docs/reports/03_phase3.md`
 
-## v4.6.0 — Product Info File, Console UX, Stability Fix
+## Phase 4: Extract Repositories
+- **Goal**: Decouple data access (JSON read/writes) from business logic.
+- **Actions**:
+  - Abstracted the system archive interactions into `app/repositories/archive_repository.py`.
+  - Abstracted `sync_config.json` interactions into `app/repositories/sync_config_repository.py`.
+  - Allowed repositories to accept dynamic base paths rather than relying on hardcoded global variables.
+- **Report**: `docs/reports/04_repositories.md`
 
-### Product folder documentation
+## Phase 5: API / Routes Layer Refactoring
+- **Goal**: Decompose the monolith into Flask blueprints.
+- **Actions**:
+  - Created `upload_routes.py`, `sync_routes.py`, and `reports_routes.py` in `app/api/routes/`.
+  - Set up an application factory at `backend/app/main.py`.
+  - Extracted remaining monolith helper functions into `app/services/ai_helpers.py` to prevent circular dependencies.
+  - The backend can now be run entirely from `app/main.py` without executing the original `app.py`.
+- **Report**: `docs/reports/05_api_layer.md`
 
-- Replaced the minimal `style_code.txt` with a richer `product_info.txt` in every product folder, containing the product's English and Arabic name, style code, date added, and who added it.
+## Phase 6: Watchers / Background Jobs Cleanup
+- **Goal**: Finalize or remove background watchers according to architectural decisions.
+- **Actions**:
+  - Validated that `watch_variant_extractor.py` had exactly 0 imports post-Phase 5.
+  - Permanently deleted the legacy `watch_variant_extractor.py`.
+  - Deleted the empty `app/watchers/` directory in compliance with Decision #8 (No Watchers).
+  - Maintained `app/services/variant_extractor_service.py` as the single source of truth.
+- **Report**: `docs/reports/06_watchers.md`
 
-### Console output
-
-- Added a colorized ASCII startup banner shown when the backend starts.
-- Added a colorized, organized console log formatter (level badge, timestamp, source tag) while keeping the external log file plain text for easy searching.
-- Added ANSI color support for Windows `cmd`/PowerShell consoles.
-- Added a startup status panel summarizing server URL, save-folder configuration, AI key status, and two-user sync status at a glance.
-
-### Fixes
-
-- Fixed a null-reference crash (`Cannot set properties of null (setting 'disabled')`) in the Sooqify autofill panel's manual fill/submit buttons, caused by reading `event.currentTarget` after an `await` inside the click handler.
-
-## v4.5.2 — Two-User Sync, Manual Folder Setup, Brand/Date Image Folders
-
-### Two-user sync (optional)
-
-- Added an optional central sync endpoint (`sync.php`, hosted on the operator's own web hosting) for two machines sharing one Sooqify store.
-- Added atomic remote ID reservation so the two machines never assign the same product ID.
-- Added an optimistic remote lock on each product's Search/Style code, requested before any image download, so both machines cannot prepare the same product at once.
-- Added an automatic push of every newly archived product to the shared remote archive, with a local retry queue and a 90-second background worker for offline recovery.
-- Added a local-only fallback: if the remote server is unreachable, ID assignment and duplicate checks fall back to the local archive and the product is flagged for later review instead of blocking the operator.
-- Added a "Sync" popup tab with connection settings (URL, secret token, operator name), last pull/push timestamps, pending-queue count, and a manual "sync now" action.
-- Added a small diagnostics list of the most recently added products, showing who added each one and whether its ID came from the remote reservation or a local fallback.
-
-### Manual save-folder setup
-
-- Removed the hardcoded Windows save path; the backend now blocks product saving with a clear error until a folder is explicitly configured.
-- Added a native OS folder-picker dialog, triggered from the popup, so each machine chooses its own save folder independently.
-- Added a popup banner and a folder-status card that appear whenever no valid folder is configured yet.
-
-### Per-brand and per-date image folders
-
-- Product image folders are now organized as `<images root>/<brand>/<date>/<product folder>` instead of a single flat folder.
-- Added a `style_code.txt` file inside every product folder containing its Style Code, Search Code, and product ID.
-- Preserved read and delete compatibility for products saved under earlier folder layouts (brand-only or unclassified).
-
-### Store submission and image quality
-
-- Added an option to submit only the main image to Sooqify while still downloading every image locally.
-- When that option is enabled, every downloaded image is saved exactly as received — no resize, square-padding, or recompression — with its file extension detected directly from the image data.
-- Bypassed the source-side CDN thumbnail transform entirely while this option is active, so local copies are always full quality.
-
-### Fixes
-
-- Fixed a popup settings bug where certain newly added toggle switches did not persist after closing and reopening the extension.
-
-## v4.5.0 — Batch Product Queue
-
-### Batch workflow
-
-- Added product-selection checkboxes to SZWEGO product cards.
-- Added a fixed batch toolbar with visible-product selection, review, and clear actions.
-- Added a slide-based review screen for English/Arabic copy, brand, price, sizes, and image previews.
-- Added a persistent batch queue stored in `chrome.storage.local`.
-- Added limited-concurrency preparation with a default of one preparation task to reduce Groq and device load.
-- Added pipeline execution: the next product can be prepared while the current product is being submitted.
-- Added strictly sequential Sooqify submission using one automated store tab at a time.
-- Added pause, resume, cancel, and failed-submission retry controls.
-- Added one automatic retry for transient preparation/submission failures when configured.
-- Added queue recovery after browser restart or service-worker suspension.
-- Added desktop notifications after each product and after the final batch summary.
-
-### AI quality and safety
-
-- Upgraded the default Groq model to `openai/gpt-oss-120b`.
-- Restricted optional product research to the resolved official company domain.
-- Kept official research opt-in through regeneration instead of running it on every first generation.
-- Limited official research to one search request per regeneration.
-- Reduced supplier-text, research-dossier, and completion-token budgets.
-- Stopped automatic retries on HTTP 429 rate limits.
-- Read and returned Groq's `Retry-After` duration to the extension.
-- Added one JSON-mode fallback without repeating official research.
-- Restricted generated brands to `BrandMapJson` and the configured store brand.
-- Prevented duplicate `Air Jordan` / `إير جوردن` brand text in English and Arabic titles.
-- Kept the style code exactly once at the end of each title.
-
-### Sooqify performance and reliability
-
-- Added fast autofill mode and removed the automatic submit countdown by default.
-- Replaced several fixed delays with conditional polling and short UI-settle delays.
-- Preserved dynamic category-to-subcategory loading.
-- Preserved real size-option and variant-row generation.
-- Kept store submission at six total images: one main image and five gallery images.
-- Added preparation retries without duplicating archived products.
-- Added a lightweight alarm to recover a suspended queue.
-
-### Compatibility and diagnostics
-
-- Preserved the legacy `SizeactualChoiceNo` setting while standardizing on `SizeChoiceNo`.
-- Preserved single-product extraction and submission workflows.
-- Preserved archive, Excel, deletion, image, and external-log tools.
-- Added bilingual Arabic/English comments to modified code.
-
-## v3.2.0
-
-- Prevented `Extension context invalidated` from appearing as a fatal product-save error.
-- Added fallback retrieval of the latest prepared product from Flask.
-- Added multi-image validation, archive management, and external diagnostics.
+## Phase 7: Final Cleanup & Testing
+- **Goal**: Finalize dependencies, run smoke tests, and declare the refactor officially complete.
+- **Actions**:
+  - Moved legacy test `test_upload_main_image_only.py` to `backend/tests/` and updated it to use absolute service imports, passing 2/2 tests.
+  - Implemented `test_services_smoke.py` suite targeting all refactored domain services (using a mocked `ALPHACODE_ROOT_DIR` via `tempfile` to prevent corruption of real user data during test executions). All smoke tests passed successfully.
+  - Conducted a full audit of `.py` import statements and upgraded `backend/requirements.txt` to accurately reflect the true dependencies in use (including missing ones noted in Phase 0 like `reportlab`, `arabic-reshaper`, and `python-bidi`).
+  - Documented the entire 7-phase migration in this centralized `CHANGELOG.md`.
+- **Report**: `docs/reports/07_final_cleanup.md`

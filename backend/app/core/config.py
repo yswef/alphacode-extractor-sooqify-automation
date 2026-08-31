@@ -18,20 +18,6 @@ SYNC_QUEUE_PATH = os.path.join(BACKEND_ROOT, "data", "sync_queue.json")
 SYNC_STATE_PATH = os.path.join(BACKEND_ROOT, "data", "sync_state.json")
 
 
-def _normalize_text(value):
-    """Arabic: توحيد النصوص قبل التخزين. English: Normalize text before storage."""
-    return str(value or "").strip()
-
-
-def _safe_bool(value, fallback=False):
-    """Arabic: قراءة القيم المنطقية. English: Parse boolean-like values."""
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return fallback
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
 def load_json_file(path, default):
     """Arabic: قراءة JSON بأمان مع قيمة افتراضية عند التلف. English: Safely read JSON and fall back when the file is invalid."""
     if not os.path.exists(path):
@@ -66,21 +52,3 @@ def save_json_atomic(target_path, payload):
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
-
-
-def load_sync_config():
-    """Arabic: قراءة إعدادات المزامنة (تفعيل، رابط، مفتاح، اسم المستخدم). English: Read sync settings (enabled, URL, token, user name)."""
-    defaults = {"Enabled": False, "ServerUrl": "", "Token": "", "AddedByName": ""}
-    stored = load_json_file(SYNC_CONFIG_PATH, {})
-    defaults.update({key: stored.get(key, defaults[key]) for key in defaults})
-    return defaults
-
-
-def save_sync_config(config):
-    """Arabic: حفظ إعدادات المزامنة بعد تنظيفها. English: Persist sanitized sync settings."""
-    save_json_atomic(SYNC_CONFIG_PATH, {
-        "Enabled": _safe_bool(config.get("Enabled"), False),
-        "ServerUrl": _normalize_text(config.get("ServerUrl")).rstrip("/"),
-        "Token": _normalize_text(config.get("Token")),
-        "AddedByName": _normalize_text(config.get("AddedByName"))[:60],
-    })

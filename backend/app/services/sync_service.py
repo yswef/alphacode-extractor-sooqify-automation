@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 import requests
 
-from app.core.config import load_sync_config, save_json_atomic
+from app.repositories.sync_config_repository import load_sync_config
 from app.repositories.sync_queue_repository import load_sync_queue, save_sync_queue
 from app.repositories.sync_state_repository import load_sync_state, save_sync_state
 
@@ -25,18 +25,20 @@ SYNC_THROTTLE_COOLDOWN_SECONDS = 300
 #          large batch never floods the host fast enough to trigger a block in the first place.
 SYNC_REQUEST_PACING_SECONDS = 0.3
 
-# Arabic: الأرشيف ما زال في app.py (مستودع الأرشيف في Phase 4). يُربَط عند الإقلاع.
-# English: Archive still lives in app.py (archive repository is Phase 4). Bound at startup.
+# Arabic: الأرشيف مربوط عبر app.py عند الإقلاع (المسار يتغيّر حسب مجلد الحفظ المُعدّ من
+#         المستخدم)، لكن القراءة/الكتابة الفعلية صارت من app.repositories.archive_repository.
+# English: Archive is bound via app.py at startup (the path varies with the user's configured
+#          save folder), but actual read/write now goes through app.repositories.archive_repository.
 _load_archive = None
-_get_archive_path = None
+_save_archive = None
 _save_lock = None
 
 
-def bind_archive_runtime(load_archive, get_archive_path, save_lock):
+def bind_archive_runtime(load_archive, save_archive, save_lock):
     """Arabic: ربط قراءة/كتابة الأرشيف دون استيراد app.py. English: Bind archive I/O without importing app.py."""
-    global _load_archive, _get_archive_path, _save_lock
+    global _load_archive, _save_archive, _save_lock
     _load_archive = load_archive
-    _get_archive_path = get_archive_path
+    _save_archive = save_archive
     _save_lock = save_lock
 
 
@@ -192,7 +194,7 @@ def sync_pull_updates():
                     archive[key] = item
                     changed = True
             if changed:
-                save_json_atomic(_get_archive_path(), archive)
+                _save_archive(archive)
     with SYNC_LOCK:
         state["last_pull_at"] = (data or {}).get("server_time") or datetime.now().isoformat(timespec="seconds")
         state["last_error"] = ""
@@ -237,7 +239,7 @@ def sync_reconcile_full():
                 archive[key] = item
                 pulled_in += 1
         if pulled_in:
-            save_json_atomic(_get_archive_path(), archive)
+            _save_archive(archive)
 
     pushed = 0
     errors = []

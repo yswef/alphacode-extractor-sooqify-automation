@@ -40,6 +40,15 @@
     background-color: #218838 !important;
 }
 
+.alphacode-btn-yellow {
+    background-color: #e0a800 !important;
+    color: #1a1a1a !important;
+}
+
+.alphacode-btn-yellow:hover {
+    background-color: #c69500 !important;
+}
+
 .alphacode-generated-action-bar {
     margin-top: 10px;
     padding: 8px 0;
@@ -1200,6 +1209,15 @@
 
 .alphacode-btn-green:hover {
     background-color: #218838 !important;
+}
+
+.alphacode-btn-yellow {
+    background-color: #e0a800 !important;
+    color: #1a1a1a !important;
+}
+
+.alphacode-btn-yellow:hover {
+    background-color: #c69500 !important;
 }
 
 .alphacode-generated-action-bar {

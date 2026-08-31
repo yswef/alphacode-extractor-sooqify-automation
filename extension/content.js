@@ -1861,6 +1861,7 @@ function renderNewProductForm(context) {
         images,
         fields,
         imageSelection,
+        productType: detectedProductType,
     });
 }
 
@@ -2374,6 +2375,7 @@ async function submitProduct(context) {
         images,
         fields,
         imageSelection,
+        productType,
     } = context;
 
     const submitButton = modalBox.querySelector('#confirmExtractBtn');
@@ -2381,7 +2383,14 @@ async function submitProduct(context) {
     submitButton.disabled = true;
 
     const originalPrice = parseFloat(fields.price.value) || 0;
-    const finalFeePrice = originalPrice + Number(extractorConfig.AddedFeeYuan || 0);
+    // Arabic: نفس إصلاح رسوم الدفعة - اختيار رسم الساعة/الحذية حسب النوع المكتشف فعلياً،
+    //         بدل استخدام رسم الأحذية دايماً بغض النظر عن نوع المنتج.
+    // English: Same fix as the batch path - pick the watch/shoe fee based on the actually
+    //          detected type, instead of always using the shoes fee regardless of type.
+    const addedFee = productType === 'watches'
+        ? Number(extractorConfig.WatchFlatFeeYuan || 0)
+        : Number(extractorConfig.AddedFeeYuan || 0);
+    const finalFeePrice = originalPrice + addedFee;
     const finalSar = Math.round(finalFeePrice * Number(extractorConfig.ExchangeRate || 0));
     const sizes = uniqueSizes(fields.sizes.value.split(/[,،\s]+/).filter(Boolean));
 
@@ -2394,6 +2403,7 @@ async function submitProduct(context) {
         DescriptionAR: fields.descAR.value.trim(),
         BrandName: canonicalBrandName(fields.brandName.value),
         BrandId: Number(fields.brandId.value || 0),
+        ProductType: productType || 'shoes',
         Sizes: sizes,
         OriginalPrice: originalPrice,
         PriceAfterFee: finalFeePrice,
@@ -2407,7 +2417,14 @@ async function submitProduct(context) {
         SourceUrl: window.location.href,
         SupplierStoreName: extractorConfig.SupplierStoreName || '',
         SupplierStoreId: resolveSupplierStoreId(),
-        Settings: extractorConfig,
+        // Arabic: نفس إصلاح الدفعة بالضبط - الباك اند يقرأ ProductType من جوا Settings حصراً،
+        //         فنفرض هنا القيمة الصحيحة بدل توريث extractorConfig.ProductType العام كما هو
+        //         (واللي ممكن يكون عالق على "watches" من جلسة سابقة).
+        // English: Same fix as the batch path exactly - the backend reads ProductType only
+        //          from inside Settings, so we force the correct value here instead of
+        //          inheriting extractorConfig.ProductType as-is (which may be stuck on
+        //          "watches" from an earlier session).
+        Settings: { ...extractorConfig, ProductType: productType || 'shoes' },
     };
 
     try {
@@ -3616,9 +3633,10 @@ async function openBatchReviewModal() {
     renderBatchReviewSlides(modalBox, drafts);
 }
 
-async function prepareBatchDraftForStore(draft, batchId, batchIndex, batchTotal) {
+async function prepareBatchDraftForStore(draft, batchId, batchIndex, batchTotal, seenProductIdsInBatch = new Set()) {
     let pendingProduct = null;
     let productId = Number(draft.archiveData?.id || 0);
+    let isDuplicateInBatch = false;
 
     if (draft.archiveData?.exists && productId) {
         const pendingResponse = await fetch(`${API_BASE_URL}/api/pending/${productId}`, { cache: 'no-store' });
@@ -3626,7 +3644,16 @@ async function prepareBatchDraftForStore(draft, batchId, batchIndex, batchTotal)
         if (!pendingResponse.ok || !pendingData.success) throw new Error(pendingData.error || 'تعذر جلب المنتج المؤرشف.');
         pendingProduct = pendingData.pending_product;
     } else {
-        const addedFee = Number(extractorConfig.AddedFeeYuan || 0);
+        // Arabic: اختيار الرسم الصحيح حسب نوع المنتج المكتشف فعلياً - قبل هذا كان يستخدم
+        //         AddedFeeYuan (رسم الأحذية) دايماً حتى للساعات، لأن ProductType كانت
+        //         ثابتة عامة (config) وما توصل هنا مطلقاً.
+        // English: Pick the correct fee based on the actually-detected product type -
+        //          previously this always used AddedFeeYuan (the shoes fee) even for
+        //          watches, because ProductType was a static global config value that
+        //          never reached this real-upload path.
+        const addedFee = draft.productType === 'watches'
+            ? Number(extractorConfig.WatchFlatFeeYuan || 0)
+            : Number(extractorConfig.AddedFeeYuan || 0);
         const exchangeRate = Number(extractorConfig.ExchangeRate || 0);
         const priceAfterFee = draft.originalPrice + addedFee;
         const priceSAR = Math.round(priceAfterFee * exchangeRate);
@@ -3636,6 +3663,16 @@ async function prepareBatchDraftForStore(draft, batchId, batchIndex, batchTotal)
         }
         const batchSettings = {
             ...extractorConfig,
+            // Arabic: استبدال ProductType الموروث من الإعدادات العامة (قد يكون محفوظاً على
+            //         "watches" من جلسة سابقة) بالنوع المكتشف فعلياً لهذا المنتج بالذات.
+            //         الباك اند يقرأ ProductType من جوا Settings حصراً - وضعها بالمستوى
+            //         الأعلى للـ payload وحده (كما فعلنا سابقاً) لا يكفي ولا يُقرأ إطلاقاً.
+            // English: Override the ProductType inherited from the global settings (which
+            //          may be stuck on "watches" from an earlier session) with this specific
+            //          product's actually-detected type. The backend reads ProductType only
+            //          from inside Settings - setting it at the payload's top level alone (as
+            //          done previously) is never actually read.
+            ProductType: draft.productType || 'shoes',
             AutoSubmitDelaySeconds: 0,
             FastAutofillMode: true,
             DownloadSelectedImagesOnly: Boolean(extractorConfig.BatchDownloadSelectedImagesOnly),
@@ -3649,6 +3686,7 @@ async function prepareBatchDraftForStore(draft, batchId, batchIndex, batchTotal)
             DescriptionAR: draft.descriptionAR,
             BrandName: draft.brandName,
             BrandId: draft.brandId,
+            ProductType: draft.productType || 'shoes',
             Sizes: draft.sizes,
             OriginalPrice: draft.originalPrice,
             Variants: draft.variants || [],
@@ -3684,6 +3722,33 @@ async function prepareBatchDraftForStore(draft, batchId, batchIndex, batchTotal)
             productId = Number(result.id || 0);
             pendingProduct = result.pending_product;
         }
+    }
+
+    // Arabic: نفس المنتج (نفس id) ظهر بأكثر من بطاقة بهذي الدفعة - عادة يصير هذا لما
+    // المورد يعرض عدة صور/ألوان لنفس رقم الصنف كبطاقات منفصلة. لا نعيد إرساله للمتجر
+    // ثانية، ونعرض حالة واضحة "مكرر ضمن الدفعة - تم تجاهله" بدل تلوينه أخضر كنجاح جديد.
+    // English: The same product (same id) showed up on more than one card in this batch -
+    // this usually happens when the supplier lists several photos/colors under one item
+    // number as separate cards. Don't resubmit it to the store again, and show a clear
+    // "duplicate within batch - skipped" state instead of coloring it green as a fresh
+    // success.
+    if (productId && seenProductIdsInBatch.has(productId)) {
+        isDuplicateInBatch = true;
+    } else if (productId) {
+        seenProductIdsInBatch.add(productId);
+    }
+
+    if (isDuplicateInBatch) {
+        if (
+            draft.button?.isConnected
+            && draft.card?.isConnected
+            && getBatchCardKey(draft.card) === draft.key
+        ) {
+            draft.button.classList.remove('alphacode-btn-red', 'alphacode-btn-green');
+            draft.button.classList.add('alphacode-btn-yellow');
+            draft.button.innerHTML = `⚠ مكرر ضمن الدفعة - تم تجاهله (ID: ${productId})`;
+        }
+        return pendingProduct;
     }
 
     pendingProduct = {
@@ -3742,13 +3807,23 @@ async function startBatchPipeline(drafts) {
     renderBatchProgressPanel(latestBatchQueueState);
     const concurrency = Math.max(1, Math.min(Number(extractorConfig.BatchPreparationConcurrency || 1), 3));
 
+    // Arabic: تتبع أي id اتشاف بنفس الدفعة - لو نفس المنتج (بنفس SearchCode/StyleCode)
+    // ظهر بأكثر من بطاقة بنفس الدفعة (مثلاً عدة ألوان لنفس رقم الصنف)، نمنع إعادة إرساله
+    // للمتجر أكثر من مرة، ونعرض حالة "مكرر ضمن الدفعة" بدل ما نلوّنه أخضر كنجاح مستقل.
+    // English: Track ids seen within this same batch - if the same product (same
+    // SearchCode/StyleCode) shows up on more than one card in this batch (e.g. several
+    // colorway photos under one item number), stop re-submitting it to the store more
+    // than once, and show a distinct "duplicate within batch" state instead of a fresh
+    // green success per card.
+    const seenProductIdsInBatch = new Set();
+
     await mapWithConcurrency(drafts, concurrency, async (draft, index) => {
         const maximumAttempts = 1 + Math.max(0, Math.min(Number(extractorConfig.BatchMaxRetries || 0), 2));
         let lastError = null;
 
         for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
             try {
-                return await prepareBatchDraftForStore(draft, batchId, index + 1, drafts.length);
+                return await prepareBatchDraftForStore(draft, batchId, index + 1, drafts.length, seenProductIdsInBatch);
             } catch (error) {
                 lastError = error;
                 await logExtractorEvent(

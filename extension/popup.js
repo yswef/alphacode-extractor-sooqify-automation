@@ -1423,23 +1423,73 @@ async function initializePopup() {
     bindClick('loginBtnCheck', handleLoginOverlay);
     bindClick('logoutBtn', handleLogout);
     bindClick('copyBatchNamesBtn', copyAdminBatchNames);
+// Arabic: يقرأ BrandMapJson المحفوظ فعلياً من chrome.storage مباشرة (لا من عنصر
+//         الفورم ولا من currentConfig) - عشان يشتغل صح بغض النظر عن ترتيب الاستدعاء
+//         مقابل loadSavedConfig()، ويستخدم فعلياً نسخة المستخدم المحفوظة لا الافتراضي.
+// English: Reads the actually-saved BrandMapJson straight from chrome.storage (not the
+//          form element, not currentConfig) - so it works correctly regardless of call
+//          order relative to loadSavedConfig(), and uses the user's real saved copy
+//          instead of the hardcoded default.
+async function loadLocalBrandMap() {
+    try {
+        const stored = await chrome.storage.local.get(['extractorConfig']);
+        const raw = (stored.extractorConfig && stored.extractorConfig.BrandMapJson) || DEFAULTS.BrandMapJson || '{}';
+        return JSON.parse(raw);
+    } catch (_) {
+        return {};
+    }
+}
+
+// Arabic: يبني قائمة اختيار البراند الموحّدة (تعرض الاسم، تخزّن id) من /api/brands
+//         مباشرة، ولو فشل النداء نفسه (خطأ شبكة/502) ترجع لخريطة BrandMapJson المحلية
+//         كاحتياط كامل. تُزامن input#BrandName المخفي مع كل تغيير اختيار.
+// English: Builds the unified brand-select (shows the name, stores the id) straight
+//          from /api/brands, falling back entirely to the local BrandMapJson map when
+//          the call itself fails (network error/502). Keeps the hidden #BrandName
+//          input synced with every selection change.
 async function loadBrandsIntoSelect() {
     const select = byId('BrandId');
     if (!select) return;
+
+    let brands = [];
     try {
         const res = await fetch(`${API_BASE}/api/brands`, { cache: 'no-store' });
         const data = await res.json();
-        if (!res.ok || !data.success) return;
-        const currentVal = select.value;
-        select.innerHTML = '<option value="">— اختر براند —</option>';
-        (data.brands || []).forEach(b => {
-            const opt = document.createElement('option');
-            opt.value = b.id;
-            opt.textContent = `${b.name} (${b.id})`;
-            select.appendChild(opt);
-        });
-        if (currentVal) select.value = currentVal;
-    } catch (_) {}
+        if (res.ok && data.success && Array.isArray(data.brands) && data.brands.length) {
+            let localMapById = null;
+            if (data.brands.some(b => !b.name)) {
+                localMapById = {};
+                for (const [mapName, mapId] of Object.entries(await loadLocalBrandMap())) {
+                    localMapById[Number(mapId)] = mapName;
+                }
+            }
+            brands = data.brands.map(b => ({
+                id: b.id,
+                name: b.name || (localMapById && localMapById[Number(b.id)]) || `براند #${b.id}`,
+            }));
+        }
+    } catch (_) {
+        // Arabic: تُترك فارغة؛ الاحتياط الكامل بالأسفل يتكفّل بها. English: Left empty; the full fallback below takes over.
+    }
+
+    if (!brands.length) {
+        brands = Object.entries(await loadLocalBrandMap()).map(([name, id]) => ({ id: Number(id), name }));
+    }
+
+    const currentVal = select.value;
+    select.innerHTML = '<option value="">— اختر براند —</option>';
+    brands.forEach(b => {
+        const opt = document.createElement('option');
+        opt.value = b.id;
+        opt.textContent = b.name;
+        select.appendChild(opt);
+    });
+    if (currentVal) select.value = currentVal;
+
+    select.onchange = () => {
+        const chosen = select.selectedOptions[0];
+        if (byId('BrandName')) byId('BrandName').value = (chosen && chosen.value) ? chosen.textContent : '';
+    };
 }
 
 async function addBrandToServer() {
@@ -1471,11 +1521,18 @@ async function addBrandToServer() {
     bindClick('dataRepairApplyBtn', applyDataRepairFix);
     bindClick('dataRepairReportBtn', downloadDataRepairReports);
     bindClick('addBrandBtn', addBrandToServer);
-    loadBrandsIntoSelect();
 
     byId('AIProvider')?.addEventListener('change', handleAiProviderChange);
 
     try {
+        // Arabic: لازم ننتظر تحميل خيارات البراند أول - لو استدعيناها بدون await، ممكن
+        //         populateForm() يحاول يحدد BrandId المحفوظ بالـselect قبل ما خياراته
+        //         توصل أصلاً، فيفشل التحديد بصمت ويرجع الفورم فاضياً رغم وجود قيمة محفوظة.
+        // English: Brand options must be loaded first - calling this without await risked
+        //          populateForm() trying to select the saved BrandId before the select's
+        //          options even existed, silently failing and leaving the field blank
+        //          despite a saved value.
+        await loadBrandsIntoSelect();
         await loadSavedConfig();
         await checkLoginState();
         await Promise.all([

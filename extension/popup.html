@@ -278,11 +278,9 @@
 
         <article class="card">
             <h2>البراندات والمقاسات</h2>
-            <div class="grid-2">
-                <div class="field"><label for="BrandName">البراند الافتراضي</label><input id="BrandName" type="text"></div>
-                <div class="field"><label for="BrandId">Brand ID</label>
-                    <select id="BrandId" style="width:100%"><option value="">— اختر براند —</option></select>
-                </div>
+            <div class="field"><label for="BrandId">البراند</label>
+                <select id="BrandId" style="width:100%"><option value="">— اختر براند —</option></select>
+                <input id="BrandName" type="hidden">
             </div>
             <div class="field"><label for="BrandMapJson">خريطة البراندات JSON (احتياطي)</label><textarea id="BrandMapJson" dir="ltr"></textarea></div>
             <div class="grid-3">

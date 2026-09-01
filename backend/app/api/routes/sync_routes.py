@@ -33,14 +33,21 @@ def api_sync_reconcile():
 
 @sync_bp.route("/api/sync/now", methods=["POST"])
 def trigger_sync_now():
-    """Arabic: تشغيل دورة مزامنة فورية عند الضغط على زر 'مزامنة الآن'. English: Run one immediate sync cycle for the 'sync now' button."""
+    """Arabic: تشغيل دورة مزامنة فورية عند الضغط على زر 'مزامنة الآن'. لو فشل الـpull فعلياً (خطأ شبكة من sync_call)، يرجع success:false + error بالمستوى الأعلى - نفس نمط /api/brands - بدل ادّعاء نجاح لمجرد عدم وجود Python exception. English: Run one immediate sync cycle for the 'sync now' button. If the pull actually fails (a network error from sync_call), returns success:false + a top-level error - matching the /api/brands pattern - instead of claiming success just because no Python exception was raised."""
     if not load_sync_config()["Enabled"]:
         return jsonify({"success": False, "error": "Sync is not enabled."}), 400
     try:
-        sync_pull_updates()
+        pull_error = sync_pull_updates()
         sync_flush_queue()
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
+    if pull_error:
+        return jsonify({
+            "success": False,
+            "error": pull_error,
+            "status": load_sync_state(),
+            "pending_queue": len(load_sync_queue()),
+        }), 502
     return jsonify({"success": True, "status": load_sync_state(), "pending_queue": len(load_sync_queue())})
 
 @sync_bp.route("/api/sync/login", methods=["POST"])

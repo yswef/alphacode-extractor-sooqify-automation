@@ -173,17 +173,17 @@ def sync_flush_queue():
 
 
 def sync_pull_updates():
-    """Arabic: سحب منتجات الطرف الآخر ودمجها محلياً - يُستخدم في فحص التكرار حتى لا يعيد أحد الطرفين إضافة منتج أضافه الآخر. English: Pull the other side's products and merge locally - used by duplicate checks so neither side re-adds what the other already added."""
+    """Arabic: سحب منتجات الطرف الآخر ودمجها محلياً - يُستخدم في فحص التكرار حتى لا يعيد أحد الطرفين إضافة منتج أضافه الآخر. يرجع نص الخطأ لو فشل النداء، أو None لو نجح/كانت المزامنة معطّلة. English: Pull the other side's products and merge locally - used by duplicate checks so neither side re-adds what the other already added. Returns the error string on failure, or None on success/when sync is disabled."""
     config = load_sync_config()
     if not config["Enabled"]:
-        return
+        return None
     state = load_sync_state()
     data, error = sync_call("pull", {"since": state.get("last_pull_at", "")}, method="POST")
     if error:
         with SYNC_LOCK:
             state["last_error"] = error
             save_sync_state(state)
-        return
+        return error
     items = (data or {}).get("items") or {}
     if items:
         with _save_lock:

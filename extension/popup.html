@@ -96,6 +96,11 @@
         .stat b { display: block; color: var(--navy); font-size: 20px; }
         .stat span { font-size: 9px; color: var(--muted); }
         #logBox { direction: ltr; text-align: left; font-family: Consolas, monospace; font-size: 9px; min-height: 260px; max-height: 360px; overflow: auto; background: #0f1731; color: #c8f6ee; border-radius: 12px; padding: 11px; white-space: pre-wrap; }
+        .log-line { padding: 1px 0; white-space: pre-wrap; word-break: break-word; }
+        .log-line-error { color: #ff6b6b; font-weight: 600; }
+        .log-line-warning { color: #ffd166; }
+        .log-line-debug { color: #9aa0a6; }
+        .log-line-info { color: inherit; }
         #logPath { direction: ltr; text-align: left; word-break: break-all; color: var(--muted); font-size: 9px; margin-bottom: 8px; }
 
         #status { display: none; position: fixed; z-index: 20; left: 14px; right: 14px; bottom: 76px; border-radius: 12px; padding: 11px 12px; font-size: 11px; font-weight: 700; box-shadow: var(--shadow); }

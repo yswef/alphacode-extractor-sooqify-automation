@@ -738,6 +738,29 @@ async function clearAllData() {
 
 // Arabic: عرض آخر أسطر السجل الخارجي.
 // English: Display recent external-log lines.
+// Arabic: يحوّل نص HTML الخاص إلى كيانات آمنة قبل إدراجه بـinnerHTML - يمنع أي حقن HTML
+//         من محتوى السجل.
+// English: Escapes special HTML characters before inserting into innerHTML - prevents
+//          any HTML injection from log content.
+function escapeLogHtml(text) {
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+// Arabic: يحدد كلاس CSS حسب مستوى السطر (ERROR/CRITICAL أحمر، WARNING أصفر، DEBUG رمادي).
+// English: Picks a CSS class based on the line's level (ERROR/CRITICAL red, WARNING
+//          yellow, DEBUG gray).
+function logLevelClass(line) {
+    const parts = line.split('|');
+    const level = (parts[1] || '').trim().toUpperCase();
+    if (level === 'ERROR' || level === 'CRITICAL') return 'log-line log-line-error';
+    if (level === 'WARNING') return 'log-line log-line-warning';
+    if (level === 'DEBUG') return 'log-line log-line-debug';
+    return 'log-line log-line-info';
+}
+
 async function refreshLogs() {
     const logBox = byId('logBox');
     if (logBox) logBox.textContent = 'جاري تحميل السجل...';
@@ -754,7 +777,14 @@ async function refreshLogs() {
 
         if (byId('logPath')) byId('logPath').textContent = data.log_path || '';
         if (logBox) {
-            logBox.textContent = (data.lines || []).join('\n') || 'لا توجد أحداث مسجلة حتى الآن.';
+            const lines = data.lines || [];
+            if (!lines.length) {
+                logBox.textContent = 'لا توجد أحداث مسجلة حتى الآن.';
+            } else {
+                logBox.innerHTML = lines
+                    .map(line => `<div class="${logLevelClass(line)}">${escapeLogHtml(line)}</div>`)
+                    .join('');
+            }
             logBox.scrollTop = logBox.scrollHeight;
         }
     } catch (error) {

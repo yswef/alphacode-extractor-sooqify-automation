@@ -4,6 +4,8 @@ English: Application entry point — App Factory that registers all Blueprints a
 """
 import logging
 import os
+import socket
+import sys
 
 from flask import Flask, request
 from flask_cors import CORS
@@ -48,6 +50,52 @@ def create_app():
     return app
 
 
+def find_available_port(start_port=5000, max_attempts=5):
+    """
+    Arabic: يجرّب المنفذ المفضّل أولاً، ولو مشغول يجرّب المنافذ التالية بالتسلسل. حل مؤقت
+            لحين استقرار المشروع - لو تغيّر المنفذ، لازم تحديث BackendPort بـ
+            extension/config.js يدوياً.
+    English: Tries the preferred port first, then the next ones in sequence if busy. A
+             temporary stopgap until the project stabilizes - if the port changes, update
+             BackendPort in extension/config.js manually.
+    """
+    for offset in range(max_attempts):
+        candidate = start_port + offset
+        # Arabic: تعمّدنا عدم استخدام SO_REUSEADDR هنا - هذا الفحص لا يفتح أي اتصال فعلي
+        #         ولا يترك بيانات معلّقة (TIME_WAIT)، فما نحتاجه أصلاً. وعلى Windows تحديداً
+        #         SO_REUSEADDR يخلي bind() ينجح حتى لو المنفذ مشغول فعلياً بسوكيت آخر شغّال
+        #         بالاستماع - سلوك موثّق يختلف عن Linux، اكتُشف بتحقق فعلي (تشغيل نسختين
+        #         متزامنتين + netstat أظهر الاثنتين LISTENING على نفس المنفذ). حذف السطر
+        #         يرجّع السلوك الحصري الصحيح على كل الأنظمة بدون أي فرع خاص بـWindows.
+        # English: SO_REUSEADDR is deliberately omitted here - this probe never opens a
+        #          real connection and leaves no TIME_WAIT state, so it isn't needed. On
+        #          Windows specifically, SO_REUSEADDR lets bind() succeed even when the
+        #          port is already held by another actively-listening socket - a
+        #          documented difference from Linux, discovered via real testing (two
+        #          simultaneous instances + netstat showed both LISTENING on the same
+        #          port). Removing it restores correct exclusive-bind behavior on every
+        #          platform with no Windows-specific branching needed.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            try:
+                probe.bind(("127.0.0.1", candidate))
+                return candidate
+            except OSError:
+                continue
+    raise RuntimeError(
+        f"No available port found in range {start_port}-{start_port + max_attempts - 1}. "
+        f"Close one of the applications using these ports and try again."
+    )
+
+
 if __name__ == "__main__":
     app = create_app()
-    app.run(port=5000, debug=False)
+    chosen_port = find_available_port(5000, 5)
+    if chosen_port != 5000:
+        print(
+            f"[app.main] Port 5000 is busy - using port {chosen_port} instead.\n"
+            f"[app.main] IMPORTANT: open extension/config.js and set BackendPort: "
+            f"{chosen_port}, then reload the extension (chrome://extensions -> Reload) "
+            f"or it will keep trying to reach port 5000.",
+            file=sys.stderr,
+        )
+    app.run(port=chosen_port, debug=False)

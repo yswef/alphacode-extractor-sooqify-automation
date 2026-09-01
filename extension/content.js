@@ -1567,7 +1567,19 @@ function renderNewProductForm(context) {
         images,
     } = context;
 
-    const addedFee = Number(extractorConfig.AddedFeeYuan || 0);
+    const detectedProductType = detectProductType(sourceText);
+    // Arabic: نفس إصلاح الرسوم بمسار الإرسال الفعلي (submitProduct) - اختيار رسم الساعة/
+    //         الحذية حسب النوع المكتشف فعلياً، بدل استخدام رسم الأحذية دايماً. قبل هذا
+    //         الإصلاح كانت المعاينة تعرض سعراً أقل من الفعلي للساعات (رسم 250 بدل 600
+    //         يوان)، رغم إن المُرسَل فعلياً كان صحيحاً - المستخدم يشوف رقم مختلف بالمعاينة.
+    // English: Same fix as the actual-submission path (submitProduct) - pick the watch/
+    //          shoe fee based on the actually-detected type, instead of always using the
+    //          shoes fee. Before this fix the preview showed a lower-than-real price for
+    //          watches (250 fee instead of 600), even though the actually-submitted price
+    //          was already correct - the user saw a different number in the preview.
+    const addedFee = detectedProductType === 'watches'
+        ? Number(extractorConfig.WatchFlatFeeYuan || 0)
+        : Number(extractorConfig.AddedFeeYuan || 0);
     const exchangeRate = Number(extractorConfig.ExchangeRate || 0);
     const priceAfterFee = originalPrice + addedFee;
     const priceSAR = Math.round(priceAfterFee * exchangeRate);
@@ -1577,7 +1589,6 @@ function renderNewProductForm(context) {
     const fallbackNameAR = buildFallbackArabicName(sourceText, styleCode);
     const fallbackDescriptionAR = buildFallbackArabicDescription(sourceText, styleCode);
     const fallbackBrand = canonicalBrandName(sourceText);
-    const detectedProductType = detectProductType(sourceText);
 
     const contentArea = modalBox.querySelector('#modal-content-area');
     contentArea.className = '';

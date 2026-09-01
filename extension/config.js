@@ -8,6 +8,15 @@
     'use strict';
 
     const defaults = {
+        // Arabic: منفذ الباك اند المحلي - القيمة الافتراضية 5000. لو الباك اند بدّل المنفذ
+        //         تلقائياً بسبب انشغال 5000 (شوف رسالة الطرفية عند تشغيل python -m app.main)،
+        //         غيّر هذا الرقم يدوياً هنا وأعد تحميل الإكستنشن (chrome://extensions → Reload).
+        // English: Local backend port - default 5000. If the backend auto-switched ports
+        //          because 5000 was busy (see the terminal message when running
+        //          python -m app.main), change this number here manually and reload the
+        //          extension (chrome://extensions → Reload).
+        BackendPort: 5000,
+
         // Arabic: هوية المتجر المستهدف.
         // English: Target-store identity.
         StoreProfileName: 'Sooqify Online',

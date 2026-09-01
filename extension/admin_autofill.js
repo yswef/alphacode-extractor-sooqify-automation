@@ -7,7 +7,7 @@
 'use strict';
 
 const ADMIN_DEFAULTS = globalThis.ALPHACODE_DEFAULT_CONFIG || {};
-const LOCAL_API_BASE = 'http://127.0.0.1:5000';
+const LOCAL_API_BASE = `http://127.0.0.1:${(globalThis.ALPHACODE_DEFAULT_CONFIG || {}).BackendPort || 5000}`;
 const FALLBACK_RETRY_QUERY_KEY = 'alphacode_retry';
 const FALLBACK_RETRY_SESSION_KEY = 'alphacodeFallbackRetryContext';
 let adminConfig = { ...ADMIN_DEFAULTS };

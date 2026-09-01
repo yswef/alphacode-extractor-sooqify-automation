@@ -4,7 +4,7 @@
 
 'use strict';
 
-const API_BASE_URL = 'http://127.0.0.1:5000';
+const API_BASE_URL = `http://127.0.0.1:${(globalThis.ALPHACODE_DEFAULT_CONFIG || {}).BackendPort || 5000}`;
 const PRODUCT_CARD_SELECTOR = [
     '[class*="normal_item_timeline_common_item"]',
     '[class*="goods-item"]',

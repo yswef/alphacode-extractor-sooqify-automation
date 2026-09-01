@@ -6,7 +6,8 @@
 
 'use strict';
 
-const LOCAL_API_BASE = 'http://127.0.0.1:5000';
+importScripts('config.js');
+const LOCAL_API_BASE = `http://127.0.0.1:${(globalThis.ALPHACODE_DEFAULT_CONFIG || {}).BackendPort || 5000}`;
 const DEFAULT_SOOQIFY_ADD_URL = 'https://admin.sooqifyonline.com/admin/item/add-new';
 const FALLBACK_JOBS_KEY = 'alphacodeFallbackSubmissionJobs';
 const BATCH_QUEUE_KEY = 'alphacodeBatchQueueState';

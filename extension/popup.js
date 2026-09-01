@@ -6,7 +6,7 @@
 
 'use strict';
 
-const API_BASE = 'http://127.0.0.1:5000';
+const API_BASE = `http://127.0.0.1:${(globalThis.ALPHACODE_DEFAULT_CONFIG || {}).BackendPort || 5000}`;
 const DEFAULTS = globalThis.ALPHACODE_DEFAULT_CONFIG || {};
 
 const NUMBER_FIELDS = new Set([
@@ -517,6 +517,19 @@ async function sendSupplierCommand(tabId, message) {
     }
 
     throw lastError || new Error('صفحة المورد لم تصبح جاهزة لاستقبال الأمر.');
+}
+
+// Arabic: فتح رابط متجر المورد الثابت مباشرة (زر "فتح المورد" بالـfooter) - بدون أي
+//         منطق ديناميكي أو محاولة تموضع لآخر منتج.
+// English: Open the fixed supplier store link directly (footer "Open supplier" button) -
+//          no dynamic lookup or last-product positioning.
+async function openSupplierHomeDirectly() {
+    try {
+        await chrome.tabs.create({ url: 'https://brandkingdoms.com/', active: true });
+        window.close();
+    } catch (error) {
+        showStatus(error.message, 'error', 7500);
+    }
 }
 
 // Arabic: فتح المورد والنزول تلقائياً إلى آخر منتج أضيف.
@@ -1339,7 +1352,7 @@ async function initializePopup() {
     bindClick('searchArchiveBtn', searchArchive);
     bindClick('prepareArchiveBtn', prepareArchivedProduct);
     bindClick('requestSupplierProductBtn', requestProductFromSupplier);
-    bindClick('openStoreBtn', openSupplierAtLastProduct);
+    bindClick('openStoreBtn', openSupplierHomeDirectly);
     bindClick('openStoreBtnInline', openSupplierAtLastProduct);
     bindClick('refreshStatsBtn', refreshArchiveStats);
     bindClick('deleteProductBtn', deleteProductData);

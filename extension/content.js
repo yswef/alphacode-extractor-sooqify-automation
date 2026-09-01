@@ -235,109 +235,6 @@ function logPricePattern(rawToken, parsedPrice, productType, styleCode, searchCo
     acLog('price', `Price pattern: "${rawToken}" → ${parsedPrice} (${productType})`);
 }
 
-// =========================================================
-// Arabic: نظام حظر الصور الملوثة — يحسب توقيع (perceptual hash بسيط) لكل صورة
-//         ويقارنها بقائمة توقيعات محفوظة في chrome.storage. لو تطابقت بنسبة ≥85%
-//         تُحذف الصورة من النتائج قبل أن تظهر للمستخدم. التوقيع لا يعتمد على
-//         الـURL (قد يتغير) بل على محتوى الصورة نفسها.
-// English: Contaminated-image blocking — computes a simple perceptual hash for every
-//          image and compares it against signatures stored in chrome.storage. Images
-//          matching a banned signature at ≥85% are removed before the user sees them.
-//          The signature is content-based, not URL-based (URLs can change).
-// =========================================================
-
-const BANNED_SIGS_STORAGE_KEY = 'alphacode_banned_image_sigs';
-let _bannedSigs = null;
-
-async function loadBannedSigs() {
-    if (_bannedSigs !== null) return _bannedSigs;
-    try {
-        const stored = await chrome.storage.local.get(BANNED_SIGS_STORAGE_KEY);
-        _bannedSigs = stored[BANNED_SIGS_STORAGE_KEY] || [];
-    } catch (_) {
-        _bannedSigs = [];
-    }
-    return _bannedSigs;
-}
-
-async function saveBannedSigs(sigs) {
-    _bannedSigs = sigs;
-    try {
-        await chrome.storage.local.set({ [BANNED_SIGS_STORAGE_KEY]: sigs });
-    } catch (_) {}
-}
-
-// Arabic: perceptual hash بسيط — يُصغّر الصورة لـ16×16 رمادي ويحسب قيمة وسيطة ثم bit-string.
-// English: Simple perceptual hash — downsample to 16×16 grayscale, compute median, build bit-string.
-async function computeImagePHash(url) {
-    try {
-        const img = new Image();
-        img.crossOrigin = 'anonymous';
-        await new Promise((res, rej) => {
-            img.onload = res;
-            img.onerror = rej;
-            img.src = url;
-        });
-        const size = 16;
-        const canvas = document.createElement('canvas');
-        canvas.width = size; canvas.height = size;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, size, size);
-        const pixels = ctx.getImageData(0, 0, size, size).data;
-        const grays = [];
-        for (let i = 0; i < pixels.length; i += 4) {
-            grays.push(pixels[i] * 0.299 + pixels[i + 1] * 0.587 + pixels[i + 2] * 0.114);
-        }
-        const median = [...grays].sort((a, b) => a - b)[Math.floor(grays.length / 2)];
-        return grays.map(g => g > median ? '1' : '0').join('');
-    } catch (_) {
-        return null;
-    }
-}
-
-// Arabic: نسبة التشابه بين توقيعين (0.0 → 1.0). توقيعان متطابقان يعطيان 1.0.
-// English: Similarity between two hash strings (0.0 → 1.0). Identical hashes give 1.0.
-function pHashSimilarity(a, b) {
-    if (!a || !b || a.length !== b.length) return 0;
-    let same = 0;
-    for (let i = 0; i < a.length; i++) if (a[i] === b[i]) same++;
-    return same / a.length;
-}
-
-// Arabic: يُضيف توقيع صورة URL للقائمة المحظورة.
-// English: Adds a URL's image signature to the banned list.
-async function banImageUrl(url, label = '') {
-    const sig = await computeImagePHash(url);
-    if (!sig) { acLog('warn', 'Could not compute pHash for banned image', url); return false; }
-    const sigs = await loadBannedSigs();
-    if (sigs.some(s => pHashSimilarity(s.hash, sig) >= 0.95)) {
-        acLog('info', 'Image already banned (duplicate signature)'); return false;
-    }
-    sigs.push({ hash: sig, label: label || url.slice(-40), addedAt: Date.now() });
-    await saveBannedSigs(sigs);
-    acLog('ok', `Banned image added. Total banned: ${sigs.length}`, label);
-    return true;
-}
-
-// Arabic: يُصفّي قائمة URLs ويحذف أي صورة تطابق توقيعاً محظوراً بنسبة ≥85%.
-// English: Filters a URL list and drops any image matching a banned signature at ≥85%.
-async function filterBannedImages(urls) {
-    const sigs = await loadBannedSigs();
-    if (!sigs.length) return urls;
-    const results = [];
-    for (const url of urls) {
-        const hash = await computeImagePHash(url);
-        if (!hash) { results.push(url); continue; }
-        const isBanned = sigs.some(s => pHashSimilarity(s.hash, hash) >= 0.85);
-        if (isBanned) {
-            acLog('warn', `Blocked contaminated image: ${url.slice(-60)}`);
-        } else {
-            results.push(url);
-        }
-    }
-    return results;
-}
-
 async function loadConfiguration() {
     const result = await safeStorageGet(['extractorConfig']);
     extractorConfig = { ...DEFAULT_CONFIG, ...(result.extractorConfig || {}) };
@@ -1225,11 +1122,14 @@ function requestBridgeImages(productBox, searchCode, styleCode, visibleImages) {
 
 // Arabic: دالة extractAllImages جزء من تدفق الاستخراج ويمكن تخصيصها عند نقل الأداة.
 // English: extractAllImages is part of the extraction flow and can be adapted for another store.
-// Arabic: تم تعطيل حد MaxImages وفلتر perceptual-hash عمداً — كل الصور المكتشفة تُعاد كاملة
-//         بدون قصّ أو حظر تلقائي؛ زر 🚫 اليدوي في واجهة المراجعة يبقى القناة الوحيدة للاستبعاد.
-// English: MaxImages cap and the perceptual-hash filter are intentionally disabled — every
-//          discovered image is returned in full, with no automatic trimming or blocking; the
-//          manual 🚫 button in the review UI remains the only exclusion channel.
+// Arabic: تم تعطيل حد MaxImages عمداً — كل الصور المكتشفة تُعاد كاملة بدون أي قصّ.
+//         (تحديث: نظام حظر الصور اليدوي/perceptual-hash حُذف بالكامل من المشروع - لم يعد
+//         موجوداً أي قناة استبعاد تلقائي أو يدوي، لا هنا ولا بأي مكان ثاني بالإكستنشن.)
+// English: The MaxImages cap is intentionally disabled — every discovered image is
+//          returned in full, with no automatic trimming.
+//          (Update: the manual/perceptual-hash image-ban system was removed entirely
+//          from the project - there is no exclusion channel left, here or anywhere
+//          else in the extension.)
 async function extractAllImages(productBox, searchCode, styleCode) {
     const visibleImages = extractDomImages(productBox);
     const bridgeImages = await requestBridgeImages(productBox, searchCode, styleCode, visibleImages);
@@ -3005,7 +2905,6 @@ function initializeBatchDraftImageSelector(slide, draft) {
         card.dataset.index = String(index);
         card.innerHTML = `
             <img loading="lazy" alt="Product image ${index + 1}">
-            <button class="batch-ban-image-btn" title="حظر هذه الصورة الملوثة من كل المنتجات" type="button">🚫</button>
             <div class="batch-image-choice-footer">
                 <label><input class="batch-image-check" type="checkbox"> رفع</label>
                 <label><input class="batch-image-main" type="radio" name="batch-main-image-${stableBatchHash(draft.key)}"> رئيسية</label>
@@ -3020,19 +2919,6 @@ function initializeBatchDraftImageSelector(slide, draft) {
             if (!selected.has(index) && !setSelected(index, true)) return;
             mainIndex = index;
             refresh();
-        });
-        // Arabic: حظر الصورة الملوثة — يحسب توقيعها ويحفظه، ثم يحذفها من الدفعة الحالية.
-        // English: Ban a contaminated image — computes its signature, saves it, removes it from current batch.
-        card.querySelector('.batch-ban-image-btn').addEventListener('click', async () => {
-            const banned = await banImageUrl(url, `manual_ban_${new Date().toISOString().slice(0,10)}`);
-            if (banned) {
-                selected.delete(index);
-                if (mainIndex === index) mainIndex = Array.from(selected)[0] ?? 0;
-                draft.images.splice(index, 1);
-                card.remove();
-                refresh();
-                acLog('ok', `Image banned. Future products will not show it.`);
-            }
         });
         grid.appendChild(card);
     });

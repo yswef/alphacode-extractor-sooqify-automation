@@ -4,12 +4,18 @@ English: Blueprint for core routes: health check, path management, and brand man
 Route = HTTP facade only. All logic stays in services / repositories.
 """
 import logging
+import os
 from flask import Blueprint, jsonify, request
 
 from app.core.runtime import paths_state
 from app.repositories.paths_repository import save_paths_config
 from app.repositories.sync_config_repository import load_sync_config
-from app.services.ai_helpers import open_native_folder_dialog
+from app.services.ai_helpers import (
+    DEFAULT_AI_MODEL,
+    DEFAULT_AI_PROVIDER,
+    normalize_ai_provider,
+    open_native_folder_dialog,
+)
 from app.services.sync_service import sync_call
 
 logger = logging.getLogger(__name__)
@@ -23,9 +29,43 @@ core_bp = Blueprint("core", __name__)
 
 @core_bp.route("/api/health", methods=["GET"])
 def health_check():
-    """Arabic: فحص صحة الخادم. English: Server health check."""
+    """
+    Arabic: فحص صحة الخادم ومفاتيح مزودي الذكاء الاصطناعي. حقول "success"،
+            "ai_configured"، "ai_provider"، "version"، "needs_folder_setup" إلزامية -
+            popup.js يعتمد عليها فعلياً بدالة checkServer()/formatAiProvider() لتحديد
+            لون مؤشري "متصل"/"الذكاء الاصطناعي"؛ نسخة سابقة من هذا المسار (أُعيد بناؤه
+            بمرحلة الريفاكتور) كانت تُرجع status/sync_enabled/root_dir فقط بدون
+            success، فيفشل الفحص بالكامل بصمت (!data.success صحيح دايماً) حتى
+            والسيرفر شغّال فعلاً - نفس النمط بمسارين مختلفين موثّق بتاريخ المشروع.
+    English: Server health check and configured AI-provider keys. The "success",
+             "ai_configured", "ai_provider", "version", "needs_folder_setup" fields are
+             mandatory - popup.js's checkServer()/formatAiProvider() actually depend on
+             them to color the "connected"/"AI" indicators; an earlier rebuild of this
+             route (from the refactor phase) returned only status/sync_enabled/root_dir
+             with no success field, so the check always silently failed
+             (!data.success is always true) even while the server was genuinely up.
+    """
+    default_provider = normalize_ai_provider(os.getenv("ALPHACODE_AI_PROVIDER"))
+    provider_keys = {
+        "groq": bool(os.getenv("GROQ_API_KEY")),
+        "openai": bool(os.getenv("OPENAI_API_KEY")),
+        "custom": bool(os.getenv(os.getenv("ALPHACODE_AI_KEY_ENV", "ALPHACODE_AI_API_KEY"))),
+    }
+    default_model = (
+        os.getenv("OPENAI_MODEL", DEFAULT_AI_MODEL)
+        if default_provider == "openai"
+        else os.getenv("GROQ_MODEL", DEFAULT_AI_MODEL)
+    )
     return jsonify({
+        "success": True,
         "status": "ok",
+        "service": "AlphaCode Extractor",
+        "version": "5.7.1",
+        "ai_provider": default_provider,
+        "ai_configured": provider_keys.get(default_provider, False),
+        "ai_providers": provider_keys,
+        "default_ai_model": default_model,
+        "needs_folder_setup": not paths_state.ROOT_DIR_CONFIGURED,
         "sync_enabled": load_sync_config().get("Enabled", False),
         "root_dir_configured": paths_state.ROOT_DIR_CONFIGURED,
         "root_dir": paths_state.ROOT_DIR,

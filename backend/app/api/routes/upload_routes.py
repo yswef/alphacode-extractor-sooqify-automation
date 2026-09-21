@@ -29,6 +29,7 @@ from app.repositories.sync_config_repository import load_sync_config
 from app.services.sync_service import sync_push_product, sync_reserve_id, sync_reserve_key
 from app.services.upload_service import (
     build_variant_fields,
+    build_watch_variations_from_absolute_yuan,
     download_single_image,
     extract_settings,
     json_cell,
@@ -598,20 +599,11 @@ def extract_product():
                     watch_colors.append({"label": clabel, "_abs_price_yuan": abs_price})
 
             if watch_colors and settings["ProductType"] == "watches":
-                watch_stock = settings["Stock"]
-                watch_attr_id = str(settings["WatchColorAttributeId"])
-                watch_attr_title = settings["WatchColorTitle"]
-                variant_price_rows = []
-                for vc in watch_colors:
-                    color_price_sar = round(vc["_abs_price_yuan"] * settings["ExchangeRate"])
-                    variant_price_rows.append({"type": vc["label"], "price": color_price_sar, "stock": watch_stock})
-                if not variant_price_rows:
-                    default_yuan = safe_float(data.get("OriginalPrice"), 0) + settings["WatchFlatFeeYuan"]
-                    variant_price_rows = [{"type": "Default", "price": round(default_yuan * settings["ExchangeRate"]), "stock": watch_stock}]
-                variations = json_cell(variant_price_rows)
-                choice_options = json_cell([{"name": f"choice_{watch_attr_id}", "title": watch_attr_title, "options": [r["type"] for r in variant_price_rows]}])
-                attributes = json_cell([watch_attr_id])
-                total_stock = watch_stock * len(variant_price_rows)
+                variations, choice_options, attributes, total_stock, variant_price_rows = (
+                    build_watch_variations_from_absolute_yuan(
+                        watch_colors, settings, data.get("OriginalPrice"),
+                    )
+                )
             else:
                 variations, choice_options, attributes, total_stock = build_variant_fields(
                     sizes, data.get("WatchColors"), data.get("PriceSAR"),

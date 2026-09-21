@@ -14,6 +14,8 @@ from app.api.routes.core_routes import core_bp
 from app.api.routes.sync_routes import sync_bp
 from app.api.routes.reports_routes import reports_bp
 from app.api.routes.upload_routes import upload_bp
+from app.services.ai_helpers import configure_application_logging, load_archive, save_archive, SAVE_LOCK
+from app.services.sync_service import bind_archive_runtime
 
 
 def create_app():
@@ -22,6 +24,15 @@ def create_app():
 
     app.config["MAX_CONTENT_LENGTH"] = 512 * 1024
     CORS(app)
+
+    # Arabic: ربط sync_service بقراءة/كتابة الأرشيف - بدونه تبقى _load_archive/_save_archive/
+    #         _save_lock بـsync_service.py مساوية None للأبد (bind_archive_runtime كانت
+    #         تُستدعى فقط من backend/app.py القديم، غير المستخدم بنقطة التشغيل هذه).
+    # English: Wire sync_service to archive read/write - without this, sync_service.py's
+    #          _load_archive/_save_archive/_save_lock stay None forever (bind_archive_runtime
+    #          was only ever called from the legacy backend/app.py, which this entry point
+    #          does not use).
+    bind_archive_runtime(load_archive, save_archive, SAVE_LOCK)
 
     # Register all Blueprints
     app.register_blueprint(core_bp)
@@ -88,6 +99,18 @@ def find_available_port(start_port=5000, max_attempts=5):
 
 
 if __name__ == "__main__":
+    # Arabic: تُستدعى هنا فقط (لا داخل create_app) عشان ما تلوّث سجلات pytest عند
+    #         استيراد create_app() للاختبارات - هذا نظام اللوق الحقيقي الوحيد بالمشروع
+    #         (ملف + طرفية ملوّنة)؛ كان معرَّفاً بالكامل بـai_helpers.py لكن غير مستدعى
+    #         من أي مكان إطلاقاً بنقطة التشغيل الحالية (تحقق فعلي: alphacode.log ما
+    #         تغيّر بعد طلب حقيقي)، فملف السجل والطرفية الملوّنة كانا معطّلين بصمت.
+    # English: Called only here (not inside create_app) so pytest imports of create_app()
+    #          don't get logging side effects - this is the project's only real logging
+    #          system (file + colored console); it was fully defined in ai_helpers.py but
+    #          never invoked anywhere in the current entry point (verified live: alphacode.log
+    #          did not change after a real request), so both the file log and colored
+    #          console were silently disabled.
+    configure_application_logging()
     app = create_app()
     chosen_port = find_available_port(5000, 5)
     if chosen_port != 5000:

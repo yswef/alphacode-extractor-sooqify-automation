@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "AlphaCode Product Extractor",
-  "version": "5",
-  "description": "هاي النسخة الاصلية يا معود",
+  "version": "5.7.1",
+  "description": "أداة داخلية تستخرج بيانات المنتجات من متجر المورد الصيني وترفعها تلقائياً إلى متجر Sooqify، مع مزامنة مركزية للأرشيف بين المستخدمين.",
   "permissions": [
     "activeTab",
     "scripting",

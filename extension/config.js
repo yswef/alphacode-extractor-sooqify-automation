@@ -1,5 +1,5 @@
 // =========================================================
-// AlphaCode Extractor v4 - Shared Default Configuration
+// AlphaCode Extractor v5.7.1 - Shared Default Configuration
 // Arabic: مصدر موحد للإعدادات مع دعم المورد والصور ومزودي الذكاء الاصطناعي.
 // English: Central defaults for supplier navigation, images, and AI providers.
 // =========================================================
@@ -65,13 +65,6 @@
         // English: Brand and size variants.
         BrandName: 'Air Jordan',
         BrandId: 6,
-        BrandMapJson: `{
-    "Air Jordan": 6,
-    "Nike": 7,
-    "Adidas": 8,
-    "New Balance": 9,
-    "Rolex":10
-}`,
         SizeAttributeId: 1,
         SizeChoiceNo: 1,
         SizeactualChoiceNo: 1,

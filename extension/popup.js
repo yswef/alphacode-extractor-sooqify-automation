@@ -1,5 +1,5 @@
 // =========================================================
-// AlphaCode Extractor v4 - Popup Controller
+// AlphaCode Extractor v5.7.1 - Popup Controller
 // Arabic: إدارة الإعدادات، المورد، طلب المنتجات، البيانات، والتشخيص.
 // English: Manages settings, supplier workflows, product requests, data, and diagnostics.
 // =========================================================
@@ -149,12 +149,6 @@ function readForm() {
         } else {
             config[key] = String(element.value || '').trim();
         }
-    }
-
-    try {
-        JSON.parse(config.BrandMapJson || '{}');
-    } catch (_) {
-        throw new Error('خريطة البراندات ليست JSON صالحاً.');
     }
 
     config.SizeChoiceNo = Number(
@@ -315,7 +309,7 @@ async function saveConfiguration() {
         }
     }
 
-    showStatus('تم حفظ إعدادات AlphaCode v5.0.0 وتطبيقها.', 'success');
+    showStatus('تم حفظ إعدادات AlphaCode v5.7.1 وتطبيقها.', 'success');
     await checkServer();
 }
 
@@ -1423,30 +1417,42 @@ async function initializePopup() {
     bindClick('loginBtnCheck', handleLoginOverlay);
     bindClick('logoutBtn', handleLogout);
     bindClick('copyBatchNamesBtn', copyAdminBatchNames);
-// Arabic: يقرأ BrandMapJson المحفوظ فعلياً من chrome.storage مباشرة (لا من عنصر
-//         الفورم ولا من currentConfig) - عشان يشتغل صح بغض النظر عن ترتيب الاستدعاء
-//         مقابل loadSavedConfig()، ويستخدم فعلياً نسخة المستخدم المحفوظة لا الافتراضي.
-// English: Reads the actually-saved BrandMapJson straight from chrome.storage (not the
-//          form element, not currentConfig) - so it works correctly regardless of call
-//          order relative to loadSavedConfig(), and uses the user's real saved copy
-//          instead of the hardcoded default.
-async function loadLocalBrandMap() {
+// Arabic: مفتاح الكاش المشترك مع content.js (resolveBrandId) - نفس الاسم بالضبط
+//         بالملفين، القراءة/الكتابة تصير عبر chrome.storage.local بكلا الاتجاهين.
+// English: Cache key shared with content.js (resolveBrandId) - the exact same name in
+//          both files, read/write happens through chrome.storage.local both ways.
+const BRANDS_CACHE_STORAGE_KEY = 'alphacode_brands_cache';
+
+// Arabic: يقرأ آخر نسخة محفوظة من قائمة البراندات بـchrome.storage (كتبها آخر نداء
+//         ناجح لـ/api/brands، من هذا popup أو من content.js) - يُستخدم فقط لو نداء
+//         /api/brands الحي فشل بالكامل الآن. لا يوجد أي مصدر محلي ثابت بعد الآن
+//         (BrandMapJson انحذفت بالكامل - الاعتماد صار كلياً على السيرفر + كاش منه).
+// English: Reads the last cached brand list from chrome.storage (written by the last
+//          successful /api/brands call, from this popup or from content.js) - used only
+//          when the live /api/brands call fails entirely right now. No fixed local
+//          source exists anymore (BrandMapJson was removed entirely - reliance is fully
+//          on the server + a cache of it).
+async function loadBrandsCacheFallback() {
     try {
-        const stored = await chrome.storage.local.get(['extractorConfig']);
-        const raw = (stored.extractorConfig && stored.extractorConfig.BrandMapJson) || DEFAULTS.BrandMapJson || '{}';
-        return JSON.parse(raw);
+        const stored = await chrome.storage.local.get([BRANDS_CACHE_STORAGE_KEY]);
+        const cached = stored[BRANDS_CACHE_STORAGE_KEY];
+        return Array.isArray(cached) ? cached : [];
     } catch (_) {
-        return {};
+        return [];
     }
 }
 
 // Arabic: يبني قائمة اختيار البراند الموحّدة (تعرض الاسم، تخزّن id) من /api/brands
-//         مباشرة، ولو فشل النداء نفسه (خطأ شبكة/502) ترجع لخريطة BrandMapJson المحلية
-//         كاحتياط كامل. تُزامن input#BrandName المخفي مع كل تغيير اختيار.
+//         مباشرة، ويحفظ النتيجة الناجحة بـchrome.storage (alphacode_brands_cache) عشان
+//         content.js (resolveBrandId) يقدر يستخدمها بدون أي نداء شبكة إضافي. لو فشل
+//         نداء /api/brands نفسه (خطأ شبكة/502) ترجع لآخر نسخة محفوظة بالكاش كاحتياط
+//         كامل. تُزامن input#BrandName المخفي مع كل تغيير اختيار.
 // English: Builds the unified brand-select (shows the name, stores the id) straight
-//          from /api/brands, falling back entirely to the local BrandMapJson map when
-//          the call itself fails (network error/502). Keeps the hidden #BrandName
-//          input synced with every selection change.
+//          from /api/brands, and persists a successful result to chrome.storage
+//          (alphacode_brands_cache) so content.js (resolveBrandId) can use it without an
+//          extra network call. Falls back entirely to the last cached list when the
+//          /api/brands call itself fails (network error/502). Keeps the hidden
+//          #BrandName input synced with every selection change.
 async function loadBrandsIntoSelect() {
     const select = byId('BrandId');
     if (!select) return;
@@ -1456,24 +1462,18 @@ async function loadBrandsIntoSelect() {
         const res = await fetch(`${API_BASE}/api/brands`, { cache: 'no-store' });
         const data = await res.json();
         if (res.ok && data.success && Array.isArray(data.brands) && data.brands.length) {
-            let localMapById = null;
-            if (data.brands.some(b => !b.name)) {
-                localMapById = {};
-                for (const [mapName, mapId] of Object.entries(await loadLocalBrandMap())) {
-                    localMapById[Number(mapId)] = mapName;
-                }
-            }
             brands = data.brands.map(b => ({
                 id: b.id,
-                name: b.name || (localMapById && localMapById[Number(b.id)]) || `براند #${b.id}`,
+                name: b.name || `براند #${b.id}`,
             }));
+            await chrome.storage.local.set({ [BRANDS_CACHE_STORAGE_KEY]: brands });
         }
     } catch (_) {
         // Arabic: تُترك فارغة؛ الاحتياط الكامل بالأسفل يتكفّل بها. English: Left empty; the full fallback below takes over.
     }
 
     if (!brands.length) {
-        brands = Object.entries(await loadLocalBrandMap()).map(([name, id]) => ({ id: Number(id), name }));
+        brands = await loadBrandsCacheFallback();
     }
 
     const currentVal = select.value;

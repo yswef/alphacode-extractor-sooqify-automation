@@ -1,17 +1,21 @@
 import os
 import re
+import sys
 import json
 import uuid
 import shutil
 import hashlib
+import subprocess
 from datetime import datetime
 import logging
+from logging.handlers import RotatingFileHandler
 import pandas as pd
 import requests
 from app.core.runtime import paths_state
+from app.repositories import archive_repository
 logger = logging.getLogger(__name__)
 
-from flask import request
+from flask import request, jsonify
 import certifi
 
 SYNC_REQUEST_PACING_SECONDS = 0.5
@@ -28,6 +32,7 @@ OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/chat/completions'
 
 # Stub variables from app.py
 EXCEL_COLUMNS = ['Id', 'Name', 'Description', 'Image', 'CategoryId', 'SubCategoryId', 'UnitId', 'Stock', 'Price', 'Discount', 'DiscountType', 'AvailableTimeStarts', 'AvailableTimeEnds', 'Variations', 'ChoiceOptions', 'AddOns', 'Attributes', 'StoreId', 'ModuleId', 'Status', 'Veg', 'Recommended']
+INVALID_MARKERS = {"", "NONE", "NULL", "UNDEFINED", "غير محدد", "NO_CODE", "NO_STYLE"}
 MIN_REQUIRED_PRODUCT_IMAGES = 1
 AI_PROMPT_VERSION = 'v4'
 GROQ_OFFICIAL_SEARCH_MODEL = 'llama-3.1-70b-versatile'
@@ -48,6 +53,47 @@ def handle_local_request_too_large(_error):
         "error": "حجم البيانات المرسلة إلى الخادم المحلي أكبر من الحد المسموح.",
     }), 413
 
+class ColoredConsoleFormatter(logging.Formatter):
+    """
+    Arabic: منسّق ألوان لطرفية التطوير فقط (لا يُستخدم لملف السجل الخارجي حتى لا تُكتب
+            رموز ANSI داخل ملف نصي). كل مستوى له لون خلفية مميز لتسهيل تتبّع السجل بالعين.
+            نُقلت هذي الكلاس من app.py (الـstub الميت) - كانت configure_application_logging()
+            هنا تستدعيها بدون أي تعريف/استيراد لها بهذا الملف (NameError لو استُدعيت فعلياً)،
+            نفس نمط "نقل جزئي" موثّق 3 مرات سابقة بمشروع الريفاكتور.
+    English: Colour formatter for the developer terminal only (never used for the rotating
+             file handler, so ANSI escape codes never end up inside a plain-text log file).
+             Each level gets a distinct background colour for fast at-a-glance scanning.
+             Moved here from app.py (the dead stub) - configure_application_logging() here
+             was calling it without any definition/import in this file (a NameError if ever
+             actually invoked), the same "partial move" pattern documented 3 prior times in
+             this refactor.
+    """
+
+    RESET = "\x1b[0m"
+    LEVEL_STYLES = {
+        logging.DEBUG:    "\x1b[45m\x1b[97m",  # magenta bg, white text
+        logging.INFO:     "\x1b[44m\x1b[97m",  # blue bg, white text
+        logging.WARNING:  "\x1b[43m\x1b[30m",  # yellow bg, black text
+        logging.ERROR:    "\x1b[41m\x1b[97m",  # red bg, white text
+        logging.CRITICAL: "\x1b[101m\x1b[97m", # bright red bg, white text
+    }
+    LEVEL_ICONS = {
+        logging.DEBUG: "🔎", logging.INFO: "ℹ️", logging.WARNING: "⚠️",
+        logging.ERROR: "❌", logging.CRITICAL: "🔥",
+    }
+
+    def format(self, record):
+        style = self.LEVEL_STYLES.get(record.levelno, "")
+        icon = self.LEVEL_ICONS.get(record.levelno, "")
+        timestamp = self.formatTime(record, "%H:%M:%S")
+        level_tag = f"{style} {icon} {record.levelname:<8}{self.RESET}"
+        name_tag = f"\x1b[36m{record.name}\x1b[0m"  # cyan module name
+        message = record.getMessage()
+        if record.exc_info:
+            message = f"{message}\n{self.formatException(record.exc_info)}"
+        return f"\x1b[90m{timestamp}\x1b[0m {level_tag} {name_tag} | {message}"
+
+
 def _enable_windows_ansi_support():
     """Arabic: تفعيل دعم ANSI على طرفية Windows القديمة (cmd.exe). English: Enable ANSI support on legacy Windows terminals (cmd.exe)."""
     if sys.platform != "win32":
@@ -63,10 +109,30 @@ def _enable_windows_ansi_support():
     except Exception:
         pass
 
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+class PlainFileFormatter(logging.Formatter):
+    """
+    Arabic: نفس تنسيق الملف الخام، لكن يجرّد أي رمز ANSI ملوَّن من الرسالة قبل الكتابة.
+            Werkzeug نفسه يُضمّن رموز ألوان داخل نص بعض رسائله (تحذير وضع التطوير،
+            طلبات بحالة غير 200) - هذي الرموز تتسرّب لملف السجل الخام بدون هذا التجريد
+            (اكتُشف بتشغيل فعلي: أسطر قديمة بـalphacode.log فيها \\x1b[33m...\\x1b[0m حرفياً).
+    English: Same plain file format, but strips any ANSI colour codes from the message
+             before writing. Werkzeug itself embeds colour codes inside some of its own
+             messages (the dev-server warning, non-200 request lines) - without this
+             stripping they leak straight into the plain-text log file (found via live
+             testing: old alphacode.log lines contained literal \\x1b[33m...\\x1b[0m).
+    """
+
+    def format(self, record):
+        return _ANSI_ESCAPE_RE.sub("", super().format(record))
+
+
 def configure_application_logging():
     """Arabic: تهيئة سجل خارجي دوّار مع طباعة ملوّنة وواضحة في الطرفية. English: Configure rotating external logs with a clear, colourful console output."""
     _enable_windows_ansi_support()
-    file_format = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    file_format = PlainFileFormatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
     console_format = ColoredConsoleFormatter()
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
@@ -78,7 +144,12 @@ def configure_application_logging():
         root_logger.addHandler(console_handler)
 
     try:
-        os.makedirs(LOG_DIR, exist_ok=True)
+        # Arabic: نستخدم مجلد paths_state.LOG_PATH الحي (مو ثابت LOG_DIR المحسوب وقت
+        #         الاستيراد) لأن مسار الحفظ متغيّر وقت التشغيل حسب اختيار المستخدم.
+        # English: Using paths_state.LOG_PATH's live directory (not the import-time LOG_DIR
+        #          constant) since the save path is recomputed at runtime based on the
+        #          user's chosen folder.
+        os.makedirs(os.path.dirname(paths_state.LOG_PATH), exist_ok=True)
         if not any(getattr(handler, "_alphacode_file", False) for handler in root_logger.handlers):
             file_handler = RotatingFileHandler(
                 paths_state.LOG_PATH,

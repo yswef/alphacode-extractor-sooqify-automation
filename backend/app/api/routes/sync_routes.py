@@ -128,16 +128,26 @@ def set_sync_config():
     """Arabic: حفظ إعدادات المزامنة من لوحة الإضافة. English: Save sync settings from the extension popup."""
     data = request.get_json(silent=True) or {}
     existing = load_sync_config()
-    # Arabic: إن أُرسل حقل Token فارغاً، نحافظ على المفتاح المحفوظ سابقاً بدل مسحه بالخطأ.
-    # English: If Token is sent empty, keep the previously saved key instead of wiping it by mistake.
+    # Arabic: إن أُرسل أي من الحقول التالية فاضياً/غائباً، نحافظ على القيمة المحفوظة سابقاً
+    # بدل مسحها بالخطأ (نفس نمط Token) - حادثة حقيقية: POST بجسم فاضٍ {} مسح ServerUrl/
+    # Enabled/AddedByName بالكامل لأنها كانت تُكتب كما وردت بدون أي حماية. Enabled حقل
+    # منطقي: القيمة False الصريحة تُحترم (تعطيل مقصود)؛ فقط غياب الحقل (None) يحافظ على القديم.
+    # English: If any of the following fields is sent empty/missing, keep the previously
+    # saved value instead of wiping it by mistake (same pattern as Token) - real incident:
+    # an empty-body POST {} wiped ServerUrl/Enabled/AddedByName entirely because they were
+    # written as-is with no protection. Enabled is boolean: an explicit False is honored
+    # (intentional disable); only a missing field (None) falls back to the old value.
     token = normalize_text(data.get("Token")) or existing["Token"]
+    server_url = normalize_text(data.get("ServerUrl")) or existing["ServerUrl"]
+    added_by_name = normalize_text(data.get("AddedByName")) or existing["AddedByName"]
+    enabled = data.get("Enabled") if data.get("Enabled") is not None else existing["Enabled"]
     save_sync_config({
-        "Enabled": data.get("Enabled"),
-        "ServerUrl": data.get("ServerUrl"),
+        "Enabled": enabled,
+        "ServerUrl": server_url,
         "Token": token,
-        "AddedByName": data.get("AddedByName"),
+        "AddedByName": added_by_name,
     })
-    logger.info("Sync configuration updated. enabled=%s server=%s", safe_bool(data.get("Enabled")), normalize_text(data.get("ServerUrl")))
+    logger.info("Sync configuration updated. enabled=%s server=%s", safe_bool(enabled), server_url)
     return jsonify({"success": True})
 
 @sync_bp.route("/api/sync/status", methods=["GET"])

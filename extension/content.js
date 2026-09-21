@@ -19,7 +19,7 @@ const DEFAULT_CONFIG = globalThis.ALPHACODE_DEFAULT_CONFIG || {
     ExchangeRate: 0.5, AddedFeeYuan: 250, Discount: 0, DiscountType: 'percent',
     AvailableTimeStarts: '00:00:00', AvailableTimeEnds: '23:59:59', MaximumCartQuantity: '',
     StoreId: 3, ModuleId: 2, Status: 'active', Veg: 'no', Recommended: 'yes',
-    BrandName: 'Air Jordan', BrandId: 6, BrandMapJson: '{"Air Jordan":6}',
+    BrandName: 'Air Jordan', BrandId: 6,
     SizeAttributeId: 1, SizeChoiceNo: 1, SizeactualChoiceNo: 1, SizeTitle: 'الحجم', DefaultLanguage: 'en',
     SooqifyAddUrl: 'https://admin.sooqifyonline.com/admin/item/add-new',
     StoreProfileName: 'Sooqify Online', StoreDomain: 'admin.sooqifyonline.com',
@@ -38,6 +38,21 @@ const DEFAULT_CONFIG = globalThis.ALPHACODE_DEFAULT_CONFIG || {
 };
 
 let extractorConfig = { ...DEFAULT_CONFIG };
+// Arabic: خريطة اسم→id مبنية مسبقاً (sync) من كاش chrome.storage المشترك مع popup.js
+//         (alphacode_brands_cache)، أو من fetch احتياطي مباشر لـ/api/brands لو الكاش
+//         فاضي. تُملأ مرة وحدة أثناء loadConfiguration() قبل ما أي زر استخراج يظهر،
+//         عشان resolveBrandId() تبقى دالة sync بحتة (كل نداءاتها التسعة بالملف sync
+//         فعلياً، وchrome.storage لا يوجد له قراءة sync إطلاقاً - القرار كان الإبقاء
+//         على resolveBrandId sync واستخدام ذاكرة محلية متزامنة بدل تحويلها لasync).
+// English: Pre-built (sync) name->id map from the chrome.storage cache shared with
+//          popup.js (alphacode_brands_cache), or a direct fallback fetch to /api/brands
+//          when the cache is empty. Filled once during loadConfiguration() before any
+//          extraction button appears, so resolveBrandId() stays a pure sync function
+//          (all nine of its call sites in this file are sync, and chrome.storage has no
+//          sync read at all - the decision was to keep resolveBrandId sync and use an
+//          in-memory cache instead of converting it to async).
+let brandNameToIdMap = {};
+const BRANDS_CACHE_STORAGE_KEY = 'alphacode_brands_cache';
 let lastAddedSearchCodeGlobal = null;
 let observerTimer = null;
 let activeAutomaticResultOverlay = null;
@@ -244,6 +259,7 @@ async function loadConfiguration() {
     if (!extractorConfig.SupplierStoreName) {
         extractorConfig.SupplierStoreName = 'BRANDKINGDOM';
     }
+    await loadBrandsCache();
     return extractorConfig;
 }
 
@@ -792,22 +808,66 @@ function extractSizes(sourceText) {
     return best;
 }
 
-// Arabic: قراءة خريطة البراندات من لوحة الإعدادات دون تعطيل الأداة عند JSON غير صالح.
-// English: Parse the configurable brand map without breaking extraction on invalid JSON.
+// Arabic: إرجاع خريطة البراندات المبنية مسبقاً (sync) - راجع تعليق brandNameToIdMap
+//         أعلى الملف لسبب استخدام كاش بالذاكرة بدل قراءة chrome.storage هنا مباشرة.
+// English: Return the pre-built (sync) brand map - see the brandNameToIdMap comment
+//          near the top of the file for why this uses an in-memory cache instead of
+//          reading chrome.storage directly here.
 function parseBrandMap() {
-    try {
-        const parsed = JSON.parse(extractorConfig.BrandMapJson || '{}');
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return brandNameToIdMap;
+}
 
-        const cleaned = {};
-        for (const [rawName, rawId] of Object.entries(parsed)) {
-            const name = canonicalBrandAlias(rawName);
-            const id = Number(rawId || 0);
-            if (name && Number.isFinite(id) && id > 0) cleaned[name] = id;
+// Arabic: يحوّل قائمة براندات [{id,name}] (من /api/brands أو الكاش) لخريطة اسم→id
+//         نظيفة، بنفس منطق التنظيف المستخدَم سابقاً مع BrandMapJson (canonicalBrandAlias
+//         + رفض أي id غير صالح) - عشان خوارزمية المطابقة بـresolveBrandId/canonicalBrandName
+//         ما تتغيّر إطلاقاً، فقط مصدر البيانات.
+// English: Converts a brand list [{id,name}] (from /api/brands or the cache) into a
+//          clean name->id map, using the exact same cleaning logic previously applied to
+//          BrandMapJson (canonicalBrandAlias + rejecting any invalid id) - so the matching
+//          algorithm in resolveBrandId/canonicalBrandName never changes, only the source.
+function brandListToNameMap(brands) {
+    const cleaned = {};
+    for (const b of brands || []) {
+        const name = canonicalBrandAlias(b?.name);
+        const id = Number(b?.id || 0);
+        if (name && Number.isFinite(id) && id > 0) cleaned[name] = id;
+    }
+    return cleaned;
+}
+
+// Arabic: يملأ brandNameToIdMap مرة وحدة عند بدء تشغيل content script - من كاش
+//         chrome.storage المشترك مع popup.js أولاً، ولو فاضي (أول استخدام قبل ما حد
+//         يفتح popup أبداً) يسوي fetch احتياطي مباشر لـ/api/brands بنفسه (content.js
+//         عنده وصول شبكة مباشر للباك اند أصلاً عبر API_BASE_URL). فشل الاثنين يترك
+//         brandNameToIdMap فاضية (نفس سلوك BrandMapJson فاضي/غير صالح سابقاً - fallback
+//         النهائي بـresolveBrandId على extractorConfig.BrandId يبقى شغّال كما هو).
+// English: Fills brandNameToIdMap once at content-script startup - first from the
+//          chrome.storage cache shared with popup.js, and if that's empty (first-ever
+//          use before popup was ever opened) falls back to a direct fetch to /api/brands
+//          itself (content.js already has direct network access to the backend via
+//          API_BASE_URL). If both fail, brandNameToIdMap stays empty (same behavior as
+//          an empty/invalid BrandMapJson before - the final fallback in resolveBrandId
+//          to extractorConfig.BrandId still works as-is).
+async function loadBrandsCache() {
+    try {
+        const stored = await safeStorageGet([BRANDS_CACHE_STORAGE_KEY]);
+        const cached = stored[BRANDS_CACHE_STORAGE_KEY];
+        if (Array.isArray(cached) && cached.length) {
+            brandNameToIdMap = brandListToNameMap(cached);
+            return;
         }
-        return cleaned;
+    } catch (_) { /* fall through to the direct fetch below */ }
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/brands`, { cache: 'no-store' });
+        const data = await response.json();
+        if (response.ok && data.success && Array.isArray(data.brands) && data.brands.length) {
+            brandNameToIdMap = brandListToNameMap(data.brands);
+            await safeStorageSet({ [BRANDS_CACHE_STORAGE_KEY]: data.brands });
+        }
     } catch (_) {
-        return {};
+        // Arabic: تُترك brandNameToIdMap فاضية - resolveBrandId يرجع لـBrandId العام.
+        // English: brandNameToIdMap stays empty - resolveBrandId falls back to the global BrandId.
     }
 }
 
@@ -2275,6 +2335,24 @@ async function submitPreparedProductInBackground(
     return true;
 }
 
+// Arabic: نواة مشتركة لحساب الرسم والسعر حسب نوع المنتج - كانت مكررة حرفياً بين
+//         submitProduct وprepareBatchDraftForStore (وهذا التكرار كان السبب الجذري
+//         لتكرار أخطاء الرسوم التاريخية: تصليح مسار وحيد ينسى الآخر). أي تعديل مستقبلي
+//         على منطق الرسم/السعر يصير هنا فقط.
+// English: Shared core for computing the fee and price by product type - was duplicated
+//          verbatim between submitProduct and prepareBatchDraftForStore (this duplication
+//          was the root cause of the historical fee bugs: fixing one path forgot the
+//          other). Any future change to the fee/price logic goes here only.
+function computeFeeAndPrice(originalPrice, productType, config) {
+    const addedFee = productType === 'watches'
+        ? Number(config.WatchFlatFeeYuan || 0)
+        : Number(config.AddedFeeYuan || 0);
+    const exchangeRate = Number(config.ExchangeRate || 0);
+    const priceAfterFee = originalPrice + addedFee;
+    const priceSAR = Math.round(priceAfterFee * exchangeRate);
+    return { addedFee, priceAfterFee, priceSAR };
+}
+
 async function submitProduct(context) {
     const {
         overlay,
@@ -2294,15 +2372,11 @@ async function submitProduct(context) {
     submitButton.disabled = true;
 
     const originalPrice = parseFloat(fields.price.value) || 0;
-    // Arabic: نفس إصلاح رسوم الدفعة - اختيار رسم الساعة/الحذية حسب النوع المكتشف فعلياً،
-    //         بدل استخدام رسم الأحذية دايماً بغض النظر عن نوع المنتج.
-    // English: Same fix as the batch path - pick the watch/shoe fee based on the actually
-    //          detected type, instead of always using the shoes fee regardless of type.
-    const addedFee = productType === 'watches'
-        ? Number(extractorConfig.WatchFlatFeeYuan || 0)
-        : Number(extractorConfig.AddedFeeYuan || 0);
-    const finalFeePrice = originalPrice + addedFee;
-    const finalSar = Math.round(finalFeePrice * Number(extractorConfig.ExchangeRate || 0));
+    const { priceAfterFee: finalFeePrice, priceSAR: finalSar } = computeFeeAndPrice(
+        originalPrice,
+        productType,
+        extractorConfig,
+    );
     const sizes = uniqueSizes(fields.sizes.value.split(/[,،\s]+/).filter(Boolean));
 
     const payload = {
@@ -3541,19 +3615,11 @@ async function prepareBatchDraftForStore(draft, batchId, batchIndex, batchTotal,
         if (!pendingResponse.ok || !pendingData.success) throw new Error(pendingData.error || 'تعذر جلب المنتج المؤرشف.');
         pendingProduct = pendingData.pending_product;
     } else {
-        // Arabic: اختيار الرسم الصحيح حسب نوع المنتج المكتشف فعلياً - قبل هذا كان يستخدم
-        //         AddedFeeYuan (رسم الأحذية) دايماً حتى للساعات، لأن ProductType كانت
-        //         ثابتة عامة (config) وما توصل هنا مطلقاً.
-        // English: Pick the correct fee based on the actually-detected product type -
-        //          previously this always used AddedFeeYuan (the shoes fee) even for
-        //          watches, because ProductType was a static global config value that
-        //          never reached this real-upload path.
-        const addedFee = draft.productType === 'watches'
-            ? Number(extractorConfig.WatchFlatFeeYuan || 0)
-            : Number(extractorConfig.AddedFeeYuan || 0);
-        const exchangeRate = Number(extractorConfig.ExchangeRate || 0);
-        const priceAfterFee = draft.originalPrice + addedFee;
-        const priceSAR = Math.round(priceAfterFee * exchangeRate);
+        const { priceAfterFee, priceSAR } = computeFeeAndPrice(
+            draft.originalPrice,
+            draft.productType,
+            extractorConfig,
+        );
         const imageSelection = draft.imageSelection || defaultBatchImageSelection(draft.images);
         if (!imageSelection.selectedIndexes?.length) {
             throw new Error('اختر صورة واحدة على الأقل لهذا المنتج.');

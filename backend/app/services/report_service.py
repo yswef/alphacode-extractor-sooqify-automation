@@ -32,6 +32,10 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
+# Arabic: أسماء الأنواع وتسمياتها من المصدر الموحّد بدل صفوف مكتوبة يدوياً.
+# English: Type ids and labels come from the unified source instead of hand-written rows.
+from app.services.product_type_profiles import PROFILES, resolve_product_type
+
 # Arabic: عدّل هذا المسار لأي خط .ttf يدعم العربية موجود على جهازك (اختياري).
 # English: Point this at any Arabic-capable .ttf on your machine (optional).
 ARABIC_FONT_PATH = r"C:\Windows\Fonts\tahoma.ttf"
@@ -85,14 +89,19 @@ def _entries_for_scope(archive_entries, scope, target_date):
 def _build_summary_table(entries):
     """Arabic: جدول ملخص عام (العدد الكلي، حسب النوع، حسب مصدر الـ ID). English: A general summary table (total count, by type, by ID source)."""
     total = len(entries)
-    by_type = Counter(item.get("product_type") or "shoes" for item in entries)
+    by_type = Counter(resolve_product_type(item.get("product_type")) for item in entries)
     by_id_source = Counter(item.get("id_source") or "local_fallback" for item in entries)
 
     rows = [
         [_rtl("البند") if _ARABIC_SUPPORT else "Metric", _rtl("القيمة") if _ARABIC_SUPPORT else "Value"],
         [_rtl("إجمالي المنتجات") if _ARABIC_SUPPORT else "Total products", str(total)],
-        [_rtl("أحذية") if _ARABIC_SUPPORT else "Shoes", str(by_type.get("shoes", 0))],
-        [_rtl("ساعات") if _ARABIC_SUPPORT else "Watches", str(by_type.get("watches", 0))],
+        *[
+            [
+                _rtl(profile["label_ar"]) if _ARABIC_SUPPORT else profile["label_en"],
+                str(by_type.get(type_id, 0)),
+            ]
+            for type_id, profile in PROFILES.items()
+        ],
         [_rtl("عبر المزامنة المركزية") if _ARABIC_SUPPORT else "Via central sync", str(by_id_source.get("remote", 0))],
         [_rtl("احتياطي محلي (راجعها)") if _ARABIC_SUPPORT else "Local fallback (review)", str(by_id_source.get("local_fallback", 0))],
     ]
@@ -107,7 +116,7 @@ def _build_per_user_table(entries):
     for item in entries:
         added_by = item.get("added_by") or ("Unknown" if not _ARABIC_SUPPORT else _rtl("غير محدد"))
         by_user[added_by]["total"] += 1
-        by_user[added_by][item.get("product_type") or "shoes"] += 1
+        by_user[added_by][resolve_product_type(item.get("product_type"))] += 1
 
     header = [
         _rtl("المستخدم") if _ARABIC_SUPPORT else "User",

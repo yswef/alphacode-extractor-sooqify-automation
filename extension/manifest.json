@@ -49,6 +49,7 @@
       ],
       "js": [
         "config.js",
+        "product_types.js",
         "content.js"
       ],
       "css": [
@@ -63,6 +64,7 @@
       ],
       "js": [
         "config.js",
+        "product_types.js",
         "admin_autofill.js"
       ],
       "css": [

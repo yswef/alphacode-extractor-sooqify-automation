@@ -6,7 +6,10 @@
 
 'use strict';
 
-importScripts('config.js');
+importScripts('config.js', 'product_types.js');
+// Arabic: ملفات تعريف نوع المنتج - المصدر الوحيد لكل فروقات الأحذية/الساعات.
+// English: Product type profiles - the single source for every shoes/watches difference.
+const PRODUCT_TYPES = globalThis.ALPHACODE_PRODUCT_TYPES;
 const LOCAL_API_BASE = `http://127.0.0.1:${(globalThis.ALPHACODE_DEFAULT_CONFIG || {}).BackendPort || 5000}`;
 const DEFAULT_SOOQIFY_ADD_URL = 'https://admin.sooqifyonline.com/admin/item/add-new';
 const FALLBACK_JOBS_KEY = 'alphacodeFallbackSubmissionJobs';
@@ -262,6 +265,14 @@ async function updateWorkflowStatus(productId, status, details = {}) {
 // English: Build FormData compatible with the current Sooqify product form.
 async function buildSooqifyFormData(product, pageHtml, formHtml) {
     const settings = product.settings || {};
+    // Arabic: نوع المنتج يُحسم مرة واحدة هنا ويقود كل الفروقات بهذي الدالة (الفئة،
+    //         الفئة الفرعية، وخاصية الخيارات: مقاس للأحذية / لون للساعات).
+    // English: The product type is resolved once here and drives every difference in this
+    //          function (category, subcategory, and the variant attribute: size for shoes,
+    //          colour for watches).
+    const productType = PRODUCT_TYPES.resolveProductType(
+        settings.ProductType || product.product_type,
+    );
     const sizes = Array.from(
         new Set(
             (product.sizes || [])
@@ -279,8 +290,17 @@ async function buildSooqifyFormData(product, pageHtml, formHtml) {
         ? stockPerSize * sizes.length
         : stockPerSize;
 
+    // Arabic: خاصية الخيارات كانت مثبّتة على المقاس (SizeAttributeId / SizeTitle) حتى
+    //         للساعات، رغم إن قائمة "المقاسات" الواصلة للساعات هي فعلياً أسماء الألوان.
+    //         النتيجة: كل ساعة تُضاف للمتجر بخاصية "الحجم" بدل "اللون". الآن تُقرأ من ملف
+    //         تعريف النوع: مقاس للأحذية، لون للساعات.
+    // English: The variant attribute was pinned to size (SizeAttributeId / SizeTitle) even
+    //          for watches, although the "sizes" list arriving for a watch actually holds
+    //          colour names. Result: every watch was pushed to the store under the "Size"
+    //          attribute instead of "Colour". It now comes from the type profile: size for
+    //          shoes, colour for watches.
     const attributeId = normalizeText(
-        settings.SizeAttributeId || 1,
+        PRODUCT_TYPES.productTypeVariantAttributeId(productType, settings),
     );
 
     const choiceNo = normalizeText(
@@ -290,8 +310,8 @@ async function buildSooqifyFormData(product, pageHtml, formHtml) {
     );
 
     const choiceTitle = normalizeText(
-        settings.SizeTitle || 'الحجم',
-    ) || 'الحجم';
+        PRODUCT_TYPES.productTypeVariantTitle(productType, settings),
+    ) || PRODUCT_TYPES.getProfile(productType).variantTitleFallback;
 
     const defaultLanguage = normalizeText(
         settings.DefaultLanguage || 'en',
@@ -344,17 +364,29 @@ async function buildSooqifyFormData(product, pageHtml, formHtml) {
         settings.StoreId || 3,
     );
 
+    // Arabic: الفئة والفئة الفرعية تُحسبان من ملف تعريف نوع المنتج، لا من `|| 41` و`|| 42`.
+    //         الباك اند يرسل SubCategoryId = null للساعات عمداً (الساعات بلا فئة فرعية)،
+    //         وكان `settings.SubCategoryId || 42` يعيد حقن فئة الأحذية الفرعية (42) بكل
+    //         ساعة تُضاف للمتجر. الآن الحقل يُترك فارغاً للساعات كما هو مقصود.
+    // English: Category and subcategory come from the product type profile, not from
+    //          `|| 41` and `|| 42`. The backend deliberately sends SubCategoryId = null for
+    //          watches (watches have no subcategory), and `settings.SubCategoryId || 42`
+    //          re-injected the shoes subcategory (42) into every watch pushed to the store.
+    //          The field is now left empty for watches, as intended.
     setSingleFormValue(
         formData,
         'category_id',
-        settings.CategoryId || 41,
+        PRODUCT_TYPES.productTypeCategoryId(productType, settings),
     );
 
-    setSingleFormValue(
-        formData,
-        'sub_category_id',
-        settings.SubCategoryId || 42,
-    );
+    const subCategoryId = PRODUCT_TYPES.productTypeSubCategoryId(productType, settings);
+    if (subCategoryId !== null) {
+        setSingleFormValue(
+            formData,
+            'sub_category_id',
+            subCategoryId,
+        );
+    }
 
     setSingleFormValue(
         formData,

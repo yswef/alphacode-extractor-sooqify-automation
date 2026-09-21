@@ -1,0 +1,195 @@
+// =========================================================
+// AlphaCode Extractor - Product Type Profiles (Single Source of Truth)
+// Arabic: مصدر الحقيقة الوحيد لكل الفروقات بين "أحذية" و"ساعات". أي فرق بين النوعين
+//         (الرسم، الفئة، الفئة الفرعية، محور الخيارات، النصوص المعروضة) يُعرَّف هنا مرة
+//         واحدة فقط. قبل هذا الملف كان نفس شرط if (type === 'watches') مكرراً بأكثر من
+//         عشر مواضع (content.js، background.js، admin_autofill.js، والباك اند)، وكل
+//         إصلاح كان ينسى نسخة أو اثنتين - وهذا هو السبب الجذري لأخطاء الرسوم المتكررة.
+// English: The single source of truth for every shoes/watches difference. Each difference
+//          (fee, category, subcategory, variant axis, displayed labels) is declared here
+//          exactly once. Before this file, the same `if (type === 'watches')` condition was
+//          duplicated in a dozen places (content.js, background.js, admin_autofill.js, and
+//          the backend), and every fix forgot one or two copies - the root cause of the
+//          recurring fee bugs.
+//
+// Arabic: النظير المطابق بالباك اند هو backend/app/services/product_type_profiles.py -
+//         أي تعديل هنا يجب أن يُطبَّق هناك أيضاً (الاختبارات تتحقق من التطابق).
+// English: The mirrored backend counterpart is backend/app/services/product_type_profiles.py -
+//          any change here must be applied there too (tests assert they stay in sync).
+// =========================================================
+
+(() => {
+    'use strict';
+
+    // Arabic: تعريف النوعين. مفاتيح الإعدادات تُذكر بالاسم فقط، وتُقرأ وقت الاستدعاء من
+    //         كائن الإعدادات الحي (extractorConfig / settings) حتى تبقى قيم المستخدم فعّالة.
+    // English: The two profiles. Setting keys are referenced by name only and read at call
+    //          time from the live settings object, so operator-edited values stay effective.
+    const PROFILES = {
+        shoes: {
+            id: 'shoes',
+            // Arabic: النصوص المعروضة. ملاحظة مهمة: "ساعات" وحدها كلمة ملتبسة بالعربية
+            //         (تعني watches وتعني hours)، وترجمة المتصفح التلقائية كانت تعرضها
+            //         "Hours" بواجهة المراجعة. لذلك كل تسمية معروضة تحمل النص الإنجليزي
+            //         بين قوسين لإزالة اللبس نهائياً.
+            // English: Display labels. Important: the bare Arabic word "ساعات" is ambiguous
+            //          (it means both "watches" and "hours"), and browser auto-translation
+            //          rendered it as "Hours" in the review modal. Every displayed label
+            //          therefore carries the English term in parentheses to remove the
+            //          ambiguity for good.
+            labelAr: 'أحذية',
+            labelEn: 'Shoes',
+            icon: '👟',
+            // Arabic: مفتاح الرسم الثابت باليوان المضاف لكل منتج من هذا النوع.
+            // English: The flat CNY fee setting key added to every product of this type.
+            feeSettingKey: 'AddedFeeYuan',
+            feeFallback: 250,
+            // Arabic: الفئة والفئة الفرعية. الأحذية لها فئة فرعية، الساعات لا.
+            // English: Category and subcategory. Shoes have a subcategory, watches do not.
+            categorySettingKey: 'CategoryId',
+            categoryFallback: 41,
+            usesSubCategory: true,
+            subCategorySettingKey: 'SubCategoryId',
+            subCategoryFallback: 42,
+            // Arabic: محور الخيارات: الأحذية تتفرّع بالمقاسات، الساعات بالألوان.
+            // English: Variant axis: shoes branch by size, watches by colour.
+            variantAxis: 'sizes',
+            variantAttributeIdKey: 'SizeAttributeId',
+            variantAttributeIdFallback: 1,
+            variantTitleKey: 'SizeTitle',
+            variantTitleFallback: 'الحجم',
+            // Arabic: هل يعرض حقل الألوان/الأسعار بشاشة مراجعة الدفعة.
+            // English: Whether the colour/price editor is shown in the batch review slide.
+            hasColorVariantEditor: false,
+        },
+        watches: {
+            id: 'watches',
+            labelAr: 'ساعات',
+            labelEn: 'Watches',
+            icon: '⌚',
+            feeSettingKey: 'WatchFlatFeeYuan',
+            feeFallback: 600,
+            categorySettingKey: 'WatchCategoryId',
+            categoryFallback: 46,
+            usesSubCategory: false,
+            subCategorySettingKey: null,
+            subCategoryFallback: null,
+            variantAxis: 'colors',
+            variantAttributeIdKey: 'WatchColorAttributeId',
+            variantAttributeIdFallback: 2,
+            variantTitleKey: 'WatchColorTitle',
+            variantTitleFallback: 'اللون',
+            hasColorVariantEditor: true,
+        },
+    };
+
+    const DEFAULT_PRODUCT_TYPE = 'shoes';
+
+    // Arabic: يُرجع معرّف نوع صالح دائماً؛ أي قيمة مجهولة أو فارغة تعود إلى "shoes"
+    //         (نفس السلوك الاحتياطي الذي كان مكرراً كـ`productType || 'shoes'` بكل مكان).
+    // English: Always returns a valid type id; any unknown or empty value falls back to
+    //          "shoes" (the same fallback previously duplicated as `productType || 'shoes'`).
+    function resolveProductType(value) {
+        const key = String(value == null ? '' : value).trim().toLowerCase();
+        return Object.prototype.hasOwnProperty.call(PROFILES, key)
+            ? key
+            : DEFAULT_PRODUCT_TYPE;
+    }
+
+    function getProfile(value) {
+        return PROFILES[resolveProductType(value)];
+    }
+
+    // Arabic: قراءة رقم من الإعدادات مع احتياطي آمن (نفس نمط Number(x || y) السابق).
+    // English: Read a number from settings with a safe fallback (same as the old Number(x || y)).
+    function readNumber(config, key, fallback) {
+        if (!key) return fallback;
+        const raw = (config || {})[key];
+        const value = Number(raw);
+        return Number.isFinite(value) ? value : Number(fallback) || 0;
+    }
+
+    // Arabic: الرسم الثابت باليوان لهذا النوع. هذا هو المصدر الوحيد للرسم بكل الإكستنشن.
+    // English: The flat CNY fee for this type. The only fee source in the whole extension.
+    function productTypeFee(productType, config) {
+        const profile = getProfile(productType);
+        return readNumber(config, profile.feeSettingKey, profile.feeFallback);
+    }
+
+    // Arabic: الفئة الفعلية المرسلة للمتجر (الساعات تستخدم WatchCategoryId).
+    // English: The effective store category (watches use WatchCategoryId).
+    function productTypeCategoryId(productType, config) {
+        const profile = getProfile(productType);
+        return readNumber(config, profile.categorySettingKey, profile.categoryFallback);
+    }
+
+    // Arabic: الفئة الفرعية الفعلية. للساعات تُرجع null عمداً - "لا فئة فرعية" قرار حقيقي
+    //         وليس قيمة مفقودة، ولذلك لا يجوز لأي مستدعٍ أن يستبدلها باحتياطي الأحذية (42)
+    //         عبر `|| 42`. هذا بالضبط ما كان يحصل بـbackground.js وadmin_autofill.js:
+    //         الباك اند يرسل null للساعات، والواجهة تعيد حقنه 42 (فئة فرعية للأحذية).
+    // English: The effective subcategory. For watches this deliberately returns null -
+    //          "no subcategory" is a real decision, not a missing value, so no caller may
+    //          replace it with the shoes fallback (42) through `|| 42`. That is exactly what
+    //          background.js and admin_autofill.js were doing: the backend sent null for
+    //          watches and the front end re-injected 42 (the shoes subcategory).
+    function productTypeSubCategoryId(productType, config) {
+        const profile = getProfile(productType);
+        if (!profile.usesSubCategory) return null;
+        return readNumber(config, profile.subCategorySettingKey, profile.subCategoryFallback);
+    }
+
+    function productTypeVariantAttributeId(productType, config) {
+        const profile = getProfile(productType);
+        return readNumber(config, profile.variantAttributeIdKey, profile.variantAttributeIdFallback);
+    }
+
+    function productTypeVariantTitle(productType, config) {
+        const profile = getProfile(productType);
+        const raw = (config || {})[profile.variantTitleKey];
+        const value = String(raw == null ? '' : raw).trim();
+        return value || profile.variantTitleFallback;
+    }
+
+    // Arabic: التسمية المعروضة غير الملتبسة: "ساعات (Watches)" لا "ساعات" وحدها.
+    // English: The unambiguous display label: "ساعات (Watches)", never bare "ساعات".
+    function productTypeLabel(productType, { withIcon = false } = {}) {
+        const profile = getProfile(productType);
+        const text = `${profile.labelAr} (${profile.labelEn})`;
+        return withIcon ? `${profile.icon} ${text}` : text;
+    }
+
+    // Arabic: حساب الرسم والسعر النهائي - الصيغة الوحيدة المعتمدة للنوعين:
+    //         (السعر الأساسي باليوان + رسم النوع) × سعر الصرف، مقرَّباً.
+    // English: The fee/price computation - the single approved formula for both types:
+    //          (base CNY price + the type's fee) x exchange rate, rounded.
+    function computeProductTypePrice(originalPrice, productType, config) {
+        const addedFee = productTypeFee(productType, config);
+        const basePrice = Number(originalPrice) || 0;
+        const exchangeRate = Number((config || {}).ExchangeRate) || 0;
+        const priceAfterFee = basePrice + addedFee;
+        return {
+            addedFee,
+            priceAfterFee,
+            priceSAR: Math.round(priceAfterFee * exchangeRate),
+        };
+    }
+
+    function listProductTypes() {
+        return Object.keys(PROFILES);
+    }
+
+    globalThis.ALPHACODE_PRODUCT_TYPES = Object.freeze({
+        PROFILES: Object.freeze(PROFILES),
+        DEFAULT_PRODUCT_TYPE,
+        resolveProductType,
+        getProfile,
+        productTypeFee,
+        productTypeCategoryId,
+        productTypeSubCategoryId,
+        productTypeVariantAttributeId,
+        productTypeVariantTitle,
+        productTypeLabel,
+        computeProductTypePrice,
+        listProductTypes,
+    });
+})();

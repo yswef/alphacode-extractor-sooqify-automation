@@ -216,7 +216,7 @@
         </article>
 
         <article class="card">
-            <h2>الأسعار والمخزون (مشترك بين الأحذية والساعات)</h2>
+            <h2>الأسعار والمخزون (مشترك بين الأحذية Shoes والساعات Watches)</h2>
             <p class="hint">Category ID والرسوم صارت خاصة بكل نوع منتج على حدة — شوفها في تبويب "نوع المنتج" حيث تظهر تلقائياً حسب النوع المختار.</p>
             <div class="grid-3">
                 <div class="field"><label for="UnitId">Unit ID</label><input id="UnitId" type="number"></div>
@@ -250,11 +250,11 @@
         <article class="card">
             <h2>نوع المنتج</h2>
             <p class="hint">يُستخدم كافتراض عند تعذّر تحديد النوع تلقائياً من صفحة المورد؛ تقدر تتجاوزه لكل منتج من شاشة الاستخراج نفسها. اختيارك هنا يتحكم بأي بطاقة تصنيف تظهر تحت.</p>
-            <div class="field"><label for="ProductType">النوع الافتراضي</label><select id="ProductType"><option value="shoes">أحذية</option><option value="watches">ساعات</option></select></div>
+            <div class="field"><label for="ProductType">النوع الافتراضي</label><select id="ProductType"><option value="shoes">أحذية (Shoes)</option><option value="watches">ساعات (Watches)</option></select></div>
         </article>
 
         <article class="card" data-producttype-card="shoes">
-            <h2>تصنيف ورسوم الأحذية</h2>
+            <h2>تصنيف ورسوم الأحذية (Shoes)</h2>
             <p class="hint">تظهر هذه البطاقة فقط عندما يكون "النوع الافتراضي" أعلاه = أحذية.</p>
             <div class="grid-3">
                 <div class="field"><label for="CategoryId">Category ID</label><input id="CategoryId" type="number"></div>
@@ -264,7 +264,7 @@
         </article>
 
         <article class="card" data-producttype-card="watches">
-            <h2>إعدادات الساعات</h2>
+            <h2>إعدادات الساعات (Watches)</h2>
             <p class="hint">تظهر هذه البطاقة فقط عندما يكون "النوع الافتراضي" أعلاه = ساعات. الساعات بدون مقاسات وبدون فئة فرعية؛ كل لون يُضاف كخيار بسعره الخاص، ويُضاف رسم ثابت على كل ساعة بدل فكرة الدرجة الأولى/الثانية.</p>
             <div class="grid-2">
                 <div class="field"><label for="WatchCategoryId">Category ID (Timepieces)</label><input id="WatchCategoryId" type="number"></div>
@@ -485,6 +485,7 @@
 </footer>
 
 <script src="config.js"></script>
+<script src="product_types.js"></script>
 <script src="popup.js"></script>
 </body>
 </html>

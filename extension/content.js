@@ -37,6 +37,10 @@ const DEFAULT_CONFIG = globalThis.ALPHACODE_DEFAULT_CONFIG || {
     BatchSelectionPersistence: true, AdminPanelPosition: 'middle-left'
 };
 
+// Arabic: ملفات تعريف نوع المنتج - المصدر الوحيد لكل فروقات الأحذية/الساعات.
+// English: Product type profiles - the single source for every shoes/watches difference.
+const PRODUCT_TYPES = globalThis.ALPHACODE_PRODUCT_TYPES;
+
 let extractorConfig = { ...DEFAULT_CONFIG };
 // Arabic: خريطة اسم→id مبنية مسبقاً (sync) من كاش chrome.storage المشترك مع popup.js
 //         (alphacode_brands_cache)، أو من fetch احتياطي مباشر لـ/api/brands لو الكاش
@@ -1628,21 +1632,21 @@ function renderNewProductForm(context) {
     } = context;
 
     const detectedProductType = detectProductType(sourceText);
-    // Arabic: نفس إصلاح الرسوم بمسار الإرسال الفعلي (submitProduct) - اختيار رسم الساعة/
-    //         الحذية حسب النوع المكتشف فعلياً، بدل استخدام رسم الأحذية دايماً. قبل هذا
-    //         الإصلاح كانت المعاينة تعرض سعراً أقل من الفعلي للساعات (رسم 250 بدل 600
-    //         يوان)، رغم إن المُرسَل فعلياً كان صحيحاً - المستخدم يشوف رقم مختلف بالمعاينة.
-    // English: Same fix as the actual-submission path (submitProduct) - pick the watch/
-    //          shoe fee based on the actually-detected type, instead of always using the
-    //          shoes fee. Before this fix the preview showed a lower-than-real price for
-    //          watches (250 fee instead of 600), even though the actually-submitted price
-    //          was already correct - the user saw a different number in the preview.
-    const addedFee = detectedProductType === 'watches'
-        ? Number(extractorConfig.WatchFlatFeeYuan || 0)
-        : Number(extractorConfig.AddedFeeYuan || 0);
+    // Arabic: المعاينة تستخدم الآن نفس الدالة المشتركة لمسار الإرسال الفعلي
+    //         (computeFeeAndPrice) بدل نسخة مكررة من نفس الشرط. كانت النسخة المكررة هنا
+    //         صحيحة رياضياً، لكن وجودها هو ما سمح تاريخياً بانحراف المعاينة عن الفعلي كل
+    //         مرة يُعدَّل فيها مسار واحد فقط - فأُزيلت من الجذر.
+    // English: The preview now uses the very same shared helper as the real submission path
+    //          (computeFeeAndPrice) instead of a duplicated copy of the same condition. The
+    //          duplicate here was arithmetically correct, but its existence is what
+    //          historically let the preview drift from the real price whenever only one path
+    //          was edited - so it is removed at the root.
+    const { addedFee, priceAfterFee, priceSAR } = computeFeeAndPrice(
+        originalPrice,
+        detectedProductType,
+        extractorConfig,
+    );
     const exchangeRate = Number(extractorConfig.ExchangeRate || 0);
-    const priceAfterFee = originalPrice + addedFee;
-    const priceSAR = Math.round(priceAfterFee * exchangeRate);
     const sizes = extractSizes(sourceText);
     const fallbackNameEN = buildFallbackEnglishName(sourceText, styleCode);
     const fallbackDescriptionEN = buildFallbackEnglishDescription(sourceText, styleCode);
@@ -1703,9 +1707,9 @@ function renderNewProductForm(context) {
             <div class="alphacode-field"><label>بعد إضافة ${addedFee} يوان:</label><input type="number" id="modPriceFee" disabled></div>
         </div>
         <div class="alphacode-readonly-group">
-            <div class="alphacode-readonly-item"><span>نوع المنتج:</span><strong class="alphacode-success-text">${detectedProductType === 'watches' ? 'ساعة (Watches)' : 'أحذية (Shoes)'}</strong></div>
+            <div class="alphacode-readonly-item"><span>نوع المنتج:</span><strong class="alphacode-success-text">${PRODUCT_TYPES.productTypeLabel(detectedProductType)}</strong></div>
             <div class="alphacode-readonly-item"><span>السعر بعد المصارفة:</span><strong id="displaySAR" class="alphacode-success-text"></strong></div>
-            <div class="alphacode-readonly-item"><span>Category / SubCategory:</span><strong>${extractorConfig.CategoryId} / ${extractorConfig.SubCategoryId}</strong></div>
+            <div class="alphacode-readonly-item"><span>Category / SubCategory:</span><strong>${PRODUCT_TYPES.productTypeCategoryId(detectedProductType, extractorConfig)} / ${PRODUCT_TYPES.productTypeSubCategoryId(detectedProductType, extractorConfig) ?? 'بدون (None)'}</strong></div>
             <div class="alphacode-readonly-item"><span>صور المعرض الكامل:</span><strong class="alphacode-image-count">${images.length} صور</strong></div>
             <div class="alphacode-readonly-item"><span>متجر المورد:</span><strong>${normalizeText(extractorConfig.SupplierStoreName) || 'غير محدد'} / ${resolveSupplierStoreId() || 'لا يوجد ID'}</strong></div>
             <div class="alphacode-readonly-item"><span>Search Code:</span><strong>${searchCode || 'غير موجود'}</strong></div>
@@ -1908,7 +1912,7 @@ async function generateProductCopy(context) {
                     BrandName: String(
                         fields.brandName.value || '',
                     ).slice(0, 100),
-                    ProductType: String(productType || 'shoes'),
+                    ProductType: PRODUCT_TYPES.resolveProductType(productType),
                     AIProvider: extractorConfig.AIProvider || 'groq',
                     AIModel: extractorConfig.AIModel,
                     AIBaseUrl: extractorConfig.AIBaseUrl || '',
@@ -2343,14 +2347,15 @@ async function submitPreparedProductInBackground(
 //          verbatim between submitProduct and prepareBatchDraftForStore (this duplication
 //          was the root cause of the historical fee bugs: fixing one path forgot the
 //          other). Any future change to the fee/price logic goes here only.
+// Arabic: بعد إدخال ملفات تعريف نوع المنتج (product_types.js) لم يعد هنا أي شرط
+//         if (type === 'watches') - الرسم يُقرأ من ملف التعريف الموحّد. النتيجة الرياضية
+//         مطابقة تماماً للصيغة السابقة: (السعر + رسم النوع) × سعر الصرف، مقرَّباً.
+// English: With the product type profiles in place (product_types.js) there is no
+//          `if (type === 'watches')` here any more - the fee comes from the unified
+//          profile. The arithmetic is identical to the previous formula:
+//          (price + type fee) x exchange rate, rounded.
 function computeFeeAndPrice(originalPrice, productType, config) {
-    const addedFee = productType === 'watches'
-        ? Number(config.WatchFlatFeeYuan || 0)
-        : Number(config.AddedFeeYuan || 0);
-    const exchangeRate = Number(config.ExchangeRate || 0);
-    const priceAfterFee = originalPrice + addedFee;
-    const priceSAR = Math.round(priceAfterFee * exchangeRate);
-    return { addedFee, priceAfterFee, priceSAR };
+    return PRODUCT_TYPES.computeProductTypePrice(originalPrice, productType, config);
 }
 
 async function submitProduct(context) {
@@ -2388,7 +2393,7 @@ async function submitProduct(context) {
         DescriptionAR: fields.descAR.value.trim(),
         BrandName: canonicalBrandName(fields.brandName.value),
         BrandId: Number(fields.brandId.value || 0),
-        ProductType: productType || 'shoes',
+        ProductType: PRODUCT_TYPES.resolveProductType(productType),
         Sizes: sizes,
         OriginalPrice: originalPrice,
         PriceAfterFee: finalFeePrice,
@@ -2409,7 +2414,7 @@ async function submitProduct(context) {
         //          from inside Settings, so we force the correct value here instead of
         //          inheriting extractorConfig.ProductType as-is (which may be stuck on
         //          "watches" from an earlier session).
-        Settings: { ...extractorConfig, ProductType: productType || 'shoes' },
+        Settings: { ...extractorConfig, ProductType: PRODUCT_TYPES.resolveProductType(productType) },
     };
 
     try {
@@ -3056,19 +3061,22 @@ function initializeBatchDraftImageSelector(slide, draft) {
     const feeInput = slide.querySelector('.batch-fee-yuan');
     const sarPreview = slide.querySelector('.batch-price-sar-preview');
 
+    // Arabic: هذي المعاينة كانت تحمل صيغة ثالثة مستقلة للأحذية: yuan × rate × (1+FeePercent/100)،
+    //         و`FeePercent` غير موجود أصلاً بالإعدادات (config.js) فيؤول دايماً إلى 0. النتيجة:
+    //         حذاء بـ350 يوان يعرض 175 ريال بينما المُرسَل فعلياً (350+250)×0.5 = 300 ريال.
+    //         الآن المعاينة تستخدم نفس صيغة الإرسال الفعلي للنوعين، مع احترام أي تعديل يدوي
+    //         يكتبه المستخدم بحقل الرسوم.
+    // English: This preview carried a third, independent formula for shoes:
+    //          yuan x rate x (1 + FeePercent/100) - and `FeePercent` does not exist in the
+    //          settings (config.js) at all, so it always collapsed to 0. Result: a 350 CNY shoe
+    //          displayed 175 SAR while the real submission was (350+250) x 0.5 = 300 SAR.
+    //          The preview now uses the exact submission formula for both types, while still
+    //          honouring whatever the operator types into the fee field.
     const updateSarPreview = () => {
         const yuan = parseFloat(priceInput?.value || 0) || 0;
         const fee = parseFloat(feeInput?.value || 0) || 0;
-        const rate = parseFloat(extractorConfig.ExchangeRate || 1);
-        const feePercent = parseFloat(extractorConfig.FeePercent || 0);
-        const type = slide.querySelector('.batch-type-btn.active')?.dataset.type || draft.productType;
-        let sar;
-        if (type === 'watches') {
-            sar = Math.round((yuan + fee) * rate);
-        } else {
-            sar = Math.round(yuan * rate * (1 + feePercent / 100));
-        }
-        if (sarPreview) sarPreview.textContent = `${sar} ر.س`;
+        const rate = Number(extractorConfig.ExchangeRate) || 0;
+        if (sarPreview) sarPreview.textContent = `${Math.round((yuan + fee) * rate)} ر.س`;
     };
 
     priceInput?.addEventListener('input', updateSarPreview);
@@ -3080,9 +3088,16 @@ function initializeBatchDraftImageSelector(slide, draft) {
         btn.addEventListener('click', () => {
             slide.querySelectorAll('.batch-type-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
-            draft.productType = btn.dataset.type;
+            draft.productType = PRODUCT_TYPES.resolveProductType(btn.dataset.type);
+            const profile = PRODUCT_TYPES.getProfile(draft.productType);
             const variantsSection = slide.querySelector('.batch-variants')?.closest('.alphacode-field');
-            if (variantsSection) variantsSection.style.display = btn.dataset.type === 'watches' ? '' : 'none';
+            if (variantsSection) variantsSection.style.display = profile.hasColorVariantEditor ? '' : 'none';
+            // Arabic: عند تبديل النوع يدوياً لازم يتبدّل الرسم معه - قبل التوحيد كان الحقل
+            //         يبقى على رسم النوع السابق، فيُحسب حذاء برسم ساعة أو العكس.
+            // English: Switching the type manually must switch the fee with it - before the
+            //          unification the field kept the previous type's fee, pricing a shoe with
+            //          a watch fee or vice versa.
+            if (feeInput) feeInput.value = PRODUCT_TYPES.productTypeFee(draft.productType, extractorConfig);
             updateSarPreview();
         });
     });
@@ -3221,7 +3236,7 @@ async function buildBatchDraft(entry, index, total, updateProgress) {
     //          are extracted automatically right after the product data is pulled. If
     //          nothing usable comes back, the product is auto-excluded from the batch
     //          instead of being shown empty.
-    if (!archiveData.exists && draft.productType === 'watches') {
+    if (!archiveData.exists && PRODUCT_TYPES.getProfile(draft.productType).hasColorVariantEditor) {
         draft.nameEN = '';
         draft.descriptionEN = '';
         draft.nameAR = '';
@@ -3303,7 +3318,7 @@ function renderBatchReviewSlides(modalBox, drafts) {
                 <section class="alphacode-batch-slide" data-index="${index}">
                     <div class="alphacode-batch-slide-top">
                         <label><input class="batch-include" type="checkbox" ${draft.include ? 'checked' : ''} ${draft.archiveData.workflow_status === 'submitted' ? 'disabled' : ''}> ${draft.archiveData.workflow_status === 'submitted' ? 'مضاف سابقاً للمتجر' : 'إضافة هذا المنتج'}</label>
-                        <span class="batch-draft-status ${draft.aiStatus}">${draft.archiveData.exists ? `مؤرشف ID ${draft.archiveData.id}` : (draft.aiStatus === 'watch_variant_extracted' ? `ساعة - ${draft.variants.length} لون مستخرج` : draft.aiStatus === 'generated' ? 'تم إنشاء المحتوى' : 'صياغة محلية احتياطية')}</span>
+                        <span class="batch-draft-status ${draft.aiStatus}">${draft.archiveData.exists ? `مؤرشف ID ${draft.archiveData.id}` : (draft.aiStatus === 'watch_variant_extracted' ? `ساعة (Watch) - ${draft.variants.length} لون مستخرج` : draft.aiStatus === 'generated' ? 'تم إنشاء المحتوى' : 'صياغة محلية احتياطية')}</span>
                         ${draft.aiWatchNotes ? `<span class="alphacode-note">${escapeHtml(draft.aiWatchNotes)}</span>` : ''}
                     </div>
                     <section class="batch-image-selector-section">
@@ -3346,8 +3361,8 @@ function renderBatchReviewSlides(modalBox, drafts) {
                         <div class="alphacode-field">
                             <label>نوع المنتج</label>
                             <div class="alphacode-type-toggle">
-                                <button class="batch-type-btn ${draft.productType === 'shoes' ? 'active' : ''}" data-type="shoes" type="button">👟 أحذية</button>
-                                <button class="batch-type-btn ${draft.productType === 'watches' ? 'active' : ''}" data-type="watches" type="button">⌚ ساعات</button>
+                                ${PRODUCT_TYPES.listProductTypes().map(typeId => `
+                                <button class="batch-type-btn ${PRODUCT_TYPES.resolveProductType(draft.productType) === typeId ? 'active' : ''}" data-type="${typeId}" type="button">${PRODUCT_TYPES.productTypeLabel(typeId, { withIcon: true })}</button>`).join('')}
                             </div>
                         </div>
                         <div class="alphacode-field">
@@ -3356,7 +3371,14 @@ function renderBatchReviewSlides(modalBox, drafts) {
                         </div>
                         <div class="alphacode-field">
                             <label>رسوم ثابتة إضافية (يوان)</label>
-                            <input class="batch-fee-yuan" type="number" step="0.01" value="${draft.productType === 'watches' ? Number(extractorConfig.WatchFlatFeeYuan || 0) : 0}">
+                            <!-- Arabic: كان هذا الحقل يكتب 0 حرفياً للأحذية ويتجاهل AddedFeeYuan (250)،
+                                 فتظهر المعاينة برسم صفر وسعر أقل 125 ريال من المُرسَل فعلياً. الآن
+                                 يُقرأ رسم النوع من المصدر الموحّد للنوعين بلا استثناء.
+                                 English: This field used to hard-code 0 for shoes and ignore
+                                 AddedFeeYuan (250), so the preview showed a zero fee and a price
+                                 125 SAR below what was actually submitted. It now reads the type's
+                                 fee from the unified source, for both types with no exception. -->
+                            <input class="batch-fee-yuan" type="number" step="0.01" value="${PRODUCT_TYPES.productTypeFee(draft.productType, extractorConfig)}">
                         </div>
                         <div class="alphacode-field alphacode-readonly-item">
                             <span>الإجمالي بالريال السعودي</span>
@@ -3364,7 +3386,7 @@ function renderBatchReviewSlides(modalBox, drafts) {
                         </div>
                         <div class="alphacode-field alphacode-wide-field"><label>المقاسات</label><input class="batch-sizes" dir="ltr" value="${escapeHtml(draft.sizes.join(', '))}"></div>
                     </div>
-                    ${draft.productType === 'watches' ? `
+                    ${PRODUCT_TYPES.getProfile(draft.productType).hasColorVariantEditor ? `
                     <div class="alphacode-field alphacode-wide-field">
                         <label>الألوان والأسعار المستخرجة (سطر لكل لون: اللون : السعر - عدّل أو أضف يدوياً)</label>
                         <textarea class="batch-variants" dir="rtl" rows="4" placeholder="أبيض : 199.99&#10;أسود : 249.99">${escapeHtml((draft.variants || []).map(v => `${v.color} : ${v.price}`).join('\n'))}</textarea>
@@ -3615,17 +3637,36 @@ async function prepareBatchDraftForStore(draft, batchId, batchIndex, batchTotal,
         if (!pendingResponse.ok || !pendingData.success) throw new Error(pendingData.error || 'تعذر جلب المنتج المؤرشف.');
         pendingProduct = pendingData.pending_product;
     } else {
+        // Arabic: شاشة المراجعة تسمح بتعديل الرسم يدوياً بحقل "رسوم ثابتة إضافية (يوان)"،
+        //         وكانت القيمة تُلتقط بـ`draft.feeYuan` ثم تُهمَل تماماً هنا - أي تعديل
+        //         المستخدم لا يصل للمتجر إطلاقاً. الآن يُحترم التعديل اليدوي عبر تمريره
+        //         كرسم النوع، فتتطابق المعاينة مع المُرسَل فعلياً في كل الحالات.
+        // English: The review screen lets the operator override the fee in the "additional
+        //          flat fee (CNY)" field, and that value was captured into `draft.feeYuan`
+        //          and then completely ignored here - the operator's edit never reached the
+        //          store. The manual override is now honoured as the type's fee, so the
+        //          preview matches what is actually submitted in every case.
+        const typeFeeKey = PRODUCT_TYPES.getProfile(draft.productType).feeSettingKey;
+        const feeOverride = Number(draft.feeYuan);
+        const priceSettings = Number.isFinite(feeOverride)
+            ? { ...extractorConfig, [typeFeeKey]: feeOverride }
+            : extractorConfig;
         const { priceAfterFee, priceSAR } = computeFeeAndPrice(
             draft.originalPrice,
             draft.productType,
-            extractorConfig,
+            priceSettings,
         );
         const imageSelection = draft.imageSelection || defaultBatchImageSelection(draft.images);
         if (!imageSelection.selectedIndexes?.length) {
             throw new Error('اختر صورة واحدة على الأقل لهذا المنتج.');
         }
         const batchSettings = {
-            ...extractorConfig,
+            // Arabic: نفس الإعدادات المستخدمة بحساب السعر أعلاه (متضمّنة أي رسم يدوي)،
+            //         حتى لا يعيد الباك اند حساب رسم مختلف عن المعروض بالمعاينة.
+            // English: The same settings used for the price computation above (including any
+            //          manual fee), so the backend never recomputes a fee different from the
+            //          one shown in the preview.
+            ...priceSettings,
             // Arabic: استبدال ProductType الموروث من الإعدادات العامة (قد يكون محفوظاً على
             //         "watches" من جلسة سابقة) بالنوع المكتشف فعلياً لهذا المنتج بالذات.
             //         الباك اند يقرأ ProductType من جوا Settings حصراً - وضعها بالمستوى
@@ -3635,7 +3676,7 @@ async function prepareBatchDraftForStore(draft, batchId, batchIndex, batchTotal,
             //          product's actually-detected type. The backend reads ProductType only
             //          from inside Settings - setting it at the payload's top level alone (as
             //          done previously) is never actually read.
-            ProductType: draft.productType || 'shoes',
+            ProductType: PRODUCT_TYPES.resolveProductType(draft.productType),
             AutoSubmitDelaySeconds: 0,
             FastAutofillMode: true,
             DownloadSelectedImagesOnly: Boolean(extractorConfig.BatchDownloadSelectedImagesOnly),
@@ -3649,7 +3690,7 @@ async function prepareBatchDraftForStore(draft, batchId, batchIndex, batchTotal,
             DescriptionAR: draft.descriptionAR,
             BrandName: draft.brandName,
             BrandId: draft.brandId,
-            ProductType: draft.productType || 'shoes',
+            ProductType: PRODUCT_TYPES.resolveProductType(draft.productType),
             Sizes: draft.sizes,
             OriginalPrice: draft.originalPrice,
             Variants: draft.variants || [],

@@ -18,6 +18,7 @@ from app.core.utils import normalize_text, safe_bool, safe_int
 from app.repositories.sync_config_repository import load_sync_config
 from app.services.sync_service import sync_call, sync_push_product, SYNC_REQUEST_PACING_SECONDS
 from app.repositories.archive_repository import load_archive, save_archive
+from app.services.work_units import is_work_unit
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,17 @@ def _scan_data_repair_issues():
     for key, item in raw_archive.items():
         if str(key).startswith("_"):
             continue
+        # Arabic: وحدات العمل الموحّدة ليست منتجات، فلا تُقاس بالشكل المرجعي للمنتج. بدون
+        #         هذا الاستثناء كان كل سجل عمل من تطبيق المصممة سيظهر بتبويب "إصلاح البيانات"
+        #         كـ"منتج بدون id" + ~35 حقلاً ناقصاً، ولو ضغط المشرف "تطبيق" لحُشيت
+        #         وحدات العمل بحقول منتج وهمية وارتفعت بالأرشيف المشترك.
+        # English: Unified work units are not products, so they are not measured against the
+        #          canonical product shape. Without this exclusion every work record from the
+        #          designer's app would show in the data-repair tab as a "product with no id"
+        #          plus ~35 missing fields - and pressing "apply" would stuff work units with
+        #          fabricated product fields and push them to the shared archive.
+        if is_work_unit(item):
+            continue
         if not isinstance(item, dict):
             errors.append({
                 "type": "corrupted_entry", "key": key, "id": None,
@@ -197,6 +209,11 @@ def _apply_data_repair_fix(field_values):
             count = 0
             for key, item in archive.items():
                 if str(key).startswith("_") or not isinstance(item, dict):
+                    continue
+                # Arabic: لا تُحشى وحدات العمل بحقول المنتج المرجعية (نفس سبب الاستثناء بالفحص).
+                # English: Never stuff work units with canonical product fields (same reason
+                #          as the exclusion in the scan).
+                if is_work_unit(item):
                     continue
                 if field not in item:
                     item[field] = default_value
@@ -320,6 +337,10 @@ def generate_pdf_report():
         archive = _load_current_archive()
         reports_module.generate_report(
             _archive_entries(archive), scope, output_path, target_date, days=days,
+            # Arabic: خريطة ربط الهوية بين المصدرين تُقرأ من جوار الأرشيف (report_identities.json).
+            # English: The cross-source identity map is read from next to the archive
+            #          (report_identities.json).
+            identity_dir=paths_state.ROOT_DIR,
         )
     except Exception as exc:
         logger.error("Report generation failed: %s", exc)

@@ -1,0 +1,5 @@
+{
+    "_comment": "Copy to reports_config.json and set your own credentials. Never commit the real file - it is gitignored.",
+    "Username": "CHANGE_ME",
+    "Password": "CHANGE_ME"
+}

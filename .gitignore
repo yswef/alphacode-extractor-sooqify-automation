@@ -145,3 +145,8 @@ package-lock.json
 *.zip
 *.tar.gz
 *.rar
+
+# Arabic: بيانات اعتماد لوحة التقارير - لا تُرفع أبداً (كانت متتبَّعة بنص صريح).
+# English: Reports panel credentials - never commit (was previously tracked in plaintext).
+backend/config/reports_config.json
+reports_config.json

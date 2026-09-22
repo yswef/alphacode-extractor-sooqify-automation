@@ -1,0 +1,42 @@
+{
+    "_comment_ar": "أنماط استخراج السعر من نص المنتج. يُحمَّل من content.js عبر loadPricePatterns(). لإضافة نمط: أضف عنصراً بـ regex وgroup وflags. أول تطابق يفوز، فرتّب الأدق أولاً. لا تستخدم نمطاً غير مقيّد مثل 'P' متبوعاً بأرقام بلا حدود لأنه يلتقط أكواد الستايل مثل WP518-178.",
+    "_comment_en": "Price-extraction patterns for the product text. Loaded by content.js via loadPricePatterns(). To add one: append an entry with regex, group and flags. First match wins, so keep the most specific first. Never add an unbounded 'P'+digits pattern - it matches style codes such as WP518-178.",
+    "patterns": [
+        {
+            "name": "money-emoji",
+            "regex": "💰\\s?(\\d{2,6}(?:\\.\\d{1,2})?)",
+            "group": 1,
+            "flags": "u"
+        },
+        {
+            "name": "cny-sign",
+            "regex": "[¥￥]\\s?(\\d{2,6}(?:\\.\\d{1,2})?)",
+            "group": 1,
+            "flags": "u"
+        },
+        {
+            "name": "yuan-cn",
+            "regex": "(\\d{2,6}(?:\\.\\d{1,2})?)\\s?元",
+            "group": 1,
+            "flags": "u"
+        },
+        {
+            "name": "rmb-word",
+            "regex": "(?:RMB|CNY)\\s?(\\d{2,6}(?:\\.\\d{1,2})?)",
+            "group": 1,
+            "flags": "iu"
+        },
+        {
+            "name": "yuan-ar",
+            "regex": "يوان\\s*(\\d{2,6}(?:\\.\\d{1,2})?)",
+            "group": 1,
+            "flags": "u"
+        },
+        {
+            "name": "p-prefix",
+            "regex": "(?<![0-9A-Za-z])[Pp]\\s?(\\d{2,5}(?:\\.\\d{1,2})?)(?![0-9A-Za-z\\-])",
+            "group": 1,
+            "flags": "u"
+        }
+    ]
+}

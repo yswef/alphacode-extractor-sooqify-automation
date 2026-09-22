@@ -6,7 +6,14 @@
 
 'use strict';
 
-importScripts('config.js');
+importScripts('config.js', 'product_types.js', 'supplier_throttle.js');
+// Arabic: ملفات تعريف نوع المنتج - المصدر الوحيد لكل فروقات الأحذية/الساعات.
+// English: Product type profiles - the single source for every shoes/watches difference.
+const PRODUCT_TYPES = globalThis.ALPHACODE_PRODUCT_TYPES;
+// Arabic: المنظّم التكيفي لطلبات خوادم المورد - يمنع تكرار حادثة توقف الألبوم عن الاستجابة.
+// English: The adaptive throttle for supplier-server requests - prevents a repeat of the
+//          incident where the album stopped responding.
+const SUPPLIER_THROTTLE = globalThis.ALPHACODE_SUPPLIER_THROTTLE;
 const LOCAL_API_BASE = `http://127.0.0.1:${(globalThis.ALPHACODE_DEFAULT_CONFIG || {}).BackendPort || 5000}`;
 const DEFAULT_SOOQIFY_ADD_URL = 'https://admin.sooqifyonline.com/admin/item/add-new';
 const FALLBACK_JOBS_KEY = 'alphacodeFallbackSubmissionJobs';
@@ -196,20 +203,92 @@ async function fetchLocalFile(message) {
 // Arabic: جلب صورة المنتج كـ Blob لإرسالها مباشرة إلى Sooqify.
 // English: Fetch a product image as a Blob for direct Sooqify submission.
 async function fetchProductImageBlob(imageInfo) {
-    const response = await fetch(imageInfo.url, {
-        cache: 'no-store',
-    });
+    // Arabic: جلب صور المورد هو أكثف ما يضرب خوادمه (حتى 6 صور لكل منتج × كل منتجات
+    //         الدفعة)، فيمر عبر المنظّم التكيفي: تأخير بين الطلبات، وتباطؤ تلقائي وإعادة
+    //         محاولة عند أي إشارة تقييد (فشل، رد فارغ، أو بطء غير اعتيادي).
+    // English: Fetching supplier images is the heaviest load on their servers (up to 6 images
+    //          per product x every product in a batch), so it goes through the adaptive
+    //          throttle: a delay between requests, plus automatic back-off and retry at any
+    //          sign of limiting (failure, an empty body, or unusual slowness).
+    return SUPPLIER_THROTTLE.run(
+        imageInfo.url,
+        async () => {
+            const response = await fetch(imageInfo.url, { cache: 'no-store' });
+            if (!response.ok) {
+                throw new Error(
+                    `تعذر جلب الصورة ${imageInfo.name || ''} (${response.status}).`,
+                );
+            }
+            return {
+                blob: await response.blob(),
+                fileName: imageInfo.name || 'product.jpg',
+            };
+        },
+        {
+            label: `image:${imageInfo.name || ''}`,
+            // Arabic: صورة بحجم صفر = رد فارغ = مؤشر تقييد صامت.
+            // English: A zero-byte image = an empty body = a silent-limiting signal.
+            isEmpty: result => !result?.blob || result.blob.size === 0,
+        },
+    );
+}
 
-    if (!response.ok) {
-        throw new Error(
-            `تعذر جلب الصورة ${imageInfo.name || ''} (${response.status}).`,
-        );
+// =========================================================
+// Arabic: التحقق الفعلي من جلسة لوحة تحكم سوقيفاي قبل أي استخراج أو رفع.
+//         الطريقة: جلب صفحة "إضافة منتج" بكوكيز المستخدم ومحاولة العثور على نموذج إضافة
+//         المنتج داخلها (نفس extractProductForm المستخدم بالرفع الفعلي). إذا وُجد النموذج
+//         فالجلسة صالحة يقيناً؛ وإذا أعادت اللوحة صفحة تسجيل دخول أو تحويلاً، فلن يوجد
+//         النموذج وتُعتبر الجلسة منتهية. هذا تحقق حقيقي لا سؤال للمستخدم.
+// English: Genuine verification of the Sooqify admin session before any extraction or upload.
+//          Method: fetch the "add product" page with the user's cookies and look for the
+//          product-add form inside it (the same extractProductForm used by the real upload).
+//          If the form is there, the session is certainly valid; if the panel returns a login
+//          page or a redirect, the form is absent and the session is treated as expired.
+//          This is a real check, not a question to the user.
+// =========================================================
+async function checkStoreSession(message) {
+    const addUrl = message?.addUrl || DEFAULT_SOOQIFY_ADD_URL;
+    try {
+        const response = await fetch(addUrl, {
+            credentials: 'include',
+            redirect: 'follow',
+            cache: 'no-store',
+        });
+        const finalUrl = response.url || addUrl;
+        const html = await response.text();
+
+        // Arabic: مؤشر صريح على صفحة تسجيل الدخول (تحويل أو مسار login).
+        // English: An explicit sign of the login page (a redirect or a login path).
+        const redirectedToLogin = /\/(login|signin|auth)(\/|\?|$)/i.test(finalUrl);
+
+        let formFound = false;
+        try {
+            extractProductForm(html);
+            formFound = true;
+        } catch (_) {
+            formFound = false;
+        }
+
+        if (formFound && !redirectedToLogin) {
+            return { success: true, loggedIn: true, checked: true, finalUrl };
+        }
+        return {
+            success: true,
+            loggedIn: false,
+            checked: true,
+            finalUrl,
+            reason: redirectedToLogin
+                ? 'تم تحويل الطلب إلى صفحة تسجيل الدخول.'
+                : 'لم يُعثر على نموذج إضافة المنتج في صفحة اللوحة.',
+        };
+    } catch (error) {
+        // Arabic: فشل شبكي - لا نستطيع الجزم بالحالة، فنرجع checked:false ليتحول المستدعي
+        //         إلى السؤال اليدوي بدل ادّعاء أن المستخدم غير مسجل.
+        // English: A network failure - the state is genuinely unknown, so return checked:false
+        //          and let the caller fall back to asking, instead of claiming the user is
+        //          logged out.
+        return { success: true, loggedIn: false, checked: false, error: String(error?.message || error) };
     }
-
-    return {
-        blob: await response.blob(),
-        fileName: imageInfo.name || 'product.jpg',
-    };
 }
 
 // Arabic: إرسال حدث الواجهة إلى سجل Flask الخارجي دون تعطيل الأداة عند فشل الخادم.
@@ -262,6 +341,14 @@ async function updateWorkflowStatus(productId, status, details = {}) {
 // English: Build FormData compatible with the current Sooqify product form.
 async function buildSooqifyFormData(product, pageHtml, formHtml) {
     const settings = product.settings || {};
+    // Arabic: نوع المنتج يُحسم مرة واحدة هنا ويقود كل الفروقات بهذي الدالة (الفئة،
+    //         الفئة الفرعية، وخاصية الخيارات: مقاس للأحذية / لون للساعات).
+    // English: The product type is resolved once here and drives every difference in this
+    //          function (category, subcategory, and the variant attribute: size for shoes,
+    //          colour for watches).
+    const productType = PRODUCT_TYPES.resolveProductType(
+        settings.ProductType || product.product_type,
+    );
     const sizes = Array.from(
         new Set(
             (product.sizes || [])
@@ -279,8 +366,17 @@ async function buildSooqifyFormData(product, pageHtml, formHtml) {
         ? stockPerSize * sizes.length
         : stockPerSize;
 
+    // Arabic: خاصية الخيارات كانت مثبّتة على المقاس (SizeAttributeId / SizeTitle) حتى
+    //         للساعات، رغم إن قائمة "المقاسات" الواصلة للساعات هي فعلياً أسماء الألوان.
+    //         النتيجة: كل ساعة تُضاف للمتجر بخاصية "الحجم" بدل "اللون". الآن تُقرأ من ملف
+    //         تعريف النوع: مقاس للأحذية، لون للساعات.
+    // English: The variant attribute was pinned to size (SizeAttributeId / SizeTitle) even
+    //          for watches, although the "sizes" list arriving for a watch actually holds
+    //          colour names. Result: every watch was pushed to the store under the "Size"
+    //          attribute instead of "Colour". It now comes from the type profile: size for
+    //          shoes, colour for watches.
     const attributeId = normalizeText(
-        settings.SizeAttributeId || 1,
+        PRODUCT_TYPES.productTypeVariantAttributeId(productType, settings),
     );
 
     const choiceNo = normalizeText(
@@ -290,8 +386,8 @@ async function buildSooqifyFormData(product, pageHtml, formHtml) {
     );
 
     const choiceTitle = normalizeText(
-        settings.SizeTitle || 'الحجم',
-    ) || 'الحجم';
+        PRODUCT_TYPES.productTypeVariantTitle(productType, settings),
+    ) || PRODUCT_TYPES.getProfile(productType).variantTitleFallback;
 
     const defaultLanguage = normalizeText(
         settings.DefaultLanguage || 'en',
@@ -344,17 +440,29 @@ async function buildSooqifyFormData(product, pageHtml, formHtml) {
         settings.StoreId || 3,
     );
 
+    // Arabic: الفئة والفئة الفرعية تُحسبان من ملف تعريف نوع المنتج، لا من `|| 41` و`|| 42`.
+    //         الباك اند يرسل SubCategoryId = null للساعات عمداً (الساعات بلا فئة فرعية)،
+    //         وكان `settings.SubCategoryId || 42` يعيد حقن فئة الأحذية الفرعية (42) بكل
+    //         ساعة تُضاف للمتجر. الآن الحقل يُترك فارغاً للساعات كما هو مقصود.
+    // English: Category and subcategory come from the product type profile, not from
+    //          `|| 41` and `|| 42`. The backend deliberately sends SubCategoryId = null for
+    //          watches (watches have no subcategory), and `settings.SubCategoryId || 42`
+    //          re-injected the shoes subcategory (42) into every watch pushed to the store.
+    //          The field is now left empty for watches, as intended.
     setSingleFormValue(
         formData,
         'category_id',
-        settings.CategoryId || 41,
+        PRODUCT_TYPES.productTypeCategoryId(productType, settings),
     );
 
-    setSingleFormValue(
-        formData,
-        'sub_category_id',
-        settings.SubCategoryId || 42,
-    );
+    const subCategoryId = PRODUCT_TYPES.productTypeSubCategoryId(productType, settings);
+    if (subCategoryId !== null) {
+        setSingleFormValue(
+            formData,
+            'sub_category_id',
+            subCategoryId,
+        );
+    }
 
     setSingleFormValue(
         formData,
@@ -433,7 +541,11 @@ async function buildSooqifyFormData(product, pageHtml, formHtml) {
     formData.delete('choice[]');
     formData.delete(`choice_options_${choiceNo}[]`);
 
-    if (sizes.length) {
+    // Arabic: الأنواع التي لا تستخدم خاصية خيارات (حالياً الساعات) تُرسَل بلا أي
+    //         attribute/choice - المتجر يستقبلها كمنتج بسعر واحد ومخزون واحد.
+    // English: Types that use no variant attribute (currently watches) are sent with no
+    //          attribute/choice at all - the store receives a single-price, single-stock item.
+    if (sizes.length && PRODUCT_TYPES.getProfile(productType).usesVariantAttribute) {
         formData.append('attribute_id[]', attributeId);
         formData.append('choice_no[]', choiceNo);
         formData.append('choice[]', choiceTitle);
@@ -1397,6 +1509,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         try {
             if (message.action === 'FETCH_LOCAL_FILE') {
                 sendResponse(await fetchLocalFile(message));
+                return;
+            }
+
+            if (message.action === 'CHECK_STORE_SESSION') {
+                sendResponse(await checkStoreSession(message));
                 return;
             }
 

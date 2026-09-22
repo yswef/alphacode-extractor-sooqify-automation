@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AlphaCode Product Extractor",
-  "version": "5.7.1",
+  "version": "5.8.0",
   "description": "أداة داخلية تستخرج بيانات المنتجات من متجر المورد الصيني وترفعها تلقائياً إلى متجر Sooqify، مع مزامنة مركزية للأرشيف بين المستخدمين.",
   "permissions": [
     "activeTab",
@@ -49,6 +49,9 @@
       ],
       "js": [
         "config.js",
+        "product_types.js",
+        "supplier_throttle.js",
+        "supplier_currency.js",
         "content.js"
       ],
       "css": [
@@ -63,6 +66,7 @@
       ],
       "js": [
         "config.js",
+        "product_types.js",
         "admin_autofill.js"
       ],
       "css": [

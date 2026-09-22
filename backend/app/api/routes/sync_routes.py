@@ -1,7 +1,12 @@
 import logging
 from flask import Blueprint, jsonify, request
 
-from app.services.sync_service import sync_pull_updates, sync_flush_queue, sync_reconcile_full
+from app.services.sync_service import (
+    sync_pull_updates,
+    sync_flush_queue,
+    sync_reconcile_full,
+    sync_auto_reconcile_if_due,
+)
 from app.repositories.sync_config_repository import load_sync_config, save_sync_config
 from app.repositories.sync_queue_repository import load_sync_queue
 from app.repositories.sync_state_repository import load_sync_state
@@ -39,6 +44,15 @@ def trigger_sync_now():
     try:
         pull_error = sync_pull_updates()
         sync_flush_queue()
+        # Arabic: مصالحة كاملة تلقائية كل عدة ساعات - تعوّض ما قد يتخطاه السحب التزايدي.
+        #         تفشل بهدوء: خطؤها لا يُبطل نجاح دورة المزامنة نفسها.
+        # English: An automatic full reconcile every few hours - catches whatever the
+        #          incremental pull may have skipped. Fails quietly: its error must not
+        #          invalidate the success of the sync cycle itself.
+        try:
+            sync_auto_reconcile_if_due()
+        except Exception as reconcile_error:
+            logger.warning("Auto reconcile failed: %s", reconcile_error)
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
     if pull_error:

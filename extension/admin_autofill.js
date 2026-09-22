@@ -7,6 +7,9 @@
 'use strict';
 
 const ADMIN_DEFAULTS = globalThis.ALPHACODE_DEFAULT_CONFIG || {};
+// Arabic: ملفات تعريف نوع المنتج - المصدر الوحيد لكل فروقات الأحذية/الساعات.
+// English: Product type profiles - the single source for every shoes/watches difference.
+const PRODUCT_TYPES = globalThis.ALPHACODE_PRODUCT_TYPES;
 const LOCAL_API_BASE = `http://127.0.0.1:${(globalThis.ALPHACODE_DEFAULT_CONFIG || {}).BackendPort || 5000}`;
 const FALLBACK_RETRY_QUERY_KEY = 'alphacode_retry';
 const FALLBACK_RETRY_SESSION_KEY = 'alphacodeFallbackRetryContext';
@@ -1464,10 +1467,21 @@ async function fillSizeVariants(form, product) {
 
     const totalStock = stockPerSize * sizes.length;
 
+    // Arabic: نفس إصلاح background.js - خاصية الخيارات كانت مثبّتة على المقاس حتى
+    //         للساعات، رغم إن قائمة "المقاسات" الواصلة للساعات هي أسماء ألوان. تُقرأ الآن
+    //         من ملف تعريف النوع الموحّد (مقاس للأحذية، لون للساعات).
+    // English: Same fix as background.js - the variant attribute was pinned to size even for
+    //          watches, although the "sizes" list arriving for a watch holds colour names. It
+    //          now comes from the unified type profile (size for shoes, colour for watches).
+    const productType = PRODUCT_TYPES.resolveProductType(
+        settings.ProductType || product.product_type,
+    );
+    const typeProfile = PRODUCT_TYPES.getProfile(productType);
     const attributeId = String(
-        settings.SizeAttributeId
-        || adminConfig.SizeAttributeId
-        || 1,
+        PRODUCT_TYPES.productTypeVariantAttributeId(productType, {
+            ...adminConfig,
+            ...settings,
+        }),
     );
 
     // Arabic: قبول الاسم الجديد والقديم للإعداد دون كسر الإصدارات السابقة.
@@ -1481,10 +1495,30 @@ async function fillSizeVariants(form, product) {
     );
 
     const configuredTitle = String(
-        settings.SizeTitle
-        || adminConfig.SizeTitle
-        || 'الحجم',
-    ).trim() || 'الحجم';
+        PRODUCT_TYPES.productTypeVariantTitle(productType, {
+            ...adminConfig,
+            ...settings,
+        }),
+    ).trim() || typeProfile.variantTitleFallback;
+
+    // Arabic: الأنواع التي لا تستخدم خاصية خيارات (حالياً الساعات، بطلب المستخدم) تُعبَّأ
+    //         بلا أي خاصية: مخزون واحد وسعر واحد. قبل هذا كان اختيار خاصية "اللون" رقم 2
+    //         يفشل بلوحة Sooqify لأن الخاصية غير موجودة أصلاً، فتتوقف الإضافة كلياً.
+    // English: Types that use no variant attribute (currently watches, per the operator's
+    //          request) are filled with none at all: a single stock and a single price. Before
+    //          this, selecting the "colour" attribute #2 failed in the Sooqify panel because
+    //          that attribute does not exist there, which aborted the whole submission.
+    if (!typeProfile.usesVariantAttribute) {
+        setControlValue('[name="current_stock"]', totalStock);
+        adminLog('info', `Product type "${productType}" uses no variant attribute - filling a single stock of ${totalStock}.`);
+        return {
+            sizes: sizes.length,
+            filledRows: 0,
+            stockPerSize,
+            totalStock,
+            skippedAttribute: true,
+        };
+    }
 
     const attributeResult = await selectOnlyProductAttribute(
         attributeId,
@@ -1493,7 +1527,7 @@ async function fillSizeVariants(form, product) {
 
     if (!attributeResult.success) {
         throw new Error(
-            `تعذر اختيار خاصية الحجم رقم ${attributeId}.`,
+            `تعذر اختيار خاصية "${configuredTitle}" رقم ${attributeId}.`,
         );
     }
 
@@ -1786,14 +1820,26 @@ async function fillCoreFields(product) {
         || adminConfig.StoreId
     );
 
-    const categoryId = (
-        settings.CategoryId
-        || adminConfig.CategoryId
+    // Arabic: الفئة والفئة الفرعية من ملف تعريف النوع. الساعات بلا فئة فرعية (null)،
+    //         وكان `settings.SubCategoryId || adminConfig.SubCategoryId` يعيد حقن فئة
+    //         الأحذية الفرعية بكل ساعة. الآن تبقى null ولا يُعبّأ الحقل للساعات.
+    // English: Category and subcategory come from the type profile. Watches have no
+    //          subcategory (null), and `settings.SubCategoryId || adminConfig.SubCategoryId`
+    //          re-injected the shoes subcategory into every watch. It now stays null and the
+    //          field is left unfilled for watches.
+    const coreProductType = PRODUCT_TYPES.resolveProductType(
+        settings.ProductType || product.product_type,
+    );
+    const mergedCoreSettings = { ...adminConfig, ...settings };
+
+    const categoryId = PRODUCT_TYPES.productTypeCategoryId(
+        coreProductType,
+        mergedCoreSettings,
     );
 
-    const subCategoryId = (
-        settings.SubCategoryId
-        || adminConfig.SubCategoryId
+    const subCategoryId = PRODUCT_TYPES.productTypeSubCategoryId(
+        coreProductType,
+        mergedCoreSettings,
     );
 
     const brandId = (
@@ -1852,11 +1898,16 @@ async function fillCoreFields(product) {
         75,
     );
 
-    results.subCategory = await setDynamicSelectValue(
-        'sub_category_id',
-        subCategoryId,
-        `${subCategoryId}`,
-    );
+    // Arabic: الساعات بلا فئة فرعية - لا نلمس الحقل إطلاقاً بدل تعبئته بقيمة الأحذية.
+    // English: Watches have no subcategory - leave the control untouched instead of filling
+    //          it with the shoes value.
+    results.subCategory = subCategoryId === null
+        ? { success: true, skipped: 'no_subcategory_for_type' }
+        : await setDynamicSelectValue(
+            'sub_category_id',
+            subCategoryId,
+            `${subCategoryId}`,
+        );
 
     // Arabic: تعبئة الحقول المستقلة بالتوازي لتقليل زمن الانتظار بين الحقول.
     // English: Fill independent fields in parallel to reduce delays between controls.

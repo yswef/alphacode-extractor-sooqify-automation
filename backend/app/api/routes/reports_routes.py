@@ -281,7 +281,11 @@ def generate_pdf_report():
 
     data = request.get_json(silent=True) or {}
     scope = normalize_text(data.get("scope")).lower()
-    if scope not in ("daily", "monthly"):
+    # Arabic: "daily"/"monthly" محفوظان للتوافق الخلفي؛ و"days"/"range" هما النطاقان المرنان
+    #         الجديدان (أيام متفرقة، أو مدى من-إلى يجوز أن يعبر الشهور).
+    # English: "daily"/"monthly" are kept for backwards compatibility; "days"/"range" are the
+    #          new flexible scopes (scattered days, or a from-to range that may cross months).
+    if scope not in ("daily", "monthly", "days", "range"):
         scope = "daily"
 
     date_str = normalize_text(data.get("date"))
@@ -290,14 +294,33 @@ def generate_pdf_report():
     except ValueError:
         return jsonify({"success": False, "error": "date must be in YYYY-MM-DD format."}), 400
 
+    raw_days = data.get("days") if isinstance(data.get("days"), list) else []
+    date_from = normalize_text(data.get("from"))
+    date_to = normalize_text(data.get("to"))
+
+    if scope == "days" and not raw_days:
+        return jsonify({"success": False, "error": "اختر يوماً واحداً على الأقل."}), 400
+    if scope == "range" and not (date_from and date_to):
+        return jsonify({"success": False, "error": "حدد تاريخ البداية وتاريخ النهاية."}), 400
+
+    try:
+        days = reports_module.resolve_report_days(scope, target_date, raw_days, date_from, date_to)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    if scope == "days" and not days:
+        return jsonify({"success": False, "error": "كل التواريخ المرسلة غير صالحة (المطلوب YYYY-MM-DD)."}), 400
+
     reports_dir = os.path.join(paths_state.ROOT_DIR, "reports")
-    period_label = target_date.strftime("%Y-%m") if scope == "monthly" else target_date.strftime("%Y-%m-%d")
+    period_label = reports_module.describe_period(scope, days, target_date)
     filename = f"alphacode_{scope}_report_{period_label}.pdf"
     output_path = os.path.join(reports_dir, filename)
 
     try:
         archive = _load_current_archive()
-        reports_module.generate_report(_archive_entries(archive), scope, output_path, target_date)
+        reports_module.generate_report(
+            _archive_entries(archive), scope, output_path, target_date, days=days,
+        )
     except Exception as exc:
         logger.error("Report generation failed: %s", exc)
         return jsonify({"success": False, "error": str(exc)}), 500
@@ -306,6 +329,7 @@ def generate_pdf_report():
     return jsonify({
         "success": True,
         "filename": filename,
+        "days_covered": len(days) if days else None,
         "download_url": f"http://127.0.0.1:5000/api/reports/download/{filename}",
     })
 

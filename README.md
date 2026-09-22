@@ -1,4 +1,4 @@
-# AlphaCode Extractor v5.0.0 — Sooqify Batch Automation
+# AlphaCode Extractor v5.8 — Sooqify Batch Automation
 
 > Private Chrome Extension and Flask backend for extracting supplier products, preparing bilingual catalog copy, optimizing images, and submitting products to Sooqify/6amMart individually or as a controlled batch — with optional two-user sync for teams sharing one store.
 
@@ -19,6 +19,12 @@
 - Optionally sync two machines working on the same store, preventing duplicate product IDs and duplicate product additions.
 - Detect and repair older products missing newer fields via the **إصلاح البيانات** (Data Repair) tab, with operator-approved defaults, an automatic backup before any write, and downloadable error/extra-field reports.
 - Automatically back off for a cooldown period when the sync host returns HTTP 403 (rate-limit/anti-flood block), instead of hammering it with more requests.
+- Recover the **true CNY price** when the supplier displays a foreign currency: szwego picks the currency from the request IP, so a VPN can render a 300 CNY watch as "Ұ7077.3" (JPY). The extension reads the exchange rate the site itself publishes and converts back exactly, refusing to continue on an unconfirmed conversion.
+- Throttle supplier requests adaptively, detecting the site's *silent* rate-limiting (HTTP 200 with an empty product list) and backing off instead of hammering a wall.
+- Verify the Sooqify admin session **before** extraction starts, rather than failing late after all the work is done.
+- Configure and test sync directly on the login screen, since login itself runs through the sync server.
+- Build PDF reports over **any** set of dates: one day, a whole month, hand-picked scattered days, or a custom from-to range that may cross months.
+- Self-heal the archive with an automatic periodic full reconcile, so the incremental pull can no longer silently lose records.
 
 ## Batch workflow
 
@@ -41,6 +47,10 @@ backend/
   requirements.txt
 extension/
   config.js              Shared defaults
+  product_types.js       Single source of truth for every shoes/watches difference
+  supplier_currency.js   Recovers the true CNY price from the supplier's IP-derived currency
+  supplier_throttle.js   Adaptive back-off for supplier requests (detects silent rate-limiting)
+  price_patterns.json    Extensible price-extraction patterns loaded at runtime
   content.js             Supplier extraction, review UI, batch preparation
   content.css
   background.js          Persistent sequential submission queue and notifications
@@ -247,6 +257,30 @@ Open the popup's **المزامنة والمجلد** tab, enter the secret token
 
 This is normally the shared host's own anti-flood protection reacting to a burst of requests (e.g., a large first-time reconcile). AlphaCode now backs off automatically for a few minutes and shows the reason in the sync status panel — no action needed beyond waiting. See **Sync resilience & host rate-limiting** above to tune the cooldown/pacing values.
 
+### A price looks far too high (thousands of SAR for a cheap item)
+
+The supplier site picks its displayed currency from your IP, so a VPN can make it show
+Japanese yen while you assume Chinese yuan. AlphaCode now reads the exchange rate the site
+publishes and converts back to CNY, showing a banner such as
+`JPY ← 300 يوان (سعر صرف 23.591)`. If it cannot confirm the conversion it blocks the product
+and asks for the price manually — enter the CNY price and tick the confirmation box.
+
+### "الخادم يبطئ استجابته — جاري الانتظار N ثانية"
+
+The supplier started rate-limiting. Its limiting is silent: the page returns HTTP 200 with a
+valid page but an empty product list, so there is no error code to read. AlphaCode detects
+that pattern, slows down automatically and retries. Just wait — it speeds back up on its own.
+Practical guidance measured from a real incident: roughly 8 full product-list reloads within
+two minutes was enough to trigger it, so keep list reloads well under ~4 per minute.
+
+### A teammate's products are missing from reports
+
+The incremental sync pull can skip records once its watermark moves past them. As of v5.8 a
+full reconcile runs automatically every few hours to repair this, and you can force one
+immediately from the sync tab. A real case: the server held 3,800 records while one machine
+had 2,476 — an entire teammate's month of work was absent from every report while sync still
+reported success.
+
 ### Search Code keeps coming back empty
 
 `extension/content.js` logs each extraction stage to the browser Console under the `[AlphaCode][SearchCode]` prefix whenever it fails to find a value. Open DevTools Console on the SZWEGO product page, trigger the extraction, and check those log lines (they include the raw HTML/text AlphaCode looked at) to see exactly which stage — and which selector — is not matching the site's current markup.
@@ -255,9 +289,19 @@ This is normally the shared host's own anti-flood protection reacting to a burst
 
 - [Arabic project documentation](docs/AlphaCode_Project_Documentation_AR.pdf)
 - [English project documentation](docs/AlphaCode_Project_Documentation_EN.pdf)
-- [v5.0.0 changelog](CHANGELOG.md)
+- [Changelog](CHANGELOG.md)
+- [Per-change notes](docs/changes/) — one file per change, with the reason, the design and the tests
+- [VPS migration plan](docs/planning/vps_migration_plan.md) — planning only, not yet implemented
 
-The PDF documents describe the core architecture; `CHANGELOG.md` and this README cover the v5.0.0 main-image-only upload update, the v4.5 batch flow, and the v4.5.2/v4.6.0 sync and product-info additions.
+The PDF documents describe the core architecture. `docs/changes/` is the authoritative record
+of every behavioural change; the most recent are:
+
+| Change | Summary |
+|--------|---------|
+| [Shoes/watches unification](docs/changes/2026-09-22_unify_shoes_watches_product_type_profiles.md) | One profile object replaces every scattered `if product_type == "watches"` branch |
+| [Supplier currency recovery](docs/changes/2026-09-22_supplier_currency_cny_recovery.md) | Recovers the true CNY price from the site's own published exchange rate |
+| [Reports, login sync, session gate, throttle](docs/changes/2026-09-22_reports_login_session_throttle.md) | Flexible report dates, sync on the login screen, store-session check, adaptive back-off |
+| [Reversed names and the sync data gap](docs/changes/2026-09-22_report_names_and_sync_data_gap.md) | Fixes reversed Arabic names in PDFs and the silently lossy incremental sync |
 
 ## License
 

@@ -8,6 +8,15 @@ from urllib.parse import urlsplit, urlunsplit
 
 from PIL import Image, ImageOps
 
+# Arabic: مصدر الحقيقة الوحيد لفروقات الأحذية/الساعات (نظير extension/product_types.js).
+# English: The single source of truth for shoes/watches differences (mirrors extension/product_types.js).
+from app.services.product_type_profiles import (
+    get_profile,
+    product_type_variant_attribute_id,
+    product_type_variant_title,
+    resolve_product_type,
+)
+
 logger = logging.getLogger("alphacode")
 
 # Arabic: نفس القيم الافتراضية في app.py (الثوابت نفسها لم تُنقل). English: Same defaults as app.py (those constants were not moved).
@@ -63,7 +72,7 @@ def extract_settings(data):
     """Arabic: قراءة جميع الإعدادات مع قيم آمنة للمتاجر المستقبلية. English: Read all settings with safe defaults for future stores."""
     settings = data.get("Settings") if isinstance(data.get("Settings"), dict) else data
     return {
-        "ProductType": (_normalize_text(settings.get("ProductType")).lower() or "shoes"),
+        "ProductType": resolve_product_type(_normalize_text(settings.get("ProductType"))),
         "CategoryId": _safe_int(settings.get("CategoryId"), 41),
         "SubCategoryId": _safe_int(settings.get("SubCategoryId"), 42),
         # Arabic: فئة الساعات (Timepieces) بدون فئة فرعية. English: The watches category (Timepieces), with no subcategory.
@@ -321,7 +330,15 @@ def build_variant_fields(sizes, colors, price, stock, settings, product_type, ba
     (not extracted or not edited by the operator), a single default color is created at the base
     price plus the flat fee, so the product is never left without a sellable price.
     """
-    if product_type == "watches":
+    # Arabic: نوع بلا خاصية خيارات (حالياً الساعات بطلب المستخدم) - لا Variations ولا
+    #         ChoiceOptions ولا Attributes إطلاقاً؛ منتج بسعر واحد ومخزون واحد.
+    # English: A type with no variant attribute (currently watches, per the operator's request)
+    #          gets no Variations, ChoiceOptions or Attributes at all; a single-price,
+    #          single-stock product.
+    if not get_profile(product_type)["uses_variant_attribute"]:
+        return "[]", "[]", "[]", settings["Stock"]
+
+    if resolve_product_type(product_type) == "watches":
         variations = []
         for color in (colors or []):
             label = _normalize_text(color.get("label")) if isinstance(color, dict) else ""
@@ -338,10 +355,10 @@ def build_variant_fields(sizes, colors, price, stock, settings, product_type, ba
                 "price": round(default_price_yuan * settings["ExchangeRate"]),
                 "stock": settings["Stock"],
             }]
-        attribute_id = str(settings["WatchColorAttributeId"])
+        attribute_id = product_type_variant_attribute_id(product_type, settings)
         choice_options = [{
             "name": f"choice_{attribute_id}",
-            "title": settings["WatchColorTitle"],
+            "title": product_type_variant_title(product_type, settings),
             "options": [item["type"] for item in variations],
         }]
         attributes = [attribute_id]
@@ -359,11 +376,11 @@ def build_variant_fields(sizes, colors, price, stock, settings, product_type, ba
         {"type": size, "price": price_value, "stock": settings["Stock"]}
         for size in normalized_sizes
     ]
-    attribute_id = str(settings["SizeAttributeId"])
+    attribute_id = product_type_variant_attribute_id(product_type, settings)
     choice_options = [
         {
             "name": f"choice_{attribute_id}",
-            "title": settings["SizeTitle"],
+            "title": product_type_variant_title(product_type, settings),
             "options": normalized_sizes,
         }
     ]
@@ -380,8 +397,8 @@ def build_watch_variations_from_absolute_yuan(watch_colors, settings, original_p
              rate (WatchFlatFeeYuan is not added again on this path). Copied verbatim from extract_product.
     """
     watch_stock = settings["Stock"]
-    watch_attr_id = str(settings["WatchColorAttributeId"])
-    watch_attr_title = settings["WatchColorTitle"]
+    watch_attr_id = product_type_variant_attribute_id("watches", settings)
+    watch_attr_title = product_type_variant_title("watches", settings)
     variant_price_rows = []
     for vc in watch_colors:
         color_price_sar = round(vc["_abs_price_yuan"] * settings["ExchangeRate"])

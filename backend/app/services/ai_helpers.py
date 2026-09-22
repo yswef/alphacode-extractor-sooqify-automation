@@ -38,6 +38,13 @@ AI_PROMPT_VERSION = 'v4'
 GROQ_OFFICIAL_SEARCH_MODEL = 'llama-3.1-70b-versatile'
 HEADERS = {'User-Agent': 'Mozilla/5.0'}
 import threading
+
+# Arabic: فحص النوع يمر من المصدر الموحّد حتى لا تختلف قاعدة التطبيع بين الملفات.
+#         (نصوص البرومبت نفسها تبقى هنا لأنها محتوى تحريري لا إعدادات.)
+# English: Type checks go through the unified source so the normalization rule cannot differ
+#          between files. (The prompt texts stay here - they are editorial content, not config.)
+from app.services.product_type_profiles import resolve_product_type
+
 SAVE_LOCK = threading.RLock()
 class AIProviderRequestError(Exception):
     def __init__(self, message, status_code, payload):
@@ -773,7 +780,7 @@ def enforce_arabic_product_name(name, source_text, style_code, brand_name="", pr
     exact_style_code = normalize_text(style_code).upper()
     selected_brand = canonicalize_brand_name(brand_name)
 
-    if product_type == "watches":
+    if resolve_product_type(product_type) == "watches":
         # Arabic: بدون أي تحويل لمصطلحات الارتفاع (خاصة بالأحذية فقط)؛ فقط بادئة "ساعة" وكود الستايل إن وُجد.
         # English: No silhouette-word translation (shoes-only); just a "ساعة" prefix and the style code if present.
         final_name = re.sub(r"^ساعة\s+", "", final_name).strip()
@@ -1193,7 +1200,7 @@ def resolve_ai_runtime(data):
 
 def build_normal_ai_messages(source_text, original_product_name, style_code, search_code, sizes, configured_brand, allowed_brands, arabic_style, product_type="shoes"):
     """Arabic: بناء تعليمات كتابة عادية دون بحث ويب. English: Build normal-generation messages without web research."""
-    if product_type == "watches":
+    if resolve_product_type(product_type) == "watches":
         role_line = "You are a senior luxury-watch e-commerce catalog writer fluent in English and Arabic."
         english_bullets = (
             "- Use the canonical brand and exact model/collection when supported.\n"
@@ -1255,7 +1262,7 @@ Return exactly one JSON object with: name_en, description_en, name_ar, descripti
 
 def build_official_research_prompt(official_domain, original_product_name, style_code, product_type="shoes"):
     """Arabic: برومبت بحث رسمي صغير للمنتج الحالي فقط. English: Build a compact official-domain research prompt for the current product only."""
-    if product_type == "watches":
+    if resolve_product_type(product_type) == "watches":
         subject_line = (
             f'Search only the official domain {official_domain} for this exact watch, '
             f'reference/style code if provided: "{compact_prompt_text(style_code, 80) or "Not provided"}".'
@@ -1283,7 +1290,7 @@ If not found, state NOT FOUND OFFICIALLY. Do not write marketing copy.
 
 def build_official_rewrite_messages(official_research, source_text, original_product_name, style_code, search_code, sizes, configured_brand, allowed_brands, arabic_style, product_type="shoes"):
     """Arabic: بناء صياغة نهائية بعد البحث الرسمي. English: Build final-copy messages after official research."""
-    if product_type == "watches":
+    if resolve_product_type(product_type) == "watches":
         role_line = "You are the final catalog editor for a luxury-watch e-commerce store."
         arabic_open_line = "- Begin the title with ساعة and keep the configured brand name as written."
         available_line = f"REFERENCE/STYLE CODE (only if supplied): {compact_prompt_text(style_code, 80) or 'Not provided'}\n"

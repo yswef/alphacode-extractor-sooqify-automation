@@ -85,6 +85,17 @@ from app.services.ai_helpers import (
     validate_generated_copy,
 )
 
+# Arabic: مصدر الحقيقة الوحيد لفروقات الأحذية/الساعات (نظير extension/product_types.js).
+# English: The single source of truth for shoes/watches differences (mirrors extension/product_types.js).
+from app.services.product_type_profiles import (
+    compute_product_type_price,
+    get_profile,
+    product_type_category_id,
+    product_type_fee,
+    product_type_sub_category_id,
+    resolve_product_type,
+)
+
 logger = logging.getLogger(__name__)
 
 upload_bp = Blueprint("upload_bp", __name__)
@@ -122,7 +133,7 @@ def generate_ai_copy():
         f"{original_product_name} {source_text}",
     )
     research_official = safe_bool(data.get("ResearchOfficial"), False)
-    product_type = (compact_prompt_text(data.get("ProductType"), 20) or "shoes").lower()
+    product_type = resolve_product_type(compact_prompt_text(data.get("ProductType"), 20))
     arabic_style = compact_prompt_text(data.get("ArabicCopyStyle"), 80) or "sales-natural"
     json_repair_enabled = safe_bool(data.get("AIJsonRepairEnabled"), True)
 
@@ -314,7 +325,7 @@ def dry_run_extract():
             "name_en": compact_prompt_text(data.get("NameEN"), 100),
             "style_code": compact_prompt_text(data.get("StyleCode"), 40),
             "search_code": compact_prompt_text(data.get("SearchCode"), 40),
-            "product_type": data.get("ProductType", "shoes"),
+            "product_type": resolve_product_type(data.get("ProductType")),
             "original_price_yuan": data.get("OriginalPrice"),
             "image_count": len(data.get("Images") or []),
             "sizes_raw": data.get("Sizes"),
@@ -322,9 +333,10 @@ def dry_run_extract():
         },
         "settings_snapshot": {
             "ExchangeRate": settings.get("ExchangeRate"),
-            "FeePercent": settings.get("FeePercent"),
+            "AddedFeeYuan": settings.get("AddedFeeYuan"),
             "WatchFlatFeeYuan": settings.get("WatchFlatFeeYuan"),
             "CategoryId": settings.get("CategoryId"),
+            "WatchCategoryId": settings.get("WatchCategoryId"),
             "Stock": settings.get("Stock"),
         },
         "price_calculation": {},
@@ -332,25 +344,31 @@ def dry_run_extract():
         "validation_errors": [],
     }
 
+    # Arabic: كان هذا المسار يحمل صيغة مستقلة للأحذية تعتمد `FeePercent` - وهو إعداد غير
+    #         موجود أصلاً لا بالإكستنشن ولا بـextract_settings، فيؤول دايماً إلى 0 ويتجاهل
+    #         AddedFeeYuan (250). النتيجة: dry-run يعرض سعراً أقل من المسار الفعلي
+    #         (/api/extract) لكل حذاء. الآن الحساب يمر من المصدر الموحّد ويطابق الفعلي.
+    # English: This path carried an independent shoes formula based on `FeePercent` - a
+    #          setting that exists neither in the extension nor in extract_settings, so it
+    #          always collapsed to 0 and ignored AddedFeeYuan (250). Result: dry-run reported
+    #          a lower price than the real path (/api/extract) for every shoe. The
+    #          computation now goes through the unified source and matches the real path.
     original_yuan = safe_float(data.get("OriginalPrice"), 0)
     exchange_rate = safe_float(settings.get("ExchangeRate"), 1)
-    fee_percent = safe_float(settings.get("FeePercent"), 0)
-    watch_flat_fee = safe_float(settings.get("WatchFlatFeeYuan"), 0)
-    product_type = data.get("ProductType", "shoes")
+    product_type = resolve_product_type(data.get("ProductType"))
+    type_fee = product_type_fee(product_type, settings)
 
-    if product_type == "watches":
-        total_yuan = original_yuan + watch_flat_fee
-        price_sar = round(total_yuan * exchange_rate)
-    else:
-        price_sar = round(original_yuan * exchange_rate * (1 + fee_percent / 100))
-        total_yuan = original_yuan
+    computed = compute_product_type_price(original_yuan, product_type, settings)
+    total_yuan = computed["price_after_fee"]
+    price_sar = computed["price_sar"]
 
     report["price_calculation"] = {
         "original_yuan": original_yuan,
-        "watch_flat_fee_yuan": watch_flat_fee if product_type == "watches" else 0,
+        "product_type": product_type,
+        "type_fee_yuan": type_fee,
+        "fee_setting_key": get_profile(product_type)["fee_setting_key"],
         "total_yuan_before_exchange": total_yuan,
         "exchange_rate": exchange_rate,
-        "fee_percent": fee_percent if product_type != "watches" else 0,
         "final_price_sar": price_sar,
     }
 
@@ -368,7 +386,7 @@ def dry_run_extract():
         if clabel and abs_p > 0:
             watch_colors.append({"label": clabel, "_abs_price_yuan": abs_p})
 
-    if watch_colors and product_type == "watches":
+    if watch_colors and get_profile(product_type)["has_color_variant_editor"]:
         variant_rows = [{"type": vc["label"], "price": round(vc["_abs_price_yuan"] * exchange_rate), "stock": settings.get("Stock", 10)} for vc in watch_colors]
     elif sizes:
         variant_rows = [{"type": s, "price": price_sar, "stock": settings.get("Stock", 10)} for s in sizes]
@@ -385,7 +403,8 @@ def dry_run_extract():
         "name": data.get("NameEN", ""),
         "description": data.get("DescriptionEN", ""),
         "price": price_sar,
-        "category_id": settings.get("CategoryId"),
+        "category_id": product_type_category_id(product_type, settings),
+        "sub_category_id": product_type_sub_category_id(product_type, settings),
         "variations": variant_rows,
         "total_stock": sum(v["stock"] for v in variant_rows),
         "image_count": len(data.get("Images") or []),
@@ -598,7 +617,18 @@ def extract_product():
                 if clabel and abs_price > 0:
                     watch_colors.append({"label": clabel, "_abs_price_yuan": abs_price})
 
-            if watch_colors and settings["ProductType"] == "watches":
+            # Arabic: مسار ألوان الساعات لا يعمل إلا لو النوع يستخدم خاصية خيارات أصلاً.
+            #         حالياً الساعات بلا خاصية (بطلب المستخدم) فيسقط للمسار العادي الذي
+            #         يُرجع منتجاً بسعر واحد بلا Variations.
+            # English: The watch-colour path only applies when the type uses a variant attribute
+            #          at all. Watches currently use none (per the operator's request), so this
+            #          falls through to the normal path, which yields a single-price product
+            #          with no Variations.
+            if (
+                watch_colors
+                and get_profile(settings["ProductType"])["has_color_variant_editor"]
+                and get_profile(settings["ProductType"])["uses_variant_attribute"]
+            ):
                 variations, choice_options, attributes, total_stock, variant_price_rows = (
                     build_watch_variations_from_absolute_yuan(
                         watch_colors, settings, data.get("OriginalPrice"),
@@ -610,10 +640,11 @@ def extract_product():
                     settings["Stock"], settings, settings["ProductType"], data.get("OriginalPrice"),
                 )
                 variant_price_rows = json.loads(variations)
-            effective_category_id = (
-                settings["WatchCategoryId"] if settings["ProductType"] == "watches" else settings["CategoryId"]
-            )
-            effective_subcategory_id = None if settings["ProductType"] == "watches" else settings["SubCategoryId"]
+            # Arabic: الفئة والفئة الفرعية الفعليتان من المصدر الموحّد بدل شرط مكرر هنا.
+            # English: Effective category/subcategory from the unified source instead of a
+            #          duplicated condition here.
+            effective_category_id = product_type_category_id(settings["ProductType"], settings)
+            effective_subcategory_id = product_type_sub_category_id(settings["ProductType"], settings)
             new_row = {
                 "Id": next_id,
                 "Name": name_en,
@@ -678,7 +709,7 @@ def extract_product():
                 "variants": variant_price_rows,
                 "sizes": (
                     [row["type"] for row in variant_price_rows]
-                    if settings["ProductType"] == "watches"
+                    if get_profile(settings["ProductType"])["has_color_variant_editor"]
                     else sizes
                 ),
                 "date": today_str,

@@ -115,10 +115,24 @@
 <div id="loginOverlay" style="position:fixed;inset:0;background:var(--surface);z-index:9999;display:flex;align-items:center;justify-content:center;">
     <article class="card" style="width:320px;">
         <h2>تسجيل الدخول</h2>
-        <p class="hint">الرجاء تسجيل الدخول ببيانات حسابك</p>
-        <div class="field"><label for="loginName">الاسم أو الاسم المستعار</label><input id="loginName" type="text" placeholder="اسمك"></div>
+        <p class="hint">تسجيل الدخول يتم عبر خادم المزامنة، فاضبط المزامنة أولاً ثم سجّل دخولك.</p>
+
+        <!-- Arabic: خطوة 1 - إعدادات المزامنة. تسجيل الدخول يمر فعلياً عبر خادم المزامنة
+             (‎/api/sync/login يرفض الطلب بدون ServerUrl وToken)، فوُضعت الحقول هنا بدل
+             إجبار المستخدم على الذهاب لتبويب الإعدادات أولاً.
+             English: Step 1 - sync settings. Login genuinely goes through the sync server
+             (/api/sync/login rejects the request without ServerUrl and Token), so the fields
+             live here instead of forcing a trip to the settings tab first. -->
+        <div class="field"><label for="loginSyncUrl">١ — رابط المزامنة</label><input id="loginSyncUrl" dir="ltr" type="url" placeholder="https://example.com/alphacode_storage"></div>
+        <div class="field"><label for="loginSyncToken">كود المزامنة</label><input id="loginSyncToken" dir="ltr" type="text" placeholder="اتركه فارغاً للإبقاء على الكود المحفوظ"></div>
+        <button class="btn btn-outline btn-block" id="loginSyncBtn" type="button">حفظ المزامنة والتحقق</button>
+        <div class="result-box" id="loginSyncStatus" style="margin-top:8px;">لم تُفحص المزامنة بعد.</div>
+
+        <!-- Arabic: خطوة 2 - بيانات الحساب، تُفعَّل بعد نجاح المزامنة.
+             English: Step 2 - account details, enabled once sync succeeds. -->
+        <div class="field" style="margin-top:12px;"><label for="loginName">٢ — الاسم أو الاسم المستعار</label><input id="loginName" type="text" placeholder="اسمك"></div>
         <div class="field"><label for="loginPass">كلمة المرور</label><input id="loginPass" type="password" placeholder="كلمة المرور"></div>
-        <button class="btn btn-primary btn-block" id="loginBtnCheck" type="button" style="margin-top:12px;">تسجيل الدخول</button>
+        <button class="btn btn-primary btn-block" id="loginBtnCheck" type="button" style="margin-top:12px;" disabled>تسجيل الدخول</button>
         <div class="result-box error" id="loginErrorBox" style="display:none;margin-top:10px;"></div>
     </article>
 </div>
@@ -433,11 +447,39 @@
     <section class="tab-panel" id="tab-reports">
         <article class="card">
             <h2>تقرير PDF احترافي</h2>
-            <p class="hint">تقرير يومي أو شهري: إجمالي المنتجات، أحذية مقابل ساعات، وتفصيل كامل لكل مستخدم أضاف منتجات.</p>
+            <p class="hint">اختر يوماً واحداً، شهراً كاملاً، أياماً متفرقة تجمعها بتقرير واحد، أو مدى مخصص "من - إلى" (يجوز أن يعبر شهرين). التقرير يشمل إجمالي المنتجات، أحذية مقابل ساعات، وتفصيلاً لكل مستخدم.</p>
             <div class="grid-2">
-                <div class="field"><label for="reportScope">النطاق</label><select id="reportScope"><option value="daily">يومي</option><option value="monthly">شهري</option></select></div>
-                <div class="field"><label for="reportDate">التاريخ</label><input id="reportDate" type="date"></div>
+                <div class="field"><label for="reportScope">النطاق</label><select id="reportScope">
+                    <option value="daily">يوم واحد</option>
+                    <option value="monthly">شهر كامل</option>
+                    <option value="days">أيام محددة (متفرقة)</option>
+                    <option value="range">مدى مخصص (من - إلى)</option>
+                </select></div>
+                <div class="field" id="reportDateField"><label for="reportDate">التاريخ</label><input id="reportDate" type="date"></div>
             </div>
+
+            <!-- Arabic: أيام متفرقة - يضيف المستخدم أي أيام يريدها ولو غير متتالية.
+                 English: Scattered days - the operator adds any days, consecutive or not. -->
+            <div id="reportDaysBlock" style="display:none;">
+                <div class="field">
+                    <label for="reportDayPicker">أضف يوماً</label>
+                    <div class="actions">
+                        <input id="reportDayPicker" type="date" style="flex:1;">
+                        <button class="btn btn-outline" id="reportAddDayBtn" type="button">إضافة</button>
+                    </div>
+                </div>
+                <div id="reportDaysList" class="result-box" style="min-height:34px;"></div>
+            </div>
+
+            <!-- Arabic: مدى مخصص - يجوز أن يعبر شهرين أو أكثر.
+                 English: Custom range - may cross two or more months. -->
+            <div id="reportRangeBlock" style="display:none;">
+                <div class="grid-2">
+                    <div class="field"><label for="reportFrom">من تاريخ</label><input id="reportFrom" type="date"></div>
+                    <div class="field"><label for="reportTo">إلى تاريخ</label><input id="reportTo" type="date"></div>
+                </div>
+            </div>
+
             <button class="btn btn-accent btn-block" id="generateReportBtn" type="button">توليد التقرير</button>
             <div class="result-box" id="reportResult"></div>
         </article>

@@ -1023,25 +1023,110 @@ function escapeHtmlForPopup(value) {
 
 // Arabic: توليد تقرير PDF (يومي/شهري) وفتح رابط التنزيل مباشرة.
 // English: Generate a PDF report (daily/monthly) and open the download link directly.
+// Arabic: الأيام المتفرقة المختارة حالياً لتقرير "أيام محددة" (YYYY-MM-DD، مرتّبة وبلا تكرار).
+// English: The scattered days currently picked for a "selected days" report (YYYY-MM-DD, sorted, unique).
+let selectedReportDays = [];
+
+// Arabic: يُظهر الحقول المناسبة للنطاق المختار فقط، ويخفي ما لا يخصّه.
+// English: Shows only the fields the chosen scope needs, hiding the rest.
+function refreshReportScopeFields() {
+    const scope = byId('reportScope')?.value || 'daily';
+    const show = (id, visible) => {
+        const el = byId(id);
+        if (el) el.style.display = visible ? '' : 'none';
+    };
+    show('reportDateField', scope === 'daily' || scope === 'monthly');
+    show('reportDaysBlock', scope === 'days');
+    show('reportRangeBlock', scope === 'range');
+
+    const dateLabel = byId('reportDateField')?.querySelector('label');
+    if (dateLabel) dateLabel.textContent = scope === 'monthly' ? 'أي يوم داخل الشهر المطلوب' : 'التاريخ';
+}
+
+// Arabic: يرسم قائمة الأيام المختارة مع زر حذف لكل يوم.
+// English: Renders the picked days with a remove button on each.
+function renderSelectedReportDays() {
+    const list = byId('reportDaysList');
+    if (!list) return;
+    if (!selectedReportDays.length) {
+        list.className = 'result-box';
+        list.textContent = 'لم تُختر أي أيام بعد.';
+        return;
+    }
+    list.className = 'result-box success';
+    list.innerHTML = selectedReportDays
+        .map(day => `<span class="report-day-chip">${day}<button type="button" data-day="${day}" title="حذف">×</button></span>`)
+        .join(' ');
+    list.querySelectorAll('button[data-day]').forEach(button => {
+        button.onclick = () => {
+            selectedReportDays = selectedReportDays.filter(day => day !== button.dataset.day);
+            renderSelectedReportDays();
+        };
+    });
+}
+
+function addSelectedReportDay() {
+    const value = byId('reportDayPicker')?.value || '';
+    if (!value) return;
+    if (!selectedReportDays.includes(value)) {
+        selectedReportDays.push(value);
+        selectedReportDays.sort();
+    }
+    renderSelectedReportDays();
+}
+
+// English: Generate a PDF report for any scope and open the download link directly.
 async function generateReport() {
     const resultBox = byId('reportResult');
     const scope = byId('reportScope')?.value || 'daily';
-    const date = byId('reportDate')?.value || '';
+    const payload = { scope, date: byId('reportDate')?.value || '' };
+
+    // Arabic: أي فشل يجب أن يمسح نتيجة التوليد السابقة، وإلا بقيت رسالة نجاح قديمة معروضة
+    //         بجانب رسالة الخطأ فيظن المستخدم أن التقرير تولّد فعلاً.
+    // English: Any failure must clear the previous result, otherwise a stale success message
+    //          stays on screen next to the error and the operator thinks a report was produced.
+    const failWith = message => {
+        if (resultBox) {
+            resultBox.className = 'result-box error';
+            resultBox.textContent = message;
+        }
+        throw new Error(message);
+    };
+
+    if (resultBox) {
+        resultBox.className = 'result-box';
+        resultBox.textContent = 'جاري توليد التقرير...';
+    }
+
+    // Arabic: تحقق محلي قبل إزعاج الخادم برسائل خطأ متوقعة.
+    // English: Validate locally before bothering the server with predictable errors.
+    if (scope === 'days') {
+        if (!selectedReportDays.length) failWith('أضف يوماً واحداً على الأقل إلى القائمة.');
+        payload.days = selectedReportDays;
+    }
+    if (scope === 'range') {
+        const from = byId('reportFrom')?.value || '';
+        const to = byId('reportTo')?.value || '';
+        if (!from || !to) failWith('حدد تاريخ البداية وتاريخ النهاية.');
+        payload.from = from;
+        payload.to = to;
+    }
 
     const response = await fetch(`${API_BASE}/api/reports/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope, date }),
+        body: JSON.stringify(payload),
     });
     const data = await response.json();
 
     if (!response.ok || !data.success) {
-        throw new Error(data.error || 'تعذر توليد التقرير.');
+        failWith(data.error || 'تعذر توليد التقرير.');
     }
 
     if (resultBox) {
+        const covered = data.days_covered ? ` (${data.days_covered} يوم)` : '';
         resultBox.className = 'result-box success';
-        resultBox.innerHTML = `تم التوليد: <a href="${data.download_url}" target="_blank">${data.filename}</a>`;
+        resultBox.innerHTML = `تم التوليد${covered}: <a href="${data.download_url}" target="_blank">${data.filename}</a>`;
     }
     chrome.tabs.create({ url: data.download_url });
 }
@@ -1213,6 +1298,107 @@ function bindClick(id, handler) {
 
 // Arabic: تسجيل الدخول عبر الخادم
 // English: Login via server
+// =========================================================
+// Arabic: مزامنة من شاشة تسجيل الدخول.
+//         تسجيل الدخول يمر فعلياً عبر خادم المزامنة: ‎/api/sync/login يرفض الطلب برسالة
+//         "أدخل كود المزامنة من تبويب الإعدادات أولاً" إذا كان ServerUrl أو Token ناقصاً.
+//         فبدل إرسال المستخدم لتبويب آخر، تُضبط المزامنة وتُختبر من نفس الشاشة.
+// English: Sync from the login screen.
+//          Login genuinely goes through the sync server: /api/sync/login rejects the request
+//          with "enter the sync code from the settings tab first" when ServerUrl or Token is
+//          missing. So instead of sending the operator to another tab, sync is configured and
+//          tested right here.
+// =========================================================
+
+// Arabic: يعكس حالة المزامنة على الواجهة ويقرر تفعيل زر تسجيل الدخول.
+// English: Reflects the sync state in the UI and decides whether login is enabled.
+function setLoginSyncState(kind, message) {
+    const box = byId('loginSyncStatus');
+    const loginButton = byId('loginBtnCheck');
+    if (box) {
+        box.className = `result-box ${kind === 'ok' ? 'success' : kind === 'error' ? 'error' : ''}`;
+        box.textContent = message;
+    }
+    // Arabic: "local" = المزامنة غير مفعّلة، ويبقى دخول الأدمن المحلي ممكناً (سلوك قائم
+    //         بالباك اند لا يصح كسره)، فنسمح بالمحاولة مع تنبيه واضح.
+    // English: "local" = sync is disabled, and the local admin login still works (existing
+    //          backend behaviour that must not be broken), so allow the attempt with a clear notice.
+    if (loginButton) loginButton.disabled = !(kind === 'ok' || kind === 'local');
+}
+
+// Arabic: تعبئة رابط المزامنة المحفوظ مسبقاً، وبيان هل الكود محفوظ أصلاً.
+// English: Prefill the saved sync URL and show whether a code is already stored.
+async function loadLoginSyncSettings() {
+    try {
+        const response = await fetch(`${API_BASE}/api/sync/config`, { cache: 'no-store' });
+        const data = await response.json();
+        if (!data.success) return;
+        if (byId('loginSyncUrl') && data.ServerUrl) byId('loginSyncUrl').value = data.ServerUrl;
+        if (byId('loginSyncToken')) {
+            byId('loginSyncToken').placeholder = data.TokenSet
+                ? `كود محفوظ (${data.TokenPreview}) — اتركه فارغاً للإبقاء عليه`
+                : 'أدخل كود المزامنة';
+        }
+        if (data.Enabled && data.ServerUrl && data.TokenSet) {
+            setLoginSyncState('', 'توجد إعدادات مزامنة محفوظة — اضغط "حفظ المزامنة والتحقق" للتأكد.');
+        } else if (!data.Enabled && !data.ServerUrl) {
+            // Arabic: لا مزامنة مضبوطة إطلاقاً - الباك اند يسمح بدخول أدمن محلي (admin/admin).
+            //         لا نقفل الزر نهائياً حتى لا نكسر هذا المسار القائم.
+            // English: No sync configured at all - the backend still allows a local admin login
+            //          (admin/admin). Don't hard-lock the button and break that existing path.
+            setLoginSyncState('local', 'لا توجد مزامنة مضبوطة — يمكن دخول الأدمن المحلي فقط. اضبط المزامنة لدخول الأعضاء.');
+        }
+    } catch (_) {
+        setLoginSyncState('error', 'تعذر الوصول للخادم المحلي. شغّل الباك اند ثم أعد المحاولة.');
+    }
+}
+
+// Arabic: يحفظ إعدادات المزامنة ثم يختبرها فعلياً بدورة مزامنة حقيقية (‎/api/sync/now)،
+//         ولا يُفعّل زر تسجيل الدخول إلا بعد نجاح فعلي لا بمجرد الحفظ.
+// English: Saves the sync settings then genuinely tests them with a real sync cycle
+//          (/api/sync/now), enabling the login button only on an actual success - never on a
+//          mere save.
+async function handleLoginSync() {
+    const button = byId('loginSyncBtn');
+    const serverUrl = String(byId('loginSyncUrl')?.value || '').trim();
+    const token = String(byId('loginSyncToken')?.value || '').trim();
+
+    if (!serverUrl) {
+        setLoginSyncState('error', 'أدخل رابط المزامنة أولاً.');
+        return;
+    }
+
+    if (button) { button.disabled = true; button.textContent = 'جاري التحقق...'; }
+    setLoginSyncState('', 'جاري حفظ الإعدادات واختبار الاتصال...');
+
+    try {
+        const saveResponse = await fetch(`${API_BASE}/api/sync/config`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            // Arabic: Token فاضٍ يعني "أبقِ المحفوظ" (الباك اند يتعامل مع هذا أصلاً).
+            // English: An empty Token means "keep the stored one" (the backend already handles this).
+            body: JSON.stringify({ Enabled: true, ServerUrl: serverUrl, Token: token }),
+        });
+        const saveData = await saveResponse.json();
+        if (!saveResponse.ok || !saveData.success) {
+            throw new Error(saveData.error || 'تعذر حفظ إعدادات المزامنة.');
+        }
+
+        const testResponse = await fetch(`${API_BASE}/api/sync/now`, { method: 'POST' });
+        const testData = await testResponse.json();
+        if (!testResponse.ok || !testData.success) {
+            throw new Error(testData.error || 'فشل الاتصال بخادم المزامنة.');
+        }
+
+        const pending = Number(testData.pending_queue || 0);
+        setLoginSyncState('ok', `نجحت المزامنة ✔ يمكنك تسجيل الدخول الآن.${pending ? ` (${pending} عنصر بالطابور)` : ''}`);
+    } catch (error) {
+        setLoginSyncState('error', `فشلت المزامنة: ${error.message}`);
+    } finally {
+        if (button) { button.disabled = false; button.textContent = 'حفظ المزامنة والتحقق'; }
+    }
+}
+
 async function handleLoginOverlay() {
     const errorBox = byId('loginErrorBox');
     const name = byId('loginName').value.trim();
@@ -1266,6 +1452,11 @@ async function checkLoginState() {
     } else {
         byId('profileChip').textContent = 'Sooqify Online';
         byId('loginOverlay').style.display = 'flex';
+        // Arabic: شاشة الدخول ظاهرة - جهّز حقول المزامنة وابقِ زر الدخول معطّلاً حتى التحقق.
+        // English: The login screen is visible - prepare the sync fields and keep login disabled
+        //          until the check passes.
+        setLoginSyncState('', 'اضبط المزامنة أولاً ثم سجّل الدخول.');
+        await loadLoginSyncSettings();
     }
 }
 
@@ -1414,7 +1605,12 @@ async function initializePopup() {
     });
     bindClick('refreshRecentBtn', refreshRecentProducts);
     bindClick('generateReportBtn', generateReport);
+    bindClick('reportAddDayBtn', addSelectedReportDay);
+    byId('reportScope')?.addEventListener('change', refreshReportScopeFields);
+    refreshReportScopeFields();
+    renderSelectedReportDays();
     bindClick('loginBtnCheck', handleLoginOverlay);
+    bindClick('loginSyncBtn', handleLoginSync);
     bindClick('logoutBtn', handleLogout);
     bindClick('copyBatchNamesBtn', copyAdminBatchNames);
 // Arabic: مفتاح الكاش المشترك مع content.js (resolveBrandId) - نفس الاسم بالضبط

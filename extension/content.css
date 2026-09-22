@@ -1212,3 +1212,64 @@
     cursor: pointer;
 }
 .alphacode-price-confirm input { width: 16px; height: 16px; cursor: pointer; }
+
+/* Arabic: نافذة التحقق من جلسة لوحة تحكم سوقيفاي قبل أول استخراج.
+   English: Sooqify admin session check dialog shown before the first extraction. */
+.alphacode-session-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(7, 2, 42, 0.62);
+    z-index: 2147483600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.alphacode-session-box {
+    background: #fff;
+    border-radius: 14px;
+    padding: 20px 22px;
+    width: min(440px, 92vw);
+    font-family: Tahoma, Arial, sans-serif;
+    direction: rtl;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.3);
+}
+.alphacode-session-box h3 { margin: 0 0 10px; color: #07022A; font-size: 17px; }
+.alphacode-session-box p { margin: 0 0 8px; font-size: 13px; line-height: 1.8; color: #333; }
+.alphacode-session-hint { color: #8e5a00 !important; font-size: 12px !important; }
+.alphacode-session-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.alphacode-session-actions button {
+    flex: 1 1 auto;
+    padding: 9px 12px;
+    border-radius: 9px;
+    border: 1px solid #d4d9e4;
+    background: #f5f6fa;
+    cursor: pointer;
+    font-size: 12.5px;
+    font-weight: 700;
+}
+.alphacode-session-open { background: #07022A !important; color: #fff !important; border-color: #07022A !important; }
+.alphacode-session-confirm { background: #0c6840 !important; color: #fff !important; border-color: #0c6840 !important; }
+.alphacode-session-actions button:disabled { opacity: 0.6; cursor: default; }
+.alphacode-session-status { margin-top: 10px; font-size: 12px; color: #444; min-height: 16px; }
+
+/* Arabic: شريط تنبيه تقييد خادم المورد.
+   English: Supplier-throttling notice bar. */
+.alphacode-throttle-notice {
+    position: fixed;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 2147483601;
+    max-width: min(560px, 92vw);
+    padding: 11px 16px;
+    border-radius: 10px;
+    font-family: Tahoma, Arial, sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    direction: rtl;
+    text-align: center;
+    box-shadow: 0 8px 26px rgba(0, 0, 0, 0.22);
+    display: none;
+}
+.alphacode-throttle-notice[data-tone="warn"] { background: #fff4d6; color: #8e5a00; border: 1px solid #f0d089; }
+.alphacode-throttle-notice[data-tone="ok"]   { background: #eafff4; color: #0c6840; border: 1px solid #b8f0d3; }

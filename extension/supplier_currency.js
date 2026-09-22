@@ -123,11 +123,24 @@
 
         let resolved = null;
         try {
-            const response = await fetch(
+            // Arabic: يمر عبر المنظّم التكيفي مثل باقي طلبات المورد. نتيجة النداء مخزّنة
+            //         لكل ألبوم، فهذا نداء واحد بالجلسة عملياً - لكن التنظيم يحميه أيضاً
+            //         لو تزامن مع موجة طلبات صور.
+            // English: Goes through the adaptive throttle like every other supplier request.
+            //          The result is cached per album, so this is effectively one call per
+            //          session - but throttling still protects it if it coincides with a wave
+            //          of image requests.
+            const throttle = globalThis.ALPHACODE_SUPPLIER_THROTTLE;
+            const doFetch = () => fetch(
                 `${CURRENCY_API_PATH}?albumId=${encodeURIComponent(id)}`,
                 { credentials: 'include', cache: 'no-store' },
-            );
-            const data = await response.json();
+            ).then(response => response.json());
+            const data = throttle
+                ? await throttle.run(CURRENCY_API_PATH, doFetch, {
+                    label: 'currency',
+                    isEmpty: result => !result || !result.result,
+                })
+                : await doFetch();
             const result = data && data.result;
             if (result && result.code) {
                 const rate = Number(result.exchangeRate);

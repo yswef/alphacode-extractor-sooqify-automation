@@ -50,6 +50,7 @@
       "js": [
         "config.js",
         "product_types.js",
+        "supplier_throttle.js",
         "supplier_currency.js",
         "content.js"
       ],

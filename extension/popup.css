@@ -1,0 +1,24 @@
+
+/* Arabic: رقاقات الأيام المختارة بتقرير "أيام محددة".
+   English: Picked-day chips in the "selected days" report scope. */
+.report-day-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    margin: 2px;
+    border-radius: 999px;
+    background: var(--surface-2, #eef1f7);
+    border: 1px solid var(--border, #d4d9e4);
+    font-size: 12px;
+    direction: ltr;
+}
+.report-day-chip button {
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 15px;
+    line-height: 1;
+    padding: 0 2px;
+    color: #a82437;
+}

@@ -46,6 +46,36 @@ const PRODUCT_TYPES = globalThis.ALPHACODE_PRODUCT_TYPES;
 //          currency, so we recover the true CNY from the rate the site itself publishes.
 //          See supplier_currency.js.
 const SUPPLIER_CURRENCY = globalThis.ALPHACODE_SUPPLIER_CURRENCY;
+// Arabic: المنظّم التكيفي لطلبات المورد - نعرض رسائله للمستخدم بدل فشل صامت أو خطأ مبهم.
+// English: The adaptive supplier throttle - its messages are surfaced to the operator instead
+//          of a silent failure or an opaque error.
+const SUPPLIER_THROTTLE = globalThis.ALPHACODE_SUPPLIER_THROTTLE;
+
+// Arabic: شريط تنبيه عائم يظهر عند رصد تقييد من خادم المورد ويختفي تلقائياً بعد التعافي.
+// English: A floating notice shown when supplier-side limiting is detected; it clears itself
+//          automatically once things recover.
+let _throttleNoticeTimer = null;
+function showThrottleNotice(message, tone = 'warn') {
+    let notice = document.getElementById('alphacode-throttle-notice');
+    if (!notice) {
+        notice = document.createElement('div');
+        notice.id = 'alphacode-throttle-notice';
+        notice.className = 'alphacode-throttle-notice';
+        document.body.appendChild(notice);
+    }
+    notice.dataset.tone = tone;
+    notice.textContent = message;
+    notice.style.display = 'block';
+    clearTimeout(_throttleNoticeTimer);
+    _throttleNoticeTimer = setTimeout(() => { notice.style.display = 'none'; }, 12000);
+}
+
+SUPPLIER_THROTTLE?.onEvent(event => {
+    if (event.type === 'throttled' || event.type === 'waiting') {
+        showThrottleNotice(event.message, 'warn');
+        acLog('warn', `Supplier throttle: ${event.type} host=${event.host} delay=${event.delayMs}ms reason=${event.reason || '-'}`);
+    }
+});
 
 let extractorConfig = { ...DEFAULT_CONFIG };
 // Arabic: خريطة اسم→id مبنية مسبقاً (sync) من كاش chrome.storage المشترك مع popup.js
@@ -1322,15 +1352,124 @@ function createAndInjectButton(container, parentCard) {
         })
         .catch(() => { });
 
-    button.addEventListener('click', event => {
+    button.addEventListener('click', async event => {
         event.preventDefault();
         event.stopPropagation();
+        // Arabic: لا يبدأ أي استخراج قبل التأكد من جلسة لوحة المتجر.
+        // English: No extraction starts before the store-panel session is confirmed.
+        if (!(await ensureStoreSession())) return;
         openExtractionModal(parentCard, button);
     });
 
     container.insertBefore(button, container.firstChild);
     ensureBatchSelectionControl(container, parentCard, button);
     ensureBatchToolbar();
+}
+
+// =========================================================
+// Arabic: بوابة جلسة لوحة تحكم سوقيفاي - تُفحص مرة واحدة لكل جلسة عمل قبل أول استخراج/رفع.
+//         قبل هذا كانت الأداة تفترض أن المستخدم مسجل دخول، فيفشل الرفع متأخراً بعد كل
+//         العمل. الآن يُفحص فعلياً بجلب صفحة اللوحة والبحث عن نموذج إضافة المنتج.
+// English: Sooqify admin session gate - checked once per working session before the first
+//          extraction/upload. Previously the tool simply assumed the operator was signed in,
+//          so uploads failed late, after all the work. Now it is genuinely verified by
+//          fetching the panel page and looking for the product-add form.
+// =========================================================
+
+// Arabic: null = لم يُفحص بعد؛ true = مؤكَّد/أكّده المستخدم؛ يُعاد ضبطه بإعادة تحميل الصفحة.
+// English: null = not yet checked; true = verified or confirmed by the operator; resets on reload.
+let storeSessionVerified = null;
+
+function renderStoreSessionPrompt(detail) {
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'alphacode-session-overlay';
+        overlay.innerHTML = `
+            <div class="alphacode-session-box">
+                <h3>تحقق من لوحة تحكم سوقيفاي</h3>
+                <p>${escapeHtml(detail)}</p>
+                <p class="alphacode-session-hint">الاستخراج والرفع لا يعملان بدون جلسة صالحة بلوحة المتجر.</p>
+                <div class="alphacode-session-actions">
+                    <button type="button" class="alphacode-session-open">فتح لوحة التحكم لتسجيل الدخول</button>
+                    <button type="button" class="alphacode-session-recheck">أعد الفحص</button>
+                    <button type="button" class="alphacode-session-confirm">أنا مسجل دخول — تابع</button>
+                    <button type="button" class="alphacode-session-cancel">إلغاء</button>
+                </div>
+                <div class="alphacode-session-status"></div>
+            </div>`;
+        document.body.appendChild(overlay);
+
+        const status = overlay.querySelector('.alphacode-session-status');
+
+        overlay.querySelector('.alphacode-session-open').onclick = () => {
+            chrome.runtime.sendMessage({
+                action: 'OPEN_TAB',
+                url: (extractorConfig.SooqifyAddUrl || 'https://admin.sooqifyonline.com/admin/item/add-new'),
+            });
+            status.textContent = 'فُتحت اللوحة بتبويب جديد. سجّل دخولك ثم اضغط "أعد الفحص".';
+        };
+
+        overlay.querySelector('.alphacode-session-recheck').onclick = async event => {
+            event.currentTarget.disabled = true;
+            status.textContent = 'جاري إعادة الفحص...';
+            const result = await requestStoreSessionCheck();
+            event.currentTarget.disabled = false;
+            if (result.loggedIn) {
+                overlay.remove();
+                resolve(true);
+                return;
+            }
+            status.textContent = result.checked
+                ? `ما زالت الجلسة غير صالحة: ${result.reason || ''}`
+                : 'تعذر الوصول للوحة للتحقق. تأكد من الاتصال أو تابع يدوياً.';
+        };
+
+        // Arabic: التأكيد اليدوي هو المخرج حين يتعذر الفحص التلقائي تقنياً (شبكة/تحويل غير متوقع).
+        // English: Manual confirmation is the escape hatch when the automatic check is technically
+        //          impossible (network issues / an unexpected redirect).
+        overlay.querySelector('.alphacode-session-confirm').onclick = () => {
+            overlay.remove();
+            resolve(true);
+        };
+
+        overlay.querySelector('.alphacode-session-cancel').onclick = () => {
+            overlay.remove();
+            resolve(false);
+        };
+    });
+}
+
+async function requestStoreSessionCheck() {
+    try {
+        const response = await chrome.runtime.sendMessage({
+            action: 'CHECK_STORE_SESSION',
+            addUrl: extractorConfig.SooqifyAddUrl || '',
+        });
+        return response || { loggedIn: false, checked: false };
+    } catch (error) {
+        return { loggedIn: false, checked: false, error: String(error?.message || error) };
+    }
+}
+
+// Arabic: تُستدعى قبل أي استخراج أو رفع. تُرجع false إذا رفض المستخدم المتابعة.
+// English: Called before any extraction or upload. Returns false if the operator declines.
+async function ensureStoreSession() {
+    if (storeSessionVerified) return true;
+
+    const result = await requestStoreSessionCheck();
+    if (result.loggedIn) {
+        storeSessionVerified = true;
+        acLog('ok', 'Sooqify admin session verified.');
+        return true;
+    }
+
+    acLog('warn', `Sooqify admin session not verified: ${result.reason || result.error || 'unknown'}`);
+    const detail = result.checked
+        ? 'يبدو أنك غير مسجل دخول بلوحة تحكم سوقيفاي (تعذر العثور على نموذج إضافة المنتج).'
+        : 'تعذر التحقق تلقائياً من جلسة لوحة سوقيفاي. هل أنت مسجل دخول بها؟';
+    const proceed = await renderStoreSessionPrompt(detail);
+    if (proceed) storeSessionVerified = true;
+    return proceed;
 }
 
 // Arabic: دالة createModalShell جزء من تدفق الاستخراج ويمكن تخصيصها عند نقل الأداة.
@@ -3722,6 +3861,11 @@ function renderBatchReviewSlides(modalBox, drafts) {
 }
 
 async function openBatchReviewModal() {
+    // Arabic: نفس بوابة الجلسة قبل تجهيز الدفعة - أرخص بكثير من اكتشاف الانتهاء بعد 25 منتجاً.
+    // English: The same session gate before preparing a batch - far cheaper than discovering
+    //          the session expired after 25 products.
+    if (!(await ensureStoreSession())) return;
+
     const entries = Array.from(selectedBatchProducts.values())
         .sort((left, right) => Number(left.selectedAt || 0) - Number(right.selectedAt || 0));
     if (entries.length < 2) {

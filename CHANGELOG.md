@@ -1,4 +1,58 @@
-# Changelog - AlphaCode Extractor Sooqify Automation Backend Refactoring
+# Changelog — AlphaCode Extractor
+
+## v5.8.0 — 2026-09-22
+
+### Fixed
+- **Arabic user names printed reversed in PDF reports.** "يوسف" rendered as "فسوي" and "معتز"
+  as "زتعم". The per-user table was the only place that did not pass its text through the
+  bidi/shaping helper `_rtl()`; every other cell did.
+- **Sync silently lost records, so a teammate's products were absent from every report.**
+  The incremental pull uses a `since` watermark and never looks back, so once the watermark
+  moved past a batch of records they were skipped permanently. A real measurement: the server
+  held **3,800** records while the local archive had **2,476** — **1,324 missing**, including
+  an entire month of one teammate's work (3,379 of his records remotely against 2,013 locally).
+  A full reconcile existed but was manual-only and nothing ever called it. It now runs
+  automatically every 6 hours, making sync self-healing.
+- **Supplier prices could be read in the wrong currency.** szwego picks its displayed currency
+  from the request IP, so a VPN rendered a 300 CNY watch as "Ұ7077.3" (JPY) and it reached the
+  store as 3,839 SAR. The true CNY price is now recovered from the exchange rate the site
+  itself publishes, and an unconfirmed conversion blocks the product for manual entry.
+- **`extension/price_patterns.json` was missing from disk** although `content.js` loads it and
+  the manifest exposes it, leaving price extraction on a bare-number fallback with no currency
+  check at all. Restored.
+- **Watches could not be submitted** because the unified profile selected colour attribute #2,
+  which does not exist in the Sooqify panel. Watches now submit with no variant attribute.
+- **A failed report validation left the previous success message on screen**, so a failure
+  looked like a generated report.
+
+### Added
+- **Flexible report date scopes.** Besides one day and a whole month, reports can now cover
+  hand-picked scattered days combined into one report, or a custom from-to range that may
+  cross months. A 366-day cap rejects absurd ranges.
+- **Sync fields on the login screen.** Login genuinely runs through the sync server, so the
+  sync URL and code now live on the login screen; the check runs a real sync cycle and only
+  then enables the login button.
+- **Sooqify session verification before extraction.** The add-product page is fetched with the
+  operator's cookies and checked for the real product form, instead of assuming a valid login
+  and failing late.
+- **Adaptive supplier throttling.** The supplier's rate-limiting is *silent* — HTTP 200 with a
+  valid page and an empty product list — so a status-code detector catches nothing. The new
+  throttle keys off request failure, success-but-empty, and unusual slowness, backing off
+  exponentially and recovering gradually, with a visible wait notice.
+- **A single source of truth for every shoes/watches difference** (`product_types.js` and its
+  Python mirror), with a test that fails if the two sides drift apart.
+
+### Changed
+- Extension version to 5.8.0.
+- Removed `MIGRATION_PLAN.md`, `HANDOFF_DOCUMENTATION.md` and `Backend refactor plan.md`;
+  their content is superseded by `docs/reports/`, `docs/changes/` and `docs/planning/`.
+
+### Tests
+55 backend tests, plus 32 currency, 18 throttle and 9 session tests in Node.
+
+---
+
+## Backend refactoring history (pre-5.8)
 
 This changelog documents the complete architectural migration of the Python Flask backend from a monolithic structure (`app.py`) to a modular, service-oriented architecture, executed in 7 distinct phases. All changes adhere strictly to the initial inventory decisions (`docs/reports/00_inventory.md`).
 

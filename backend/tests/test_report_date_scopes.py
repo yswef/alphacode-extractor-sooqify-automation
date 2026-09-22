@@ -139,3 +139,52 @@ def test_period_labels_contain_no_path_separators():
     ):
         label = describe_period(scope, days, datetime(2026, 9, 15))
         assert "/" not in label and "\\" not in label and ".." not in label
+
+
+# ---------------------------------------------------------------- Arabic user names
+
+def test_arabic_user_names_go_through_the_bidi_shaper():
+    """
+    Arabic: بلاغ حقيقي - اسم المستخدم كان يُطبع مقلوباً بالتقرير ("يوسف" تظهر "فسوي") لأن
+            خلية الاسم وحدها لم تكن تمر بـ_rtl بينما كل الخلايا الأخرى تمر بها.
+    English: A real report - the user name printed reversed ("يوسف" showing as "فسوي") because
+             the name cell alone did not go through _rtl while every other cell did.
+    """
+    from app.services import report_service as rs
+
+    entries = [
+        {"id": 1, "date": "2026-09-22", "product_type": "watches", "added_by": "يوسف"},
+        {"id": 2, "date": "2026-09-22", "product_type": "shoes", "added_by": "معتز"},
+    ]
+    table = rs._build_per_user_table(entries)
+    names = [row[0] for row in table._cellvalues[1:]]
+
+    if rs._ARABIC_SUPPORT:
+        # Arabic: النص المُشكَّل يستخدم "أشكال العرض العربية"، وهو دليل مرور الاسم بـ_rtl.
+        # English: Shaped text uses Arabic Presentation Forms - proof the name went through _rtl.
+        for name in names:
+            assert any(0xFE70 <= ord(ch) <= 0xFEFF for ch in name), (
+                f"user name {name!r} was not shaped - it will render reversed in the PDF"
+            )
+        # Arabic: الترتيب بحسب العدد، والعددان متساويان هنا، فنقارن كمجموعة.
+        # English: Ordering is by count and both tie here, so compare as a set.
+        assert set(names) == {rs._rtl("معتز"), rs._rtl("يوسف")}
+    else:
+        # Arabic: بلا دعم عربي تبقى الأسماء كما هي (سلوك احتياطي مقصود).
+        # English: Without Arabic support the names stay as-is (the intended fallback).
+        assert set(names) == {"معتز", "يوسف"}
+
+
+def test_per_user_table_totals_are_correct():
+    from app.services import report_service as rs
+
+    entries = [
+        {"id": 1, "date": "2026-09-22", "product_type": "watches", "added_by": "يوسف"},
+        {"id": 2, "date": "2026-09-22", "product_type": "shoes", "added_by": "معتز"},
+        {"id": 3, "date": "2026-09-22", "product_type": "shoes", "added_by": "معتز"},
+    ]
+    table = rs._build_per_user_table(entries)
+    rows = table._cellvalues[1:]
+    # Arabic: الأكثر إضافةً أولاً. English: Highest contributor first.
+    assert rows[0][1:] == ["2", "2", "0"]
+    assert rows[1][1:] == ["1", "0", "1"]

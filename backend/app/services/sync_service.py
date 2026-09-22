@@ -172,6 +172,54 @@ def sync_flush_queue():
             save_sync_state(state)
 
 
+# Arabic: كل كم ساعة تُجرى مصالحة كاملة تلقائياً. السحب التزايدي (since=آخر سحب) يمكن أن
+#         يتخطى سجلات نهائياً لو تقدّمت العلامة المائية فوقها - وهذا ما حصل فعلياً: كان
+#         بالسيرفر 3800 سجل مقابل 2476 محلياً، أي 1324 سجلاً مفقوداً، ومنتجات مستخدم كامل
+#         غائبة عن التقارير لشهر بينما المزامنة تقول "نجحت". المصالحة الكاملة (since="")
+#         تسحب كل شيء وتدمج الناقص، فتجعل المزامنة تشفي نفسها بدل أن تفقد بصمت.
+# English: How often a full reconcile runs automatically. The incremental pull
+#          (since=last_pull) can skip records permanently once the watermark moves past them -
+#          which is exactly what happened: 3800 records on the server against 2476 locally,
+#          1324 missing, with an entire user's products absent from reports for a month while
+#          sync reported success. A full reconcile (since="") pulls everything and merges what
+#          is missing, making sync self-healing instead of silently lossy.
+FULL_RECONCILE_INTERVAL_HOURS = 6
+
+
+def sync_auto_reconcile_if_due(force=False):
+    """
+    Arabic: يُجري مصالحة كاملة إن مضى وقت كافٍ منذ آخر واحدة (أو عند force). يُستدعى من
+            دورة المزامنة العادية، فلا يحتاج المستخدم أن يتذكر زراً.
+    English: Runs a full reconcile when enough time has passed since the last one (or on
+             force). Called from the normal sync cycle, so the operator never has to remember
+             a button.
+    """
+    config = load_sync_config()
+    if not config["Enabled"]:
+        return None
+
+    state = load_sync_state()
+    last_raw = str(state.get("last_full_reconcile_at") or "")
+    if not force and last_raw:
+        try:
+            elapsed = datetime.now() - datetime.fromisoformat(last_raw)
+            if elapsed < timedelta(hours=FULL_RECONCILE_INTERVAL_HOURS):
+                return None
+        except ValueError:
+            # Arabic: طابع زمني تالف - نعامله كأنها لم تُجرَ قط ونصالح.
+            # English: A corrupt timestamp - treat it as never run and reconcile.
+            pass
+
+    result = sync_reconcile_full()
+    with SYNC_LOCK:
+        state = load_sync_state()
+        state["last_full_reconcile_at"] = datetime.now().isoformat(timespec="seconds")
+        if isinstance(result, dict) and result.get("pulled_in"):
+            state["last_reconcile_pulled"] = result.get("pulled_in")
+        save_sync_state(state)
+    return result
+
+
 def sync_pull_updates():
     """Arabic: سحب منتجات الطرف الآخر ودمجها محلياً - يُستخدم في فحص التكرار حتى لا يعيد أحد الطرفين إضافة منتج أضافه الآخر. يرجع نص الخطأ لو فشل النداء، أو None لو نجح/كانت المزامنة معطّلة. English: Pull the other side's products and merge locally - used by duplicate checks so neither side re-adds what the other already added. Returns the error string on failure, or None on success/when sync is disabled."""
     config = load_sync_config()

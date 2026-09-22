@@ -201,7 +201,15 @@ def _build_per_user_table(entries):
     ]
     rows = [header]
     for user, counts in sorted(by_user.items(), key=lambda pair: -pair[1]["total"]):
-        rows.append([user, str(counts["total"]), str(counts.get("shoes", 0)), str(counts.get("watches", 0))])
+        # Arabic: اسم المستخدم عربي غالباً، فيجب أن يمر بـ_rtl مثل بقية النصوص العربية.
+        #         بدونها كان "يوسف" يُطبع مقلوباً "فسوي" - كل الخلايا الأخرى كانت تمر
+        #         بـ_rtl إلا هذي، فظهر الاسم وحده معكوساً بالتقرير.
+        # English: The user name is usually Arabic, so it must go through _rtl like every other
+        #          Arabic string. Without it "يوسف" printed reversed as "فسوي" - every other
+        #          cell was passed through _rtl except this one, so only the name came out
+        #          backwards in the report.
+        display_name = _rtl(user) if _ARABIC_SUPPORT else user
+        rows.append([display_name, str(counts["total"]), str(counts.get("shoes", 0)), str(counts.get("watches", 0))])
 
     if len(rows) == 1:
         rows.append(["-", "0", "0", "0"])

@@ -1501,6 +1501,25 @@ async function fillSizeVariants(form, product) {
         }),
     ).trim() || typeProfile.variantTitleFallback;
 
+    // Arabic: الأنواع التي لا تستخدم خاصية خيارات (حالياً الساعات، بطلب المستخدم) تُعبَّأ
+    //         بلا أي خاصية: مخزون واحد وسعر واحد. قبل هذا كان اختيار خاصية "اللون" رقم 2
+    //         يفشل بلوحة Sooqify لأن الخاصية غير موجودة أصلاً، فتتوقف الإضافة كلياً.
+    // English: Types that use no variant attribute (currently watches, per the operator's
+    //          request) are filled with none at all: a single stock and a single price. Before
+    //          this, selecting the "colour" attribute #2 failed in the Sooqify panel because
+    //          that attribute does not exist there, which aborted the whole submission.
+    if (!typeProfile.usesVariantAttribute) {
+        setControlValue('[name="current_stock"]', totalStock);
+        adminLog('info', `Product type "${productType}" uses no variant attribute - filling a single stock of ${totalStock}.`);
+        return {
+            sizes: sizes.length,
+            filledRows: 0,
+            stockPerSize,
+            totalStock,
+            skippedAttribute: true,
+        };
+    }
+
     const attributeResult = await selectOnlyProductAttribute(
         attributeId,
         configuredTitle,

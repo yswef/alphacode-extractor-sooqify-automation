@@ -1188,3 +1188,27 @@
         grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 }
+
+/* Arabic: شريط حالة السعر بشاشة المراجعة (فحص عملة المورد).
+   English: Price status banner in the review screens (supplier currency check). */
+.alphacode-price-alert {
+    margin: 8px 0;
+    padding: 10px 12px;
+    border-radius: 10px;
+    font-size: 12px;
+    line-height: 1.8;
+    border: 1px solid transparent;
+}
+.alphacode-price-alert-danger { background: #fff0f2; border-color: #ffcbd2; color: #a82437; }
+.alphacode-price-alert-ok     { background: #eafff4; border-color: #b8f0d3; color: #0c6840; }
+.alphacode-price-alert-warn   { background: #fff9e9; border-color: #f5dfaa; color: #8e5a00; }
+.alphacode-price-alert strong { font-weight: 800; }
+.alphacode-price-confirm {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-top: 8px;
+    font-weight: 800;
+    cursor: pointer;
+}
+.alphacode-price-confirm input { width: 16px; height: 16px; cursor: pointer; }

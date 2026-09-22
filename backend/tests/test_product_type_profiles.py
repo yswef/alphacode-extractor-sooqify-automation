@@ -65,6 +65,7 @@ KEY_MAP = {
     "variantAttributeIdFallback": "variant_attribute_id_fallback",
     "variantTitleKey": "variant_title_key",
     "variantTitleFallback": "variant_title_fallback",
+    "usesVariantAttribute": "uses_variant_attribute",
     "hasColorVariantEditor": "has_color_variant_editor",
 }
 
@@ -141,6 +142,17 @@ def test_watches_have_no_subcategory_and_own_category():
     assert product_type_sub_category_id("watches", SETTINGS) is None
     assert product_type_category_id("shoes", SETTINGS) == 41
     assert product_type_sub_category_id("shoes", SETTINGS) == 42
+
+
+def test_watches_currently_use_no_variant_attribute():
+    """
+    Arabic: بطلب المستخدم — الساعات تُضاف للمتجر بلا خاصية خيارات (لوحة Sooqify ما فيها
+            خاصية "اللون" رقم 2، فكان اختيارها يفشل الإضافة).
+    English: Per the operator's request - watches are pushed with no variant attribute (the
+             Sooqify panel has no "colour" attribute #2, so selecting it failed submission).
+    """
+    assert PROFILES["watches"]["uses_variant_attribute"] is False
+    assert PROFILES["shoes"]["uses_variant_attribute"] is True
 
 
 def test_variant_attribute_differs_by_type():

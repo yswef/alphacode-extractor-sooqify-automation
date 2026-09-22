@@ -617,7 +617,18 @@ def extract_product():
                 if clabel and abs_price > 0:
                     watch_colors.append({"label": clabel, "_abs_price_yuan": abs_price})
 
-            if watch_colors and get_profile(settings["ProductType"])["has_color_variant_editor"]:
+            # Arabic: مسار ألوان الساعات لا يعمل إلا لو النوع يستخدم خاصية خيارات أصلاً.
+            #         حالياً الساعات بلا خاصية (بطلب المستخدم) فيسقط للمسار العادي الذي
+            #         يُرجع منتجاً بسعر واحد بلا Variations.
+            # English: The watch-colour path only applies when the type uses a variant attribute
+            #          at all. Watches currently use none (per the operator's request), so this
+            #          falls through to the normal path, which yields a single-price product
+            #          with no Variations.
+            if (
+                watch_colors
+                and get_profile(settings["ProductType"])["has_color_variant_editor"]
+                and get_profile(settings["ProductType"])["uses_variant_attribute"]
+            ):
                 variations, choice_options, attributes, total_stock, variant_price_rows = (
                     build_watch_variations_from_absolute_yuan(
                         watch_colors, settings, data.get("OriginalPrice"),

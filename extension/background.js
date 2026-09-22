@@ -465,7 +465,11 @@ async function buildSooqifyFormData(product, pageHtml, formHtml) {
     formData.delete('choice[]');
     formData.delete(`choice_options_${choiceNo}[]`);
 
-    if (sizes.length) {
+    // Arabic: الأنواع التي لا تستخدم خاصية خيارات (حالياً الساعات) تُرسَل بلا أي
+    //         attribute/choice - المتجر يستقبلها كمنتج بسعر واحد ومخزون واحد.
+    // English: Types that use no variant attribute (currently watches) are sent with no
+    //          attribute/choice at all - the store receives a single-price, single-stock item.
+    if (sizes.length && PRODUCT_TYPES.getProfile(productType).usesVariantAttribute) {
         formData.append('attribute_id[]', attributeId);
         formData.append('choice_no[]', choiceNo);
         formData.append('choice[]', choiceTitle);

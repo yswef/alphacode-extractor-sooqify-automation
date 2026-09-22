@@ -35,6 +35,7 @@ PROFILES = {
         "variant_attribute_id_fallback": 1,
         "variant_title_key": "SizeTitle",
         "variant_title_fallback": "الحجم",
+        "uses_variant_attribute": True,
         "has_color_variant_editor": False,
     },
     "watches": {
@@ -54,6 +55,11 @@ PROFILES = {
         "variant_attribute_id_fallback": 2,
         "variant_title_key": "WatchColorTitle",
         "variant_title_fallback": "اللون",
+        # Arabic: بطلب المستخدم — الساعات بدون خاصية خيارات بالمتجر حالياً (لا توجد خاصية
+        #         "اللون" رقم 2 بلوحة Sooqify). لإعادة تفعيلها: غيّر هذي القيمة إلى True.
+        # English: Per the operator's request - watches carry no store variant attribute for now
+        #          (the Sooqify panel has no "colour" attribute #2). To re-enable: flip to True.
+        "uses_variant_attribute": False,
         "has_color_variant_editor": True,
     },
 }

@@ -58,6 +58,9 @@
             variantAttributeIdFallback: 1,
             variantTitleKey: 'SizeTitle',
             variantTitleFallback: 'الحجم',
+            // Arabic: هل يُرسَل المنتج للمتجر بخاصية خيارات (مقاس/لون) أصلاً.
+            // English: Whether the product is pushed to the store with a variant attribute at all.
+            usesVariantAttribute: true,
             // Arabic: هل يعرض حقل الألوان/الأسعار بشاشة مراجعة الدفعة.
             // English: Whether the colour/price editor is shown in the batch review slide.
             hasColorVariantEditor: false,
@@ -79,6 +82,16 @@
             variantAttributeIdFallback: 2,
             variantTitleKey: 'WatchColorTitle',
             variantTitleFallback: 'اللون',
+            // Arabic: بطلب المستخدم — الساعات حالياً تُضاف للمتجر بدون أي خاصية خيارات.
+            //         لوحة Sooqify ما فيها خاصية "اللون" رقم 2، فكان اختيارها يفشل الإضافة
+            //         برسالة "لم يتم العثور على الخاصية رقم 2". لإعادة تفعيلها لاحقاً بعد
+            //         إنشاء الخاصية بالمتجر: غيّر هذي القيمة إلى true فقط.
+            // English: Per the operator's request - watches are currently pushed to the store
+            //          with no variant attribute at all. The Sooqify panel has no attribute #2
+            //          ("colour"), so selecting it failed submission with "attribute #2 not
+            //          found". To re-enable later, once that attribute exists in the store:
+            //          flip this single value back to true.
+            usesVariantAttribute: false,
             hasColorVariantEditor: true,
         },
     };

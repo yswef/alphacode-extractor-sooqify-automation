@@ -11,6 +11,7 @@ from PIL import Image, ImageOps
 # Arabic: مصدر الحقيقة الوحيد لفروقات الأحذية/الساعات (نظير extension/product_types.js).
 # English: The single source of truth for shoes/watches differences (mirrors extension/product_types.js).
 from app.services.product_type_profiles import (
+    get_profile,
     product_type_variant_attribute_id,
     product_type_variant_title,
     resolve_product_type,
@@ -329,6 +330,14 @@ def build_variant_fields(sizes, colors, price, stock, settings, product_type, ba
     (not extracted or not edited by the operator), a single default color is created at the base
     price plus the flat fee, so the product is never left without a sellable price.
     """
+    # Arabic: نوع بلا خاصية خيارات (حالياً الساعات بطلب المستخدم) - لا Variations ولا
+    #         ChoiceOptions ولا Attributes إطلاقاً؛ منتج بسعر واحد ومخزون واحد.
+    # English: A type with no variant attribute (currently watches, per the operator's request)
+    #          gets no Variations, ChoiceOptions or Attributes at all; a single-price,
+    #          single-stock product.
+    if not get_profile(product_type)["uses_variant_attribute"]:
+        return "[]", "[]", "[]", settings["Stock"]
+
     if resolve_product_type(product_type) == "watches":
         variations = []
         for color in (colors or []):

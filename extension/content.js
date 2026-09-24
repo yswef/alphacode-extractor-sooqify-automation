@@ -634,6 +634,16 @@ function isReasonableCode(value) {
 // Arabic: تحديد نوع المنتج (حذاء/ساعة) من نص الصفحة أو مسار التصنيف (Breadcrumb)؛ يبقى قابلاً للتجاوز يدوياً من واجهة الاستخراج.
 // English: Detect the product type (shoe/watch) from the page text or the category breadcrumb; still meant to be manually overridable from the extraction UI.
 function detectProductType(sourceText, breadcrumbText = '') {
+    // Arabic: البراند الافتراضي المختار هو أقوى إشارة - لو اختار المستخدم "Rolex" فهو
+    //         يعمل على ساعات، ولا معنى لأن يفرض نص المنتج نوعاً آخر. لذلك يُفحص أولاً،
+    //         ثم يسقط للكشف من النص لو كان البراند غير حاسم.
+    // English: The configured default brand is the strongest signal - if the operator picked
+    //         "Rolex" they are working on watches, and the product text should not override
+    //         that. So it is checked first, falling back to text detection when the brand is
+    //         inconclusive.
+    const brandType = PRODUCT_TYPES.productTypeForBrand(extractorConfig.BrandName);
+    if (brandType) return brandType;
+
     const haystack = `${breadcrumbText} ${sourceText}`;
     if (/\b(watch|watches|timepiece)\b/i.test(haystack) || /手表|腕表|钟表/.test(haystack)) {
         return 'watches';

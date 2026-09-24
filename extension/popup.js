@@ -102,6 +102,28 @@ function byId(id) {
 
 // Arabic: تعبئة عناصر النموذج من الإعدادات.
 // English: Populate form controls from configuration.
+// Arabic: يجعل BrandId المصدر الوحيد للحقيقة ويشتق منه BrandName دائماً، ثم يعرض نوع
+//         المنتج المستنتج من البراند (ساعات/أحذية) حتى يرى المستخدم الأثر فوراً.
+// English: Makes BrandId the single source of truth, always deriving BrandName from it, then
+//          shows the product type inferred from the brand so the effect is visible at once.
+function syncBrandNameFromSelect() {
+const select = byId('BrandId');
+if (!select) return;
+const chosen = select.selectedOptions[0];
+const name = (chosen && chosen.value) ? chosen.textContent.trim() : '';
+if (byId('BrandName')) byId('BrandName').value = name;
+currentConfig.BrandName = name;
+
+const hint = byId('brandTypeHint');
+if (!hint) return;
+const types = globalThis.ALPHACODE_PRODUCT_TYPES;
+if (!name || !types) { hint.textContent = ''; return; }
+const inferred = types.productTypeForBrand(name) || 'shoes';
+const profile = types.getProfile(inferred);
+hint.textContent = `${profile.icon} نوع المنتج لهذا البراند: ${profile.labelAr} (${profile.labelEn}) — يُختار تلقائياً عند الاستخراج.`;
+hint.dataset.type = inferred;
+}
+
 function populateForm(config) {
     for (const key of CONFIG_FIELDS) {
         const element = byId(key);
@@ -125,6 +147,17 @@ function populateForm(config) {
     if (byId('supplierCardName')) {
         byId('supplierCardName').textContent = config.SupplierStoreName || 'BRANDKINGDOM';
     }
+
+    // Arabic: BrandId هو مصدر الحقيقة، وBrandName يُشتق منه دائماً بعد تعبئة الفورم.
+    //         بدون هذا السطر يبقى الباغ قائماً: populateForm تكتب BrandName المحفوظ (وقد
+    //         يكون فاضياً أو لبراند آخر) فوق ما ضبطته loadBrandsIntoSelect، وتحديدها
+    //         لـBrandId برمجياً لا يُطلق change فلا يُعاد الاشتقاق أبداً.
+    // English: BrandId is the source of truth and BrandName is always derived from it after the
+    //          form is populated. Without this line the bug stands: populateForm writes the
+    //          saved BrandName (possibly empty, or for a different brand) over whatever
+    //          loadBrandsIntoSelect set, and its programmatic BrandId assignment fires no
+    //          change event, so the value is never re-derived.
+    syncBrandNameFromSelect();
 
     updateProductTypeCardVisibility();
 }
@@ -1622,7 +1655,11 @@ async function loadBrandsIntoSelect() {
         brands = await loadBrandsCacheFallback();
     }
 
-    const currentVal = select.value;
+    // Arabic: نحتفظ بالاختيار الحالي، ولو كان فاضياً نرجع لـBrandId المحفوظ بالإعدادات -
+    //         لأن loadBrandsIntoSelect قد تعمل بعد populateForm فتمسح اختيارها.
+    // English: Keep the current selection; if it is empty fall back to the saved BrandId,
+    //          because loadBrandsIntoSelect can run after populateForm and wipe its choice.
+    const currentVal = select.value || String(currentConfig.BrandId || '');
     select.innerHTML = '<option value="">— اختر براند —</option>';
     brands.forEach(b => {
         const opt = document.createElement('option');
@@ -1632,10 +1669,18 @@ async function loadBrandsIntoSelect() {
     });
     if (currentVal) select.value = currentVal;
 
-    select.onchange = () => {
-        const chosen = select.selectedOptions[0];
-        if (byId('BrandName')) byId('BrandName').value = (chosen && chosen.value) ? chosen.textContent : '';
-    };
+    select.onchange = syncBrandNameFromSelect;
+
+    // Arabic: مزامنة فورية بعد بناء الخيارات. كان هذا هو الباغ: BrandName حقل مخفي لا
+    //         يُحدَّث إلا بحدث change، وتحديد الاختيار برمجياً لا يُطلق change - فيبقى
+    //         BrandName فاضياً أو قديماً بينما القائمة تعرض البراند الصحيح، فيصل للمتجر
+    //         اسم براند خاطئ أو فاضٍ رغم أن المستخدم "اختاره".
+    // English: Sync immediately after the options are built. This was the bug: BrandName is a
+    //          hidden field updated only on a change event, and setting the selection
+    //          programmatically fires no change - so BrandName stayed empty or stale while the
+    //          dropdown displayed the right brand, and the store received a wrong or empty
+    //          brand name even though the operator had "picked" one.
+    syncBrandNameFromSelect();
 }
 
 async function addBrandToServer() {

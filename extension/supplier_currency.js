@@ -225,8 +225,58 @@
             return { ...base, cnyPrice: displayed, status: 'cny', trusted: true };
         }
 
-        // Arabic: 2) عملة أجنبية وسعر الصرف معروف — نحوّل، ثم نطلب تأكيداً من العنوان.
-        // English: 2) Foreign currency with a known rate — convert, then seek title confirmation.
+        // Arabic: 2) عملة أجنبية، لكن العنوان يذكر سعراً باليوان صراحةً (مثل "🔥P300🔥"
+        //         أو "¥450"). هذا رقم كتبه المورد نفسه باليوان، فلا يحتاج تحويلاً ولا
+        //         تخميناً - نستخدمه مباشرةً كسعر أصلي. الفائدة العملية: كان المستخدم يُجبَر
+        //         على إدخال السعر يدوياً بالضبط في هذي الحالة، والآن يُستخرج تلقائياً.
+        //         نتحقق أيضاً أنه متسق مع التحويل (إن توفّر سعر صرف) قبل الوثوق به.
+        // English: 2) Foreign currency, but the title states a CNY price outright (e.g.
+        //          "🔥P300🔥" or "¥450"). That number was written by the supplier in CNY, so it
+        //          needs no conversion and no guessing - use it directly as the original price.
+        //          The practical gain: the operator used to be forced to type the price by hand
+        //          in exactly this case, and now it is extracted automatically. It is still
+        //          cross-checked against the conversion (when a rate is available) before it is
+        //          trusted.
+        // Arabic: الشرط `currency &&` ضروري: لو تعذّر الوصول لـAPI العملة فـcurrency = null،
+        //         وعندها لا نعرف العملة أصلاً ولا يصح افتراض أنها أجنبية والوثوق بالعنوان -
+        //         تلك الحالة لها مسارها الخاص بالأسفل الذي يقارن العنوان بالسعر المعروض.
+        // English: The `currency &&` guard matters: when the currency API is unreachable,
+        //          currency is null, and we do not know the currency at all - it is not safe to
+        //          assume it is foreign and trust the title. That case has its own path below,
+        //          which compares the title against the displayed price instead.
+        if (currency && !isCny(currency) && titleHint) {
+            if (needsConversion(currency)) {
+                const converted = Math.round((displayed / currency.exchangeRate) * 100) / 100;
+                const deviation = Math.abs(converted - titleHint.value) / titleHint.value;
+                if (deviation <= TITLE_PRICE_TOLERANCE) {
+                    return {
+                        ...base,
+                        cnyPrice: titleHint.value,
+                        convertedPrice: converted,
+                        converted: true,
+                        deviation,
+                        status: 'title_price',
+                        trusted: true,
+                    };
+                }
+                // Arabic: تعارض حقيقي بين العنوان والتحويل - لا نخمّن أيهما الصحيح.
+                // English: A genuine conflict between title and conversion - do not guess which wins.
+                return {
+                    ...base, cnyPrice: converted, convertedPrice: converted, converted: true, deviation,
+                    status: 'needs_manual', trusted: false,
+                    reason: `السعر المحوَّل (${converted} يوان) يخالف سعر العنوان (${titleHint.value} يوان) بفارق ${Math.round(deviation * 100)}%.`,
+                };
+            }
+            // Arabic: لا سعر صرف، لكن العنوان يحمل سعراً باليوان - نستخدمه ونذكر ذلك.
+            // English: No rate available, but the title carries a CNY price - use it and say so.
+            return {
+                ...base, cnyPrice: titleHint.value, status: 'title_price', trusted: true,
+                note: `السعر مأخوذ من عنوان المنتج (${titleHint.raw}) لأن الموقع يعرض بعملة ${base.currencyCode}.`,
+            };
+        }
+
+        // Arabic: 3) عملة أجنبية وسعر الصرف معروف بلا سعر بالعنوان — نحوّل ثم نطلب تأكيداً.
+        // English: 3) Foreign currency with a known rate and no title price — convert, then ask.
         if (needsConversion(currency)) {
             const cnyPrice = Math.round((displayed / currency.exchangeRate) * 100) / 100;
             if (titleHint) {

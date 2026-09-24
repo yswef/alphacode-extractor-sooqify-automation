@@ -1761,6 +1761,14 @@ function buildPriceCheckBanner(priceCheck, scope = 'single') {
             <label class="alphacode-price-confirm"><input type="checkbox" ${scope === 'batch' ? 'class="batch-price-confirm"' : 'id="modPriceConfirm"'}> أؤكّد أن السعر المكتوب بالأعلى صحيح باليوان</label>
         </div>`;
     }
+    if (priceCheck.status === 'title_price') {
+        return `<div class="alphacode-price-alert alphacode-price-alert-ok">
+            ✔ السعر مأخوذ مباشرةً من عنوان المنتج: <strong>${priceCheck.cnyPrice} يوان</strong>
+            (${escapeHtml(priceCheck.titleHint?.raw || '')}) — رقم كتبه المورد باليوان فلا يحتاج تحويلاً.
+            ${priceCheck.convertedPrice ? `التحويل من ${escapeHtml(priceCheck.currencyCode)} يعطي ${priceCheck.convertedPrice} يوان، ومطابق.` : ''}
+            ${priceCheck.note ? escapeHtml(priceCheck.note) : ''}
+        </div>`;
+    }
     if (priceCheck.status === 'converted_confirmed') {
         return `<div class="alphacode-price-alert alphacode-price-alert-ok">
             ✔ السعر كان معروضاً بـ<strong>${escapeHtml(priceCheck.currencyCode)}</strong>${priceCheck.ipCountry ? ` (IP: ${escapeHtml(priceCheck.ipCountry)})` : ''} =

@@ -114,11 +114,15 @@ if __name__ == "__main__":
     app = create_app()
     chosen_port = find_available_port(5000, 5)
     if chosen_port != 5000:
+        # Arabic: لم يعد المستخدم بحاجة لتعديل BackendPort يدوياً - الإضافة تكتشف المنفذ
+        #         بنفسها عبر extension/backend_discovery.js (تمسح المدى وتتحقق من اسم الخدمة
+        #         في /api/health). الرسالة صارت إخبارية فقط.
+        # English: The operator no longer has to edit BackendPort by hand - the extension
+        #          discovers the port itself via extension/backend_discovery.js (it scans the
+        #          range and verifies the service name in /api/health). Informational only now.
         print(
-            f"[app.main] Port 5000 is busy - using port {chosen_port} instead.\n"
-            f"[app.main] IMPORTANT: open extension/config.js and set BackendPort: "
-            f"{chosen_port}, then reload the extension (chrome://extensions -> Reload) "
-            f"or it will keep trying to reach port 5000.",
+            f"[app.main] Port 5000 is busy - using port {chosen_port} instead." + chr(10) +
+            f"[app.main] The extension discovers this automatically; no config edit needed.",
             file=sys.stderr,
         )
     app.run(port=chosen_port, debug=False)

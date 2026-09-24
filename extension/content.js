@@ -4,7 +4,21 @@
 
 'use strict';
 
-const API_BASE_URL = `http://127.0.0.1:${(globalThis.ALPHACODE_DEFAULT_CONFIG || {}).BackendPort || 5000}`;
+// Arabic: يبدأ بالمنفذ المُعَد ثم يُصحَّح تلقائياً للمنفذ الحي الذي اكتشفه
+//         backend_discovery.js. `let` لا `const` عمداً: كل الاستخدامات داخل قوالب نصية
+//         تُقيَّم وقت الطلب، فتلتقط القيمة المصححة بلا تعديل أي نداء.
+// English: Starts at the configured port, then self-corrects to the live port discovered by
+//          backend_discovery.js. `let` rather than `const` on purpose: every use sits inside a
+//          template literal evaluated at request time, so they all pick up the corrected value
+//          without touching a single call site.
+let API_BASE_URL = `http://127.0.0.1:${(globalThis.ALPHACODE_DEFAULT_CONFIG || {}).BackendPort || 5000}`;
+
+globalThis.ALPHACODE_BACKEND?.getBackendBase().then(base => {
+    if (base && base !== API_BASE_URL) {
+        acLog('info', `Backend discovered on ${base} (configured was ${API_BASE_URL}).`);
+        API_BASE_URL = base;
+    }
+}).catch(() => { /* Arabic: يبقى المنفذ المُعَد. English: keep the configured port. */ });
 const PRODUCT_CARD_SELECTOR = [
     '[class*="normal_item_timeline_common_item"]',
     '[class*="goods-item"]',
@@ -1818,7 +1832,7 @@ function renderNewProductForm(context) {
             <div class="alphacode-readonly-item"><span>صور المعرض الكامل:</span><strong class="alphacode-image-count">${images.length} صور</strong></div>
             <div class="alphacode-readonly-item"><span>متجر المورد:</span><strong>${normalizeText(extractorConfig.SupplierStoreName) || 'غير محدد'} / ${resolveSupplierStoreId() || 'لا يوجد ID'}</strong></div>
             <div class="alphacode-readonly-item"><span>Search Code:</span><strong>${searchCode || 'غير موجود'}</strong></div>
-            <div class="alphacode-readonly-item alphacode-code-row"><span>Style Code / Item No.:</span><div><input id="modStyleCode" type="text" placeholder="ادخل كود الستايل إن وجد" style="min-width:140px;padding:6px 8px;border-radius:6px;border:1px solid #ccd5e3;" value="${escapeHtml(styleCode || '')}"><button class="alphacode-copy-btn" id="copyStyleBtn" type="button">📋 نسخ</button></div></div>
+            <div class="alphacode-readonly-item alphacode-code-row"><span>Style Code / Item No.${PRODUCT_TYPES.getProfile(detectedProductType).expectsStyleCode ? '' : ' (اختياري)'}:</span><div><input id="modStyleCode" type="text" placeholder="${PRODUCT_TYPES.getProfile(detectedProductType).expectsStyleCode ? 'ادخل كود الستايل إن وجد' : 'اختياري - كثير من الساعات بلا كود ستايل'}" style="min-width:140px;padding:6px 8px;border-radius:6px;border:1px solid #ccd5e3;" value="${escapeHtml(styleCode || '')}"><button class="alphacode-copy-btn" id="copyStyleBtn" type="button">📋 نسخ</button></div></div>
             <div class="alphacode-readonly-item"><span>الصور:</span><strong>JPG / ${extractorConfig.ImageQuality}% / ${extractorConfig.ImageMaxDimension}px</strong></div>
         </div>
         <div class="alphacode-actions">
@@ -3286,7 +3300,7 @@ function renderBatchReviewSlides(modalBox, drafts) {
                         <textarea class="batch-variants" dir="rtl" rows="4" placeholder="أبيض : 199.99&#10;أسود : 249.99">${escapeHtml((draft.variants || []).map(v => `${v.color} : ${v.price}`).join('\n'))}</textarea>
                     </div>` : ''}
                     <div class="alphacode-readonly-group">
-                        <div class="alphacode-readonly-item"><span>Style Code</span><input class="batch-style-code" type="text" placeholder="ادخل/عدّل كود الستايل" value="${escapeHtml(draft.styleCode || '')}"></div>
+                        <div class="alphacode-readonly-item"><span>Style Code${PRODUCT_TYPES.getProfile(draft.productType).expectsStyleCode ? '' : ' (اختياري)'}</span><input class="batch-style-code" type="text" placeholder="${PRODUCT_TYPES.getProfile(draft.productType).expectsStyleCode ? 'ادخل/عدّل كود الستايل' : 'اختياري للساعات'}" value="${escapeHtml(draft.styleCode || '')}"></div>
                         <div class="alphacode-readonly-item"><span>Search Code</span><strong>${escapeHtml(draft.searchCode || '-')}</strong></div>
                         <div class="alphacode-readonly-item"><span>الصور المكتشفة</span><strong>${draft.images.length}</strong></div>
                         ${draft.specs?.length ? `<div class="alphacode-readonly-item"><span>Specs (من المصدر)</span><strong>${escapeHtml(draft.specs.join(', '))}</strong></div>` : ''}

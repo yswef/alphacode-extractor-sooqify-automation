@@ -61,6 +61,12 @@
             // Arabic: هل يُرسَل المنتج للمتجر بخاصية خيارات (مقاس/لون) أصلاً.
             // English: Whether the product is pushed to the store with a variant attribute at all.
             usesVariantAttribute: true,
+            // Arabic: هل يُتوقَّع كود ستايل لهذا النوع؟ الأحذية نعم، الساعات لا - كثير من
+            //         الساعات تصل بلا كود ستايل أصلاً، فلا يصح أن تُعرض الخانة كأنها مطلوبة.
+            // English: Is a style code expected for this type? Yes for shoes, no for watches -
+            //          many watches simply arrive without one, so the field must not be
+            //          presented as if it were required.
+            expectsStyleCode: true,
             // Arabic: هل يعرض حقل الألوان/الأسعار بشاشة مراجعة الدفعة.
             // English: Whether the colour/price editor is shown in the batch review slide.
             hasColorVariantEditor: false,
@@ -92,6 +98,7 @@
             //          found". To re-enable later, once that attribute exists in the store:
             //          flip this single value back to true.
             usesVariantAttribute: false,
+            expectsStyleCode: false,
             hasColorVariantEditor: true,
         },
     };

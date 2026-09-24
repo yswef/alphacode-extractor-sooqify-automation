@@ -6,7 +6,9 @@
 
 'use strict';
 
-const API_BASE = `http://127.0.0.1:${(globalThis.ALPHACODE_DEFAULT_CONFIG || {}).BackendPort || 5000}`;
+// Arabic: نفس منطق content.js - يُصحَّح للمنفذ الحي بعد الاكتشاف. شوف backend_discovery.js.
+// English: Same as content.js - corrected to the live port after discovery. See backend_discovery.js.
+let API_BASE = `http://127.0.0.1:${(globalThis.ALPHACODE_DEFAULT_CONFIG || {}).BackendPort || 5000}`;
 const DEFAULTS = globalThis.ALPHACODE_DEFAULT_CONFIG || {};
 
 const NUMBER_FIELDS = new Set([
@@ -1712,6 +1714,15 @@ async function addBrandToServer() {
     bindClick('dataRepairApplyBtn', applyDataRepairFix);
     bindClick('dataRepairReportBtn', downloadDataRepairReports);
     bindClick('addBrandBtn', addBrandToServer);
+
+    // Arabic: اكتشاف منفذ الباك اند قبل أي نداء - لو كان 5000 مشغولاً فالباك اند على 5001
+    //         وكل ما بعده سيفشل بلا هذا السطر.
+    // English: Discover the backend port before any call - if 5000 was busy the backend is on
+    //          5001 and everything below fails without this.
+    try {
+        const base = await globalThis.ALPHACODE_BACKEND?.getBackendBase();
+        if (base) API_BASE = base;
+    } catch (_) { /* keep the configured port */ }
 
     try {
         // Arabic: لازم ننتظر تحميل خيارات البراند أول - لو استدعيناها بدون await، ممكن

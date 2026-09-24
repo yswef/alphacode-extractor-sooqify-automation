@@ -36,6 +36,7 @@ PROFILES = {
         "variant_title_key": "SizeTitle",
         "variant_title_fallback": "الحجم",
         "uses_variant_attribute": True,
+        "expects_style_code": True,
         "has_color_variant_editor": False,
     },
     "watches": {
@@ -60,6 +61,9 @@ PROFILES = {
         # English: Per the operator's request - watches carry no store variant attribute for now
         #          (the Sooqify panel has no "colour" attribute #2). To re-enable: flip to True.
         "uses_variant_attribute": False,
+        # Arabic: الساعات كثيراً ما تصل بلا كود ستايل - الخانة اختيارية لها.
+        # English: Watches often arrive with no style code - the field is optional for them.
+        "expects_style_code": False,
         "has_color_variant_editor": True,
     },
 }

@@ -268,12 +268,35 @@ def extract_product():
     selected_indexes.insert(0, main_image_index)
     selected_indexes = selected_indexes[:store_image_limit]
 
+    # Arabic: "ماذا نرفع للمتجر" و"ماذا ننزّل محلياً" سؤالان مختلفان، وكان الكود يربطهما
+    #         بـ`and not UploadMainImageOnly`. وبما أن UploadMainImageOnly مفعّل افتراضياً
+    #         منذ v5.0.0، كان download_selected_only يساوي False دائماً - أي أن خيار
+    #         "نزّل الصور المختارة فقط" كان معطّلاً فعلياً ولا يمكن تفعيله إطلاقاً، فتُنزَّل
+    #         كل صور كل منتج دائماً. هذا سبب استهلاك النت العالي الذي أبلغ عنه المستخدم.
+    #         الآن يُحترم الخيار كما هو.
+    # English: "what to upload to the store" and "what to download locally" are two different
+    #          questions, and the code tied them together with `and not UploadMainImageOnly`.
+    #          Since UploadMainImageOnly has defaulted to on since v5.0.0, download_selected_only
+    #          was always False - the "download selected images only" option was effectively
+    #          dead and could never be switched on, so every image of every product was always
+    #          downloaded. That is the heavy bandwidth use the operator reported. The option is
+    #          now honoured on its own.
     download_selected_only = safe_bool(
         data.get("DownloadSelectedImagesOnly"),
         settings["DownloadSelectedImagesOnly"],
-    ) and not settings.get("UploadMainImageOnly")
+    )
+
+    # Arabic: صور استبعدها المستخدم صراحةً - لا تُنزَّل ولا تُرفع إطلاقاً.
+    # English: Images the operator explicitly excluded - never downloaded, never uploaded.
+    excluded_indexes = {
+        int(index)
+        for index in (data.get("ExcludedImageIndexes") or [])
+        if isinstance(index, (int, float, str)) and str(index).strip().lstrip("-").isdigit()
+    }
+
     download_indexes = selected_indexes if download_selected_only else list(range(len(images)))
-    download_plan = [(index, images[index]) for index in download_indexes]
+    download_indexes = [index for index in download_indexes if index not in excluded_indexes]
+    download_plan = [(index, images[index]) for index in download_indexes if 0 <= index < len(images)]
 
     sync_config = load_sync_config()
     added_by = sync_config["AddedByName"] or "غير محدد"

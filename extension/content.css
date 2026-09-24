@@ -1273,3 +1273,18 @@
 }
 .alphacode-throttle-notice[data-tone="warn"] { background: #fff4d6; color: #8e5a00; border: 1px solid #f0d089; }
 .alphacode-throttle-notice[data-tone="ok"]   { background: #eafff4; color: #0c6840; border: 1px solid #b8f0d3; }
+
+/* Arabic: زر استبعاد الصورة من التنزيل والرفع (توفير النت).
+   English: Per-image exclude control (bandwidth saving). */
+.alphacode-image-exclude {
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 2px 4px;
+    border-radius: 6px;
+}
+.alphacode-image-exclude:hover { background: rgba(168, 36, 55, 0.12); }
+.alphacode-image-choice.excluded { opacity: 0.38; filter: grayscale(1); }
+.alphacode-image-choice.excluded img { outline: 2px dashed #a82437; outline-offset: -2px; }

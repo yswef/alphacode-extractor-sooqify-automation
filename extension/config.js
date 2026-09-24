@@ -80,7 +80,12 @@
         RequireAllImages: true,
         MaxImages: 30,
         StoreImageLimit: 10,
-        DownloadSelectedImagesOnly: false,
+        // Arabic: افتراضياً ننزّل الصور المختارة فقط - توفير كبير بالنت. كان false وكان
+        //         الخيار معطّلاً أصلاً بالباك اند، فتُنزَّل كل الصور دائماً.
+        // English: Default to downloading only the selected images - a large bandwidth saving.
+        //          This was false, and the option was dead in the backend anyway, so every
+        //          image was always downloaded.
+        DownloadSelectedImagesOnly: true,
 
         // Arabic: عند التفعيل يُرفع للمتجر الصورة الرئيسية فقط، وتُحفظ كل الصور محلياً بجودتها الأصلية دون أي تعديل.
         // English: When enabled, only the main image is submitted to the store, and every image is saved locally at full original quality with no edits.

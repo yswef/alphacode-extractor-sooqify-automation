@@ -1610,6 +1610,14 @@ function initializeStoreImageSelector(modalBox, images, configuredLimit) {
 
     const selected = new Set(validImageOrder);
 
+    // Arabic: صور يستبعدها المستخدم يدوياً - لا تُنزَّل محلياً ولا تُرفع للمتجر. الفائدة
+    //         الأساسية توفير النت: الباك اند هو من ينزّل الصور من روابط المورد، فاستبعاد
+    //         صورة هنا يمنع تنزيلها أصلاً.
+    // English: Images the operator excludes by hand - neither downloaded locally nor uploaded.
+    //          The main benefit is bandwidth: the backend is what downloads images from the
+    //          supplier URLs, so excluding one here stops it being fetched at all.
+    const excluded = new Set();
+
     // Arabic: الصورة العاشرة هي الرئيسية، وإن لم توجد تُستخدم آخر صورة مختارة.
     // English: Use the tenth image as main; otherwise use the last selected image.
     let mainIndex = images.length > 9
@@ -1642,8 +1650,21 @@ function initializeStoreImageSelector(modalBox, images, configuredLimit) {
             radio.disabled = !selected.has(index);
             card.classList.toggle('selected', selected.has(index));
             card.classList.toggle('main-image', index === mainIndex);
+            const isExcluded = excluded.has(index);
+            card.classList.toggle('excluded', isExcluded);
+            checkbox.disabled = isExcluded;
+            if (isExcluded) radio.disabled = true;
+            const excludeBtn = card.querySelector('.alphacode-image-exclude');
+            if (excludeBtn) {
+                excludeBtn.textContent = isExcluded ? '↩' : '🚫';
+                excludeBtn.title = isExcluded
+                    ? 'إعادة هذه الصورة إلى التنزيل'
+                    : 'استبعاد هذه الصورة من التنزيل والرفع';
+            }
         });
-        counter.textContent = `${selected.size} / ${limit} صور مختارة — الصورة الرئيسية رقم ${mainIndex + 1}`;
+        const kept = images.length - excluded.size;
+        counter.textContent = `${selected.size} / ${limit} صور مختارة — الرئيسية رقم ${mainIndex + 1}`
+            + (excluded.size ? ` — مستبعدة ${excluded.size} (تُنزَّل ${kept} من ${images.length})` : '');
     }
 
     // Arabic: ضمان أن الصورة الرئيسية مختارة دائماً وعدم تجاوز حد المتجر.
@@ -1675,6 +1696,7 @@ function initializeStoreImageSelector(modalBox, images, configuredLimit) {
             <div class="alphacode-image-choice-footer">
                 <label><input class="alphacode-image-check" type="checkbox"> رفع</label>
                 <label><input class="alphacode-image-main" type="radio" name="alphacode-main-image"> رئيسية</label>
+                <button type="button" class="alphacode-image-exclude" title="استبعاد هذه الصورة من التنزيل والرفع">🚫</button>
                 <strong>#${index + 1}</strong>
             </div>`;
         card.querySelector('img').src = url;
@@ -1687,17 +1709,36 @@ function initializeStoreImageSelector(modalBox, images, configuredLimit) {
             mainIndex = index;
             refresh();
         });
+        card.querySelector('.alphacode-image-exclude').addEventListener('click', () => {
+            if (excluded.has(index)) {
+                excluded.delete(index);
+                refresh();
+                return;
+            }
+            // Arabic: لا يُسمح باستبعاد الصورة الرئيسية - يختار المستخدم رئيسية أخرى أولاً.
+            // English: The main image cannot be excluded - pick another main image first.
+            if (index === mainIndex) {
+                alert('لا يمكن استبعاد الصورة الرئيسية. اختر صورة رئيسية أخرى أولاً.');
+                return;
+            }
+            excluded.add(index);
+            selected.delete(index);
+            refresh();
+        });
         grid.appendChild(card);
     });
 
     refresh();
     return {
         getSelectedIndexes() {
-            const ordered = Array.from(selected).sort((a, b) => a - b);
+            const ordered = Array.from(selected)
+                .filter(index => !excluded.has(index))
+                .sort((a, b) => a - b);
             return [mainIndex, ...ordered.filter(index => index !== mainIndex)].slice(0, limit);
         },
         getMainIndex() { return mainIndex; },
         getLimit() { return limit; },
+        getExcludedIndexes() { return Array.from(excluded).sort((a, b) => a - b); },
     };
 }
 
@@ -2361,6 +2402,9 @@ async function submitProduct(context) {
         SelectedImageIndexes: imageSelection.getSelectedIndexes(),
         MainImageIndex: imageSelection.getMainIndex(),
         StoreImageLimit: imageSelection.getLimit(),
+        // Arabic: الصور المستبعدة لا تُنزَّل ولا تُرفع - توفير نت مباشر.
+        // English: Excluded images are neither downloaded nor uploaded - a direct bandwidth saving.
+        ExcludedImageIndexes: imageSelection.getExcludedIndexes?.() || [],
         SourceUrl: window.location.href,
         SupplierStoreName: extractorConfig.SupplierStoreName || '',
         SupplierStoreId: resolveSupplierStoreId(),

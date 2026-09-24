@@ -80,12 +80,6 @@ from app.services.upload_service import (  # noqa: E402
     sniff_image_extension,
     strip_existing_image_transform,
 )
-from app.services.variant_extractor_service import (  # noqa: E402
-    WATCH_VARIANT_SCHEMA,
-    WATCH_VARIANT_SCHEMA_NAME,
-    build_watch_variant_messages,
-    validate_watch_variants,
-)
 
 # Arabic: تقارير PDF اختيارية. السلوك المقصود: try/except حتى لا يتعطل الإقلاع بدون reportlab.
 # English: Optional PDF reports. Intended behavior: try/except so startup survives missing reportlab.
@@ -106,7 +100,6 @@ ROOT_DIR = os.getenv("ALPHACODE_ROOT_DIR", SCRIPT_DIR)
 BASE_DIR = os.path.join(ROOT_DIR, IMAGES_FOLDER_NAME)
 EXCEL_PATH = os.path.join(ROOT_DIR, "items_bulk_format_nodata.xlsx")
 ARCHIVE_PATH = os.path.join(ROOT_DIR, "archive_db.json")
-AI_CACHE_PATH = os.path.join(ROOT_DIR, "ai_copy_cache.json")
 LOG_DIR = os.path.join(ROOT_DIR, "logs")
 LOG_PATH = os.path.join(LOG_DIR, "alphacode.log")
 PRICE_PATTERNS_LOG_PATH = os.path.join(LOG_DIR, "price_patterns.jsonl")
@@ -114,18 +107,12 @@ ROOT_DIR_CONFIGURED = False  # Arabic: يصبح True فقط بعد اختيار/
 
 # Arabic: مزودات الذكاء الاصطناعي مدعومة من الخادم دون أتمتة واجهة ChatGPT الشخصية.
 # English: The backend supports API providers without automating a personal ChatGPT web session.
-GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
-DEFAULT_AI_PROVIDER = "groq"
-DEFAULT_AI_MODEL = "openai/gpt-oss-120b"
 DEFAULT_OPENAI_MODEL = "gpt-5.2"
-GROQ_OFFICIAL_SEARCH_MODEL = "groq/compound-mini"
-AI_PROMPT_VERSION = "4.5-batch-official-brand-guard-fast-json"
 
 # Arabic: القفل يمنع تعارض طلبين أثناء تحديث الصور وExcel والأرشيف.
 # English: The lock prevents concurrent requests from corrupting images, Excel, or archive data.
 SAVE_LOCK = threading.RLock()
-AI_CACHE_LOCK = threading.RLock()
 
 class ColoredConsoleFormatter(logging.Formatter):
     """

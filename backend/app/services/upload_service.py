@@ -20,8 +20,6 @@ from app.services.product_type_profiles import (
 logger = logging.getLogger("alphacode")
 
 # Arabic: نفس القيم الافتراضية في app.py (الثوابت نفسها لم تُنقل). English: Same defaults as app.py (those constants were not moved).
-DEFAULT_AI_PROVIDER = "groq"
-DEFAULT_AI_MODEL = "openai/gpt-oss-120b"
 
 
 def _normalize_text(value):
@@ -117,13 +115,7 @@ def extract_settings(data):
         "OptimizeImageAtSource": _safe_bool(settings.get("OptimizeImageAtSource"), True),
         "RequireAllImages": _safe_bool(settings.get("RequireAllImages"), True),
         "MaxImages": max(1, min(_safe_int(settings.get("MaxImages"), 30), 100)),
-        "AIAutoGenerate": _safe_bool(settings.get("AIAutoGenerate"), True),
-        "AIProvider": _normalize_text(settings.get("AIProvider")).lower() or DEFAULT_AI_PROVIDER,
-        "AIModel": _normalize_text(settings.get("AIModel")) or DEFAULT_AI_MODEL,
         "AIBaseUrl": _normalize_text(settings.get("AIBaseUrl")),
-        "AIKeyEnv": _normalize_text(settings.get("AIKeyEnv")) or "GROQ_API_KEY",
-        "AIJsonRepairEnabled": _safe_bool(settings.get("AIJsonRepairEnabled"), True),
-        "ArabicCopyStyle": _normalize_text(settings.get("ArabicCopyStyle")) or "sales-natural",
         "OfficialResearchOnRegenerate": _safe_bool(settings.get("OfficialResearchOnRegenerate"), True),
         "DownloadSelectedImagesOnly": _safe_bool(settings.get("DownloadSelectedImagesOnly"), False),
         # Arabic: عند التفعيل - يُرفع للمتجر الصورة الرئيسية فقط، وتُحفظ كل الصور محلياً كما هي (دون تصغير أو تربيع أو ضغط).

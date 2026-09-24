@@ -146,13 +146,11 @@
     </div>
     <div class="health-row">
         <div class="health-pill"><span id="serverText">فحص Python...</span><i id="serverDot" class="status-dot"></i></div>
-        <div class="health-pill" id="aiText">فحص مزود الذكاء الاصطناعي...</div>
     </div>
 </header>
 
 <nav class="tabs">
     <button class="tab-button active" data-tab="settings">الإعدادات</button>
-    <button class="tab-button" data-tab="ai">الذكاء</button>
     <button class="tab-button" data-tab="product-type">نوع المنتج</button>
     <button class="tab-button" data-tab="stores">المتاجر</button>
     <button class="tab-button" data-tab="search">البحث</button>
@@ -312,30 +310,6 @@
         </article>
     </section>
 
-    <section class="tab-panel" id="tab-ai">
-        <article class="card">
-            <h2>مزود الذكاء الاصطناعي</h2>
-            <p class="hint">لا تُخزَّن مفاتيح API داخل الإضافة. يقرأ خادم Python المفتاح من متغير البيئة المحدد.</p>
-            <div class="toggle-row">
-                <div class="toggle-copy"><strong>توليد المحتوى تلقائياً</strong><small>ينشئ الاسم والوصف عند فتح نافذة المنتج.</small></div>
-                <label class="switch"><input id="AIAutoGenerate" type="checkbox"><span class="slider"></span></label>
-            </div>
-            <div class="toggle-row">
-                <div class="toggle-copy"><strong>إصلاح JSON تلقائياً</strong><small>يعيد تنسيق الرد مرة واحدة إذا أعاد المزود نصاً غير منظم.</small></div>
-                <label class="switch"><input id="AIJsonRepairEnabled" type="checkbox"><span class="slider"></span></label>
-            </div>
-            <div class="toggle-row">
-                <div class="toggle-copy"><strong>بحث رسمي عند إعادة الإنشاء</strong><small>الضغطة الثانية تبحث عن المنتج الحالي فقط في الموقع الرسمي.</small></div>
-                <label class="switch"><input id="OfficialResearchOnRegenerate" type="checkbox"><span class="slider"></span></label>
-            </div>
-            <div class="field"><label for="AIProvider">المزود</label><select id="AIProvider"><option value="groq">Groq</option><option value="openai">OpenAI API</option><option value="custom">OpenAI-compatible / Custom</option></select></div>
-            <div class="field"><label for="AIModel">اسم النموذج</label><input id="AIModel" type="text" placeholder="openai/gpt-oss-120b"></div>
-            <div class="field"><label for="AIBaseUrl">Base URL للمزود المخصص</label><input id="AIBaseUrl" dir="ltr" type="url" placeholder="https://provider.example/v1/chat/completions"></div>
-            <div class="field"><label for="AIKeyEnv">اسم متغير البيئة للمفتاح</label><input id="AIKeyEnv" dir="ltr" type="text" placeholder="GROQ_API_KEY"></div>
-            <div class="field"><label for="ArabicCopyStyle">أسلوب الصياغة العربية</label><select id="ArabicCopyStyle"><option value="sales-natural">تجاري طبيعي وجذاب</option><option value="premium">فاخر وهادئ</option><option value="concise">مختصر ومباشر</option><option value="seo">متوازن لمحركات البحث</option></select></div>
-        </article>
-    </section>
-
     <section class="tab-panel" id="tab-stores">
         <article class="card">
             <h2>المتاجر والمسار</h2>
@@ -394,7 +368,6 @@
         <article class="card">
             <h2>مسح جميع البيانات</h2>
             <div class="toggle-row"><div class="toggle-copy"><strong>حذف كل مجلدات الصور</strong></div><label class="switch"><input id="ClearDeleteImages" type="checkbox"><span class="slider"></span></label></div>
-            <div class="toggle-row"><div class="toggle-copy"><strong>مسح Cache الذكاء الاصطناعي القديم</strong></div><label class="switch"><input id="ClearAiCache" type="checkbox"><span class="slider"></span></label></div>
             <button class="btn btn-danger btn-block" id="clearAllBtn" type="button">مسح جميع السجلات</button>
             <div class="result-box" id="clearResult"></div>
         </article>

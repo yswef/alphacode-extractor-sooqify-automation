@@ -1,7 +1,7 @@
 // =========================================================
 // AlphaCode Extractor v5.7.1 - Shared Default Configuration
-// Arabic: مصدر موحد للإعدادات مع دعم المورد والصور ومزودي الذكاء الاصطناعي.
-// English: Central defaults for supplier navigation, images, and AI providers.
+// Arabic: الإعدادات الافتراضية للتنقل بموقع المورد والصور.
+// English: Central defaults for supplier navigation and images.
 // =========================================================
 
 (() => {
@@ -88,25 +88,14 @@
         // English: v5.0.0 change defaults this behavior on so all local images are kept locally and only the selected main image is sent to the store.
         UploadMainImageOnly: true,
 
-        // Arabic: إعدادات الذكاء الاصطناعي القابلة للتبديل.
-        // English: Switchable AI-provider settings.
-        AIAutoGenerate: true,
-        AIProvider: 'groq',
-        AIModel: 'openai/gpt-oss-120b',
-        AIBaseUrl: '',
-        AIKeyEnv: 'GROQ_API_KEY',
-        AIJsonRepairEnabled: true,
-        ArabicCopyStyle: 'sales-natural',
-        OfficialResearchOnRegenerate: true,
-
         // Arabic: التشغيل الآلي للمتجر.
         // English: Store automation.
         AutoAddProduct: false,
         AutoSubmitDelaySeconds: 0,
         FastAutofillMode: true,
 
-        // Arabic: طابور الدفعات يجهز منتجاً واحداً في كل مرة افتراضياً لتفادي حدود Groq، ويرسل منتجاً واحداً فقط إلى المتجر.
-        // English: Batch preparation defaults to one AI task to avoid Groq limits, while store submission remains strictly sequential.
+        // Arabic: طابور الدفعات يجهز منتجاً واحداً في كل مرة، ويرسل منتجاً واحداً فقط إلى المتجر.
+        // English: Batch preparation handles one product at a time, and store submission stays strictly sequential.
         BatchModeEnabled: true,
         BatchPreparationConcurrency: 1,
         BatchMaximumProducts: 25,

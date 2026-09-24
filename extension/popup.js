@@ -40,12 +40,9 @@ const NUMBER_FIELDS = new Set([
 const BOOLEAN_FIELDS = new Set([
     'OptimizeImageAtSource',
     'RequireAllImages',
-    'AIAutoGenerate',
     'AutoAddProduct',
     'DownloadSelectedImagesOnly',
     'UploadMainImageOnly',
-    'AIJsonRepairEnabled',
-    'OfficialResearchOnRegenerate',
     'OpenSupplierAtLastProduct',
     'FastAutofillMode',
     'BatchModeEnabled',
@@ -235,16 +232,6 @@ async function loadSavedConfig() {
     });
 }
 
-// Arabic: تحديد مزود الذكاء الاصطناعي الظاهر في شريط الحالة.
-// English: Render the configured AI provider in the status bar.
-function formatAiProvider(data) {
-    const provider = String(data.ai_provider || currentConfig.AIProvider || 'groq').toUpperCase();
-    const model = data.default_ai_model || currentConfig.AIModel || '';
-    return data.ai_configured
-        ? `${provider} جاهز — ${model}`
-        : `${provider} يحتاج مفتاح API`;
-}
-
 // Arabic: إظهار/إخفاء بانر إعداد المجلد أعلى اللوحة.
 // English: Show/hide the folder-setup banner at the top of the popup.
 function setFolderBannerVisible(visible) {
@@ -252,12 +239,11 @@ function setFolderBannerVisible(visible) {
     if (banner) banner.style.display = visible ? 'block' : 'none';
 }
 
-// Arabic: فحص Flask ومزود الذكاء الاصطناعي.
-// English: Check Flask and AI-provider readiness.
+// Arabic: فحص جاهزية خادم Flask.
+// English: Check Flask backend readiness.
 async function checkServer() {
     const dot = byId('serverDot');
     const serverText = byId('serverText');
-    const aiText = byId('aiText');
 
     try {
         const response = await fetch(`${API_BASE}/api/health`, {
@@ -271,12 +257,10 @@ async function checkServer() {
 
         if (dot) dot.className = 'status-dot ok';
         if (serverText) serverText.textContent = `Python ${data.version || ''} متصل`;
-        if (aiText) aiText.textContent = formatAiProvider(data);
         setFolderBannerVisible(Boolean(data.needs_folder_setup));
     } catch (_) {
         if (dot) dot.className = 'status-dot bad';
         if (serverText) serverText.textContent = 'خادم Python غير متصل';
-        if (aiText) aiText.textContent = 'مزود الذكاء الاصطناعي غير متاح';
         setFolderBannerVisible(false);
     }
 }
@@ -677,7 +661,6 @@ async function deleteProductData() {
 // English: Clear all products and optional local files.
 async function clearAllData() {
     const deleteImages = Boolean(byId('ClearDeleteImages')?.checked);
-    const clearAiCache = Boolean(byId('ClearAiCache')?.checked);
     const resultBox = byId('clearResult');
     const confirmation = prompt('اكتب DELETE لتأكيد مسح جميع سجلات JSON وExcel:');
 
@@ -697,7 +680,6 @@ async function clearAllData() {
             },
             body: JSON.stringify({
                 delete_images: deleteImages,
-                clear_ai_cache: clearAiCache,
             }),
         });
         const data = await response.json();
@@ -1520,38 +1502,6 @@ async function copyAdminBatchNames() {
     }
 }
 
-// Arabic: تحديث القيم المقترحة عند تبديل مزود الذكاء الاصطناعي دون حفظ المفتاح داخل Chrome.
-// English: Suggest provider-specific model and key environment values without storing secrets in Chrome.
-function handleAiProviderChange() {
-    const provider = String(byId('AIProvider')?.value || 'groq').toLowerCase();
-    const model = byId('AIModel');
-    const baseUrl = byId('AIBaseUrl');
-    const keyEnv = byId('AIKeyEnv');
-
-    if (provider === 'openai') {
-        if (!model?.value || /gpt-oss/i.test(model.value)) model.value = 'gpt-5.2';
-        if (baseUrl) baseUrl.value = '';
-        if (keyEnv && (!keyEnv.value || keyEnv.value === 'GROQ_API_KEY')) {
-            keyEnv.value = 'OPENAI_API_KEY';
-        }
-        showStatus('مزود OpenAI يستخدم OPENAI_API_KEY عبر خادم Python، وليس جلسة ChatGPT في المتصفح.', 'success', 5500);
-        return;
-    }
-
-    if (provider === 'groq') {
-        if (!model?.value || !/gpt-oss/i.test(model.value)) model.value = 'openai/gpt-oss-120b';
-        if (baseUrl) baseUrl.value = '';
-        if (keyEnv && (!keyEnv.value || keyEnv.value === 'OPENAI_API_KEY')) {
-            keyEnv.value = 'GROQ_API_KEY';
-        }
-        return;
-    }
-
-    if (provider === 'custom') {
-        showStatus('أدخل رابط OpenAI-compatible واسم النموذج ومتغير البيئة الذي يحمل المفتاح.', 'warning', 5500);
-    }
-}
-
 // Arabic: تهيئة جميع أحداث لوحة v4.
 // English: Initialize all v4 popup events.
 async function initializePopup() {
@@ -1717,8 +1667,6 @@ async function addBrandToServer() {
     bindClick('dataRepairApplyBtn', applyDataRepairFix);
     bindClick('dataRepairReportBtn', downloadDataRepairReports);
     bindClick('addBrandBtn', addBrandToServer);
-
-    byId('AIProvider')?.addEventListener('change', handleAiProviderChange);
 
     try {
         // Arabic: لازم ننتظر تحميل خيارات البراند أول - لو استدعيناها بدون await، ممكن

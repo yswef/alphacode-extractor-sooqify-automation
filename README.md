@@ -1,14 +1,10 @@
 # AlphaCode Extractor v5.8 — Sooqify Batch Automation
 
-> Private Chrome Extension and Flask backend for extracting supplier products, preparing bilingual catalog copy, optimizing images, and submitting products to Sooqify/6amMart individually or as a controlled batch — with optional two-user sync for teams sharing one store.
+> Private Chrome Extension and Flask backend for extracting supplier products, optimizing images, and submitting products to Sooqify/6amMart individually or as a controlled batch — with optional two-user sync for teams sharing one store. Product copy is written by the operator; there is no AI generation.
 
 ## Main capabilities
 
 - Extract product name, Style Code, Search Code, sizes, price, and full image gallery from SZWEGO.
-- Generate polished English and Arabic footwear copy.
-- Restrict generated brands to the brands configured in `BrandMapJson`.
-- Prevent duplicated `Air Jordan` and `إير جوردن` text in product titles.
-- Run official-site-only research when the operator explicitly requests regeneration.
 - Download, resize, compress, and archive product images locally.
 - Submit only the selected main image to Sooqify by default while keeping the full gallery saved locally at full, untouched quality.
 - Organize saved images per brand and per day (`<images root>/<Brand>/<YYYY-MM-DD>/<product>`), each with a `product_info.txt` reference file.
@@ -19,6 +15,10 @@
 - Optionally sync two machines working on the same store, preventing duplicate product IDs and duplicate product additions.
 - Detect and repair older products missing newer fields via the **إصلاح البيانات** (Data Repair) tab, with operator-approved defaults, an automatic backup before any write, and downloadable error/extra-field reports.
 - Automatically back off for a cooldown period when the sync host returns HTTP 403 (rate-limit/anti-flood block), instead of hammering it with more requests.
+- Enter product names and descriptions by hand, or paste a JSON template - the AI feature was removed entirely, and the fields start empty rather than pre-filled with generated text.
+- Pick the product type automatically from the configured default brand (choosing Rolex selects watches).
+- Find the backend port automatically, so a fallback to 5001 when 5000 is busy no longer breaks sync.
+- Exclude individual images from download to cut bandwidth, and download only the selected images by default.
 - Recover the **true CNY price** when the supplier displays a foreign currency: szwego picks the currency from the request IP, so a VPN can render a 300 CNY watch as "Ұ7077.3" (JPY). The extension reads the exchange rate the site itself publishes and converts back exactly, refusing to continue on an unconfirmed conversion.
 - Throttle supplier requests adaptively, detecting the site's *silent* rate-limiting (HTTP 200 with an empty product list) and backing off instead of hammering a wall.
 - Verify the Sooqify admin session **before** extraction starts, rather than failing late after all the work is done.
@@ -43,10 +43,12 @@ The queue is saved in `chrome.storage.local`, so it can recover after a Chrome r
 
 ```text
 backend/
-  app.py                 Flask API, AI, images, archive, Excel, logs, sync client, folder setup
+  app.py                 Flask API, images, archive, Excel, logs, sync client, folder setup
   requirements.txt
 extension/
   config.js              Shared defaults
+  popup.css              Popup design system (linked stylesheet, dark mode aware)
+  backend_discovery.js   Finds the live backend port instead of assuming 5000
   product_types.js       Single source of truth for every shoes/watches difference
   supplier_currency.js   Recovers the true CNY price from the supplier's IP-derived currency
   supplier_throttle.js   Adaptive back-off for supplier requests (detects silent rate-limiting)
@@ -85,7 +87,6 @@ The backend also creates a few small runtime files next to `app.py` on first run
 - Python 3.10 or newer, with the standard `tkinter` component available (needed for the save-folder picker dialog).
 - Chrome or Brave with Developer Mode enabled.
 - An active Sooqify admin login in the same browser profile.
-- A Groq API key when AI generation is enabled.
 - A PHP-capable web host only if two-user sync is enabled (optional).
 
 Install requirements:
@@ -94,13 +95,7 @@ Install requirements:
 INSTALL_REQUIREMENTS.bat
 ```
 
-Set the Groq key once:
-
-```bat
-setx GROQ_API_KEY "your_groq_api_key_here"
-```
-
-Open a new terminal after `setx`, then start the backend:
+Start the backend:
 
 ```bat
 START_ALPHACODE.bat
@@ -170,7 +165,7 @@ The main settings are in `extension/config.js` and are editable in the popup.
 | `BatchMaxRetries` | `1` | One transient retry |
 | `BatchDownloadSelectedImagesOnly` | `true` | Download only the six batch images |
 
-For a free Groq account, keep `BatchPreparationConcurrency` at `1` to reduce token-per-minute errors.
+Keep `BatchPreparationConcurrency` at `1` unless the supplier site tolerates more - the extension throttles itself when it detects rate limiting, but fewer parallel requests is gentler on it.
 
 ## AI behavior
 
@@ -302,6 +297,7 @@ of every behavioural change; the most recent are:
 | [Supplier currency recovery](docs/changes/2026-09-22_supplier_currency_cny_recovery.md) | Recovers the true CNY price from the site's own published exchange rate |
 | [Reports, login sync, session gate, throttle](docs/changes/2026-09-22_reports_login_session_throttle.md) | Flexible report dates, sync on the login screen, store-session check, adaptive back-off |
 | [Reversed names and the sync data gap](docs/changes/2026-09-22_report_names_and_sync_data_gap.md) | Fixes reversed Arabic names in PDFs and the silently lossy incremental sync |
+| [AI removal, UI redesign, field fixes](docs/changes/2026-09-25_remove_ai_redesign_ui_and_field_fixes.md) | Removes AI entirely, redesigns the popup, fixes the brand field, backend port discovery and image bandwidth |
 
 ## License
 

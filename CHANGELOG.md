@@ -1,5 +1,39 @@
 # Changelog — AlphaCode Extractor
 
+## v5.8.1 — 2026-09-25
+
+### Removed
+- **The AI feature, entirely.** Both `/api/ai/*` routes, every AI function in `ai_helpers.py`
+  (renamed to `product_helpers.py` since nothing AI remained in it), `variant_extractor_service.py`,
+  the AI settings tab, the AI health pill and all Groq configuration. −1,502 lines.
+- **Generated fallback copy.** Name and description fields now start empty for manual entry.
+
+### Fixed
+- **The default brand field never reached the store.** `BrandName` is a hidden input updated
+  only on a `change` event, but `populateForm()` sets `BrandId` programmatically, which fires
+  none - so the dropdown showed the right brand while `BrandName` stayed empty. `BrandId` is
+  now the single source of truth.
+- **Sync broke whenever the backend fell back to another port.** The backend moves to 5001+
+  when 5000 is busy while the extension hardcoded 5000, so every call failed silently. The
+  extension now discovers the live port and verifies the service name before trusting it.
+- **Every image of every product was always downloaded.** `download_selected_only` was ANDed
+  with `not UploadMainImageOnly`, which has defaulted to on since v5.0.0 - so the
+  "download selected only" option was dead code that could not be switched on from anywhere.
+- **`popup.css` was never linked from `popup.html`**, so anything written in it never applied.
+
+### Added
+- **Product type follows the configured brand** - picking Rolex selects watches automatically,
+  matching on whole words so "Rolexy" does not match "rolex".
+- **Per-image exclude control** - excluded images are never fetched, with a counter showing how
+  many will actually be downloaded.
+- **The CNY price is taken straight from the product title** when it states one ("P300", "¥450"),
+  removing the manual entry step in the case that most often demanded it.
+- **A full popup redesign** keeping the same palette: segmented tabs, layered shadows, real
+  focus states, automatic dark mode, and RTL-correct toggles.
+- **Style code is presented as optional for watches**, which often arrive without one.
+
+---
+
 ## v5.8.0 — 2026-09-22
 
 ### Fixed

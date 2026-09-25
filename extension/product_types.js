@@ -61,6 +61,12 @@
             // Arabic: هل يُرسَل المنتج للمتجر بخاصية خيارات (مقاس/لون) أصلاً.
             // English: Whether the product is pushed to the store with a variant attribute at all.
             usesVariantAttribute: true,
+            // Arabic: هل يُتوقَّع كود ستايل لهذا النوع؟ الأحذية نعم، الساعات لا - كثير من
+            //         الساعات تصل بلا كود ستايل أصلاً، فلا يصح أن تُعرض الخانة كأنها مطلوبة.
+            // English: Is a style code expected for this type? Yes for shoes, no for watches -
+            //          many watches simply arrive without one, so the field must not be
+            //          presented as if it were required.
+            expectsStyleCode: true,
             // Arabic: هل يعرض حقل الألوان/الأسعار بشاشة مراجعة الدفعة.
             // English: Whether the colour/price editor is shown in the batch review slide.
             hasColorVariantEditor: false,
@@ -92,6 +98,7 @@
             //          found". To re-enable later, once that attribute exists in the store:
             //          flip this single value back to true.
             usesVariantAttribute: false,
+            expectsStyleCode: false,
             hasColorVariantEditor: true,
         },
     };
@@ -191,7 +198,65 @@
         return Object.keys(PROFILES);
     }
 
+    // =====================================================================
+    // Arabic: ربط البراند بنوع المنتج.
+    //   قائمة البراندات القادمة من الخادم تحمل {id, name} فقط بلا نوع، فنستنتج النوع من
+    //   اسم البراند. الفائدة العملية: لو اختار المستخدم "Rolex" كبراند افتراضي، يصير نوع
+    //   المنتج "ساعات" تلقائياً بلا اختيار يدوي كل مرة.
+    //
+    //   لإضافة براند ساعات جديد لاحقاً: أضف اسمه بحروف صغيرة إلى WATCH_BRAND_KEYWORDS
+    //   بسطر واحد. المطابقة تتم على الاسم كاملاً أو كلمة كاملة داخله، لا كجزء من كلمة،
+    //   حتى لا يطابق براند اسمه يحتوي الكلمة صدفةً.
+    // English: Brand-to-product-type mapping.
+    //   The server's brand list carries only {id, name} with no type, so the type is inferred
+    //   from the brand name. The practical benefit: picking "Rolex" as the default brand makes
+    //   the product type "watches" automatically, instead of selecting it by hand every time.
+    //
+    //   To add a new watch brand later: append its lowercase name to WATCH_BRAND_KEYWORDS as a
+    //   single line. Matching is on the whole name or a whole word inside it, never a substring,
+    //   so a brand that merely contains the word by coincidence will not match.
+    // =====================================================================
+    const WATCH_BRAND_KEYWORDS = [
+        'rolex', 'omega', 'cartier', 'patek philippe', 'audemars piguet', 'hublot',
+        'tag heuer', 'breitling', 'tissot', 'longines', 'seiko', 'citizen', 'casio',
+        'g-shock', 'fossil', 'daniel wellington', 'michael kors', 'richard mille',
+        'vacheron constantin', 'jaeger-lecoultre', 'iwc', 'panerai', 'tudor', 'zenith',
+        'chopard', 'bvlgari', 'montblanc', 'rado', 'oris', 'frederique constant',
+    ];
+
+    // Arabic: هل اسم البراند هذا براند ساعات؟ المطابقة على الاسم كاملاً أو كلمة كاملة.
+    // English: Is this brand name a watch brand? Matches the whole name or a whole word.
+    function isWatchBrand(brandName) {
+        const name = String(brandName || '').trim().toLowerCase();
+        if (!name) return false;
+        // Arabic: نقارن على "كلمات" الاسم بدل regex - أبسط وأأمن ولا يحتاج هروب رموز.
+        //         نُطبّع كل ما ليس حرفاً أو رقماً إلى مسافة، ثم نبحث عن الكلمة كاملة.
+        // English: Compare on the name's "words" instead of a regex - simpler, safer and needs
+        //          no escaping. Normalise every non-alphanumeric to a space, then look for the
+        //          whole keyword as a standalone run of words.
+        const normalised = ` ${name.replace(/[^a-z0-9]+/g, ' ').trim()} `;
+        return WATCH_BRAND_KEYWORDS.some(keyword => {
+            const key = ` ${keyword.replace(/[^a-z0-9]+/g, ' ').trim()} `;
+            return normalised.includes(key);
+        });
+    }
+
+    // Arabic: نوع المنتج المستنتج من البراند، أو '' لو البراند غير معروف/فاضٍ.
+    //         يُرجع '' لا 'shoes' عمداً، حتى يفرّق المستدعي بين "براند أحذية مؤكَّد"
+    //         و"لا نعرف" فيكمل بكشف النص.
+    // English: The product type inferred from the brand, or '' when the brand is unknown/empty.
+    //          Returns '' rather than 'shoes' deliberately, so the caller can tell "confirmed a
+    //          shoe brand" apart from "no idea" and fall through to text detection.
+    function productTypeForBrand(brandName) {
+        const name = String(brandName || '').trim();
+        if (!name) return '';
+        return isWatchBrand(name) ? 'watches' : '';
+    }
+
     globalThis.ALPHACODE_PRODUCT_TYPES = Object.freeze({
+        WATCH_BRAND_KEYWORDS,
+        isWatchBrand,
+        productTypeForBrand,
         PROFILES: Object.freeze(PROFILES),
         DEFAULT_PRODUCT_TYPE,
         resolveProductType,

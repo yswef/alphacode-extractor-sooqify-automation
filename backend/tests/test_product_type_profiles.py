@@ -66,6 +66,7 @@ KEY_MAP = {
     "variantTitleKey": "variant_title_key",
     "variantTitleFallback": "variant_title_fallback",
     "usesVariantAttribute": "uses_variant_attribute",
+    "expectsStyleCode": "expects_style_code",
     "hasColorVariantEditor": "has_color_variant_editor",
 }
 

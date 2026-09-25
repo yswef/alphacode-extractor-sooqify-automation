@@ -36,21 +36,12 @@ from app.services.upload_service import (
     resolve_store_images_for_upload,
     strip_existing_image_transform,
 )
-from app.services.variant_extractor_service import (
-    WATCH_VARIANT_SCHEMA,
-    WATCH_VARIANT_SCHEMA_NAME,
-    build_watch_variant_messages,
-    validate_watch_variants,
-)
 
-# AI Helpers (Moved from app.py)
-from app.services.ai_helpers import (
-    AIProviderRequestError,
-    GROQ_OFFICIAL_SEARCH_MODEL,
+# Arabic: مساعدات المنتجات (الأرشيف، المجلدات، Excel، البراندات).
+# English: Product helpers (archive, folders, Excel, brands).
+from app.services.product_helpers import (
     HEADERS,
     MIN_REQUIRED_PRODUCT_IMAGES,
-    build_normal_ai_messages,
-    build_official_rewrite_messages,
     build_pending_product,
     canonicalize_brand_name,
     commit_archive_excel,
@@ -62,27 +53,17 @@ from app.services.ai_helpers import (
     delete_product_folder,
     enforce_arabic_product_name,
     enforce_product_name_rules,
-    extract_ai_output_text,
-    extract_first_json_object,
     find_archive_key_by_id,
     find_existing_product,
     find_product_by_id,
-    generate_official_research,
     get_brand_folder_name,
     get_next_id,
     get_product_image_dir,
-    make_provider_payload,
     normalize_allowed_brands,
     parse_brand_map_json,
     rebuild_archive_metadata,
-    repair_json_once,
-    resolve_ai_runtime,
     resolve_allowed_brand,
-    resolve_official_store_domains,
-    send_ai_request,
-    send_copy_generation,
     update_product_workflow_status,
-    validate_generated_copy,
 )
 
 # Arabic: مصدر الحقيقة الوحيد لفروقات الأحذية/الساعات (نظير extension/product_types.js).
@@ -107,206 +88,6 @@ def _archive_entries(archive):
         key: value for key, value in archive.items()
         if not str(key).startswith("_") and isinstance(value, dict)
     }
-
-# ---------------------------------------------------------------------------
-# Routes — AI Generation
-# ---------------------------------------------------------------------------
-
-@upload_bp.route("/api/ai/generate", methods=["POST"])
-def generate_ai_copy():
-    """Arabic: توليد عادي أولاً، وبحث رسمي للمنتج الحالي فقط عند الطلب الثاني. English: Generate normally first and research only the current product on explicit regeneration."""
-    data = request.get_json(silent=True) or {}
-    source_text = compact_prompt_text(data.get("SourceText"), 4000)
-    original_product_name = compact_prompt_text(data.get("OriginalProductName"), 400)
-    style_code = compact_prompt_text(data.get("StyleCode"), 80)
-    search_code = compact_prompt_text(data.get("SearchCode"), 80)
-    sizes = unique_text_values(data.get("Sizes") if isinstance(data.get("Sizes"), list) else [])[:40]
-    configured_brand = canonicalize_brand_name(compact_prompt_text(data.get("BrandName"), 100))
-    allowed_brands = normalize_allowed_brands(
-        data.get("AllowedBrands") if isinstance(data.get("AllowedBrands"), list) else [],
-        configured_brand,
-    )
-    configured_brand = resolve_allowed_brand(
-        configured_brand,
-        configured_brand,
-        allowed_brands,
-        f"{original_product_name} {source_text}",
-    )
-    research_official = safe_bool(data.get("ResearchOfficial"), False)
-    product_type = resolve_product_type(compact_prompt_text(data.get("ProductType"), 20))
-    arabic_style = compact_prompt_text(data.get("ArabicCopyStyle"), 80) or "sales-natural"
-    json_repair_enabled = safe_bool(data.get("AIJsonRepairEnabled"), True)
-
-    if not source_text and not original_product_name:
-        return jsonify({"success": False, "error": "SourceText or OriginalProductName is required."}), 400
-
-    try:
-        runtime = resolve_ai_runtime(data)
-        official_domain = ""
-        official_research = ""
-
-        if research_official:
-            official_domains = resolve_official_store_domains(
-                configured_brand,
-                f"{original_product_name} {source_text}",
-            )
-            if not official_domains:
-                return jsonify({"success": False, "error": "لا يوجد نطاق رسمي مهيأ لهذا البراند."}), 400
-            official_domain = official_domains[0]
-            official_research = generate_official_research(
-                runtime,
-                official_domain,
-                original_product_name,
-                style_code,
-                product_type,
-            )
-            messages = build_official_rewrite_messages(
-                official_research,
-                source_text,
-                original_product_name,
-                style_code,
-                search_code,
-                sizes,
-                configured_brand,
-                allowed_brands,
-                arabic_style,
-                product_type,
-            )
-            stage = "official_rewrite"
-        else:
-            messages = build_normal_ai_messages(
-                source_text,
-                original_product_name,
-                style_code,
-                search_code,
-                sizes,
-                configured_brand,
-                allowed_brands,
-                arabic_style,
-                product_type,
-            )
-            stage = "normal_generation"
-
-        response, error_response, error_status = send_copy_generation(
-            runtime,
-            messages,
-            1200,
-            stage,
-        )
-        if error_response is not None:
-            return jsonify(error_response), error_status
-
-        raw_text = extract_ai_output_text(response.json())
-        try:
-            generated = validate_generated_copy(extract_first_json_object(raw_text))
-        except (ValueError, json.JSONDecodeError) as first_error:
-            if not json_repair_enabled:
-                raise first_error
-            logger.warning("AI JSON validation failed; running one repair attempt. provider=%s error=%s", runtime["provider"], first_error)
-            repaired_text = repair_json_once(runtime, raw_text, messages)
-            generated = validate_generated_copy(extract_first_json_object(repaired_text))
-
-        brand_name = resolve_allowed_brand(
-            generated.get("brand_name"),
-            configured_brand,
-            allowed_brands,
-            f"{original_product_name} {source_text}",
-        )
-        name_en = enforce_product_name_rules(
-            generated.get("name_en"), source_text, style_code, brand_name
-        )
-        import re
-        description_en = re.sub(r"\s+", " ", normalize_text(generated.get("description_en")))[:1800]
-        name_ar = enforce_arabic_product_name(
-            generated.get("name_ar"), source_text, style_code, brand_name, product_type
-        )
-        description_ar = re.sub(r"\s+", " ", normalize_text(generated.get("description_ar")))[:2000]
-
-        if len(name_en) < 8 or len(description_en) < 20 or len(name_ar) < 8 or len(description_ar) < 15:
-            raise ValueError("The AI response did not contain complete bilingual product copy.")
-
-        return jsonify({
-            "success": True,
-            "name_en": name_en,
-            "description_en": description_en,
-            "name_ar": name_ar,
-            "description_ar": description_ar,
-            "brand_name": brand_name,
-            "provider": runtime["provider"],
-            "model": runtime["model"],
-            "research_model": GROQ_OFFICIAL_SEARCH_MODEL if research_official and runtime["provider"] != "openai" else runtime["model"] if research_official else "",
-            "style_code": style_code,
-            "generation_mode": "official_research_and_rewrite" if research_official else "normal",
-            "official_domain": official_domain,
-            "official_store_only": research_official,
-            "cached": False,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-        })
-
-    except AIProviderRequestError as exc:
-        payload = dict(exc.payload)
-        payload["retained_current_text"] = True
-        logger.warning(
-            "AI provider request stopped without retry. official=%s status=%s error=%s",
-            research_official,
-            exc.status_code,
-            exc,
-        )
-        return jsonify(payload), exc.status_code
-
-    except (requests.RequestException, RuntimeError, ValueError, KeyError, json.JSONDecodeError) as exc:
-        logger.exception("AI copy generation failed. official=%s error=%s", research_official, exc)
-        return jsonify({
-            "success": False,
-            "error": str(exc),
-            "retained_current_text": True,
-        }), 502
-
-
-@upload_bp.route("/api/ai/extract-watch-variants", methods=["POST"])
-def extract_watch_variants_endpoint():
-    """
-    Arabic: يستخرج الألوان وسعر كل لون فقط من النص الخام لمنتج ساعة.
-    English: Extracts only colors and each color's price from a watch product's raw text.
-    """
-    data = request.get_json(silent=True) or {}
-    source_text = compact_prompt_text(data.get("SourceText"), 4000)
-    original_product_name = compact_prompt_text(data.get("OriginalProductName"), 400)
-    style_code = compact_prompt_text(data.get("StyleCode"), 80)
-    search_code = compact_prompt_text(data.get("SearchCode"), 80)
-
-    if not source_text and not original_product_name:
-        return jsonify({"success": False, "found": False, "error": "SourceText or OriginalProductName is required."}), 400
-
-    try:
-        runtime = resolve_ai_runtime(data)
-        messages = build_watch_variant_messages(
-            source_text, original_product_name, style_code, search_code,
-        )
-        payload = make_provider_payload(
-            runtime, messages, 500, json_output=True,
-            schema=WATCH_VARIANT_SCHEMA,
-            schema_name=WATCH_VARIANT_SCHEMA_NAME,
-        )
-        response, error, status = send_ai_request(runtime, payload, 60, "watch_variant_extraction")
-        if error is not None:
-            return jsonify({"success": False, "found": False, "error": error.get("error") or "AI request failed."}), (status or 502)
-
-        raw_text = extract_ai_output_text(response.json())
-        generated = validate_watch_variants(extract_first_json_object(raw_text))
-
-        return jsonify({
-            "success": True,
-            "found": generated["found"],
-            "base_price": generated["base_price"],
-            "variants": generated["variants"],
-            "notes": generated["notes"],
-            "provider": runtime["provider"],
-            "model": runtime["model"],
-        })
-    except (requests.RequestException, RuntimeError, ValueError, KeyError, json.JSONDecodeError) as exc:
-        logger.warning("Watch variant extraction failed: %s", exc)
-        return jsonify({"success": False, "found": False, "error": str(exc)}), 502
 
 
 # ---------------------------------------------------------------------------
@@ -487,12 +268,35 @@ def extract_product():
     selected_indexes.insert(0, main_image_index)
     selected_indexes = selected_indexes[:store_image_limit]
 
+    # Arabic: "ماذا نرفع للمتجر" و"ماذا ننزّل محلياً" سؤالان مختلفان، وكان الكود يربطهما
+    #         بـ`and not UploadMainImageOnly`. وبما أن UploadMainImageOnly مفعّل افتراضياً
+    #         منذ v5.0.0، كان download_selected_only يساوي False دائماً - أي أن خيار
+    #         "نزّل الصور المختارة فقط" كان معطّلاً فعلياً ولا يمكن تفعيله إطلاقاً، فتُنزَّل
+    #         كل صور كل منتج دائماً. هذا سبب استهلاك النت العالي الذي أبلغ عنه المستخدم.
+    #         الآن يُحترم الخيار كما هو.
+    # English: "what to upload to the store" and "what to download locally" are two different
+    #          questions, and the code tied them together with `and not UploadMainImageOnly`.
+    #          Since UploadMainImageOnly has defaulted to on since v5.0.0, download_selected_only
+    #          was always False - the "download selected images only" option was effectively
+    #          dead and could never be switched on, so every image of every product was always
+    #          downloaded. That is the heavy bandwidth use the operator reported. The option is
+    #          now honoured on its own.
     download_selected_only = safe_bool(
         data.get("DownloadSelectedImagesOnly"),
         settings["DownloadSelectedImagesOnly"],
-    ) and not settings.get("UploadMainImageOnly")
+    )
+
+    # Arabic: صور استبعدها المستخدم صراحةً - لا تُنزَّل ولا تُرفع إطلاقاً.
+    # English: Images the operator explicitly excluded - never downloaded, never uploaded.
+    excluded_indexes = {
+        int(index)
+        for index in (data.get("ExcludedImageIndexes") or [])
+        if isinstance(index, (int, float, str)) and str(index).strip().lstrip("-").isdigit()
+    }
+
     download_indexes = selected_indexes if download_selected_only else list(range(len(images)))
-    download_plan = [(index, images[index]) for index in download_indexes]
+    download_indexes = [index for index in download_indexes if index not in excluded_indexes]
+    download_plan = [(index, images[index]) for index in download_indexes if 0 <= index < len(images)]
 
     sync_config = load_sync_config()
     added_by = sync_config["AddedByName"] or "غير محدد"
@@ -948,7 +752,6 @@ def clear_archive_data():
     """Arabic: مسح جميع المنتجات من JSON وExcel. English: Clear all product data with optional image deletion."""
     data = request.get_json(silent=True) or {}
     delete_images = safe_bool(data.get("delete_images"), False)
-    clear_ai_cache = safe_bool(data.get("clear_ai_cache"), False)
     with SAVE_LOCK:
         archive = load_archive(paths_state.ARCHIVE_PATH)
         products = list(_archive_entries(archive).values())
@@ -966,16 +769,12 @@ def clear_archive_data():
                             deleted_folders += 1
                     except Exception as exc:
                         image_errors.append(str(exc))
-            if clear_ai_cache and os.path.exists(paths_state.AI_CACHE_PATH):
-                from app.core.config import save_json_atomic
-                save_json_atomic(paths_state.AI_CACHE_PATH, {})
-            logger.info("Archive cleared. products=%s images=%s cache=%s", len(products), delete_images, clear_ai_cache)
+            logger.info("Archive cleared. products=%s images=%s", len(products), delete_images)
             return jsonify({
                 "success": True,
                 "products_deleted": len(products),
                 "folders_deleted": deleted_folders,
                 "image_errors": image_errors,
-                "ai_cache_cleared": clear_ai_cache,
             })
         except Exception as exc:
             logger.exception("Could not clear archive: %s", exc)

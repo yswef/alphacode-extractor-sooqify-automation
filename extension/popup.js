@@ -6,7 +6,9 @@
 
 'use strict';
 
-const API_BASE = `http://127.0.0.1:${(globalThis.ALPHACODE_DEFAULT_CONFIG || {}).BackendPort || 5000}`;
+// Arabic: نفس منطق content.js - يُصحَّح للمنفذ الحي بعد الاكتشاف. شوف backend_discovery.js.
+// English: Same as content.js - corrected to the live port after discovery. See backend_discovery.js.
+let API_BASE = `http://127.0.0.1:${(globalThis.ALPHACODE_DEFAULT_CONFIG || {}).BackendPort || 5000}`;
 const DEFAULTS = globalThis.ALPHACODE_DEFAULT_CONFIG || {};
 
 const NUMBER_FIELDS = new Set([
@@ -40,12 +42,9 @@ const NUMBER_FIELDS = new Set([
 const BOOLEAN_FIELDS = new Set([
     'OptimizeImageAtSource',
     'RequireAllImages',
-    'AIAutoGenerate',
     'AutoAddProduct',
     'DownloadSelectedImagesOnly',
     'UploadMainImageOnly',
-    'AIJsonRepairEnabled',
-    'OfficialResearchOnRegenerate',
     'OpenSupplierAtLastProduct',
     'FastAutofillMode',
     'BatchModeEnabled',
@@ -105,6 +104,28 @@ function byId(id) {
 
 // Arabic: تعبئة عناصر النموذج من الإعدادات.
 // English: Populate form controls from configuration.
+// Arabic: يجعل BrandId المصدر الوحيد للحقيقة ويشتق منه BrandName دائماً، ثم يعرض نوع
+//         المنتج المستنتج من البراند (ساعات/أحذية) حتى يرى المستخدم الأثر فوراً.
+// English: Makes BrandId the single source of truth, always deriving BrandName from it, then
+//          shows the product type inferred from the brand so the effect is visible at once.
+function syncBrandNameFromSelect() {
+const select = byId('BrandId');
+if (!select) return;
+const chosen = select.selectedOptions[0];
+const name = (chosen && chosen.value) ? chosen.textContent.trim() : '';
+if (byId('BrandName')) byId('BrandName').value = name;
+currentConfig.BrandName = name;
+
+const hint = byId('brandTypeHint');
+if (!hint) return;
+const types = globalThis.ALPHACODE_PRODUCT_TYPES;
+if (!name || !types) { hint.textContent = ''; return; }
+const inferred = types.productTypeForBrand(name) || 'shoes';
+const profile = types.getProfile(inferred);
+hint.textContent = `${profile.icon} نوع المنتج لهذا البراند: ${profile.labelAr} (${profile.labelEn}) — يُختار تلقائياً عند الاستخراج.`;
+hint.dataset.type = inferred;
+}
+
 function populateForm(config) {
     for (const key of CONFIG_FIELDS) {
         const element = byId(key);
@@ -128,6 +149,17 @@ function populateForm(config) {
     if (byId('supplierCardName')) {
         byId('supplierCardName').textContent = config.SupplierStoreName || 'BRANDKINGDOM';
     }
+
+    // Arabic: BrandId هو مصدر الحقيقة، وBrandName يُشتق منه دائماً بعد تعبئة الفورم.
+    //         بدون هذا السطر يبقى الباغ قائماً: populateForm تكتب BrandName المحفوظ (وقد
+    //         يكون فاضياً أو لبراند آخر) فوق ما ضبطته loadBrandsIntoSelect، وتحديدها
+    //         لـBrandId برمجياً لا يُطلق change فلا يُعاد الاشتقاق أبداً.
+    // English: BrandId is the source of truth and BrandName is always derived from it after the
+    //          form is populated. Without this line the bug stands: populateForm writes the
+    //          saved BrandName (possibly empty, or for a different brand) over whatever
+    //          loadBrandsIntoSelect set, and its programmatic BrandId assignment fires no
+    //          change event, so the value is never re-derived.
+    syncBrandNameFromSelect();
 
     updateProductTypeCardVisibility();
 }
@@ -235,16 +267,6 @@ async function loadSavedConfig() {
     });
 }
 
-// Arabic: تحديد مزود الذكاء الاصطناعي الظاهر في شريط الحالة.
-// English: Render the configured AI provider in the status bar.
-function formatAiProvider(data) {
-    const provider = String(data.ai_provider || currentConfig.AIProvider || 'groq').toUpperCase();
-    const model = data.default_ai_model || currentConfig.AIModel || '';
-    return data.ai_configured
-        ? `${provider} جاهز — ${model}`
-        : `${provider} يحتاج مفتاح API`;
-}
-
 // Arabic: إظهار/إخفاء بانر إعداد المجلد أعلى اللوحة.
 // English: Show/hide the folder-setup banner at the top of the popup.
 function setFolderBannerVisible(visible) {
@@ -252,12 +274,11 @@ function setFolderBannerVisible(visible) {
     if (banner) banner.style.display = visible ? 'block' : 'none';
 }
 
-// Arabic: فحص Flask ومزود الذكاء الاصطناعي.
-// English: Check Flask and AI-provider readiness.
+// Arabic: فحص جاهزية خادم Flask.
+// English: Check Flask backend readiness.
 async function checkServer() {
     const dot = byId('serverDot');
     const serverText = byId('serverText');
-    const aiText = byId('aiText');
 
     try {
         const response = await fetch(`${API_BASE}/api/health`, {
@@ -271,12 +292,10 @@ async function checkServer() {
 
         if (dot) dot.className = 'status-dot ok';
         if (serverText) serverText.textContent = `Python ${data.version || ''} متصل`;
-        if (aiText) aiText.textContent = formatAiProvider(data);
         setFolderBannerVisible(Boolean(data.needs_folder_setup));
     } catch (_) {
         if (dot) dot.className = 'status-dot bad';
         if (serverText) serverText.textContent = 'خادم Python غير متصل';
-        if (aiText) aiText.textContent = 'مزود الذكاء الاصطناعي غير متاح';
         setFolderBannerVisible(false);
     }
 }
@@ -677,7 +696,6 @@ async function deleteProductData() {
 // English: Clear all products and optional local files.
 async function clearAllData() {
     const deleteImages = Boolean(byId('ClearDeleteImages')?.checked);
-    const clearAiCache = Boolean(byId('ClearAiCache')?.checked);
     const resultBox = byId('clearResult');
     const confirmation = prompt('اكتب DELETE لتأكيد مسح جميع سجلات JSON وExcel:');
 
@@ -697,7 +715,6 @@ async function clearAllData() {
             },
             body: JSON.stringify({
                 delete_images: deleteImages,
-                clear_ai_cache: clearAiCache,
             }),
         });
         const data = await response.json();
@@ -1520,38 +1537,6 @@ async function copyAdminBatchNames() {
     }
 }
 
-// Arabic: تحديث القيم المقترحة عند تبديل مزود الذكاء الاصطناعي دون حفظ المفتاح داخل Chrome.
-// English: Suggest provider-specific model and key environment values without storing secrets in Chrome.
-function handleAiProviderChange() {
-    const provider = String(byId('AIProvider')?.value || 'groq').toLowerCase();
-    const model = byId('AIModel');
-    const baseUrl = byId('AIBaseUrl');
-    const keyEnv = byId('AIKeyEnv');
-
-    if (provider === 'openai') {
-        if (!model?.value || /gpt-oss/i.test(model.value)) model.value = 'gpt-5.2';
-        if (baseUrl) baseUrl.value = '';
-        if (keyEnv && (!keyEnv.value || keyEnv.value === 'GROQ_API_KEY')) {
-            keyEnv.value = 'OPENAI_API_KEY';
-        }
-        showStatus('مزود OpenAI يستخدم OPENAI_API_KEY عبر خادم Python، وليس جلسة ChatGPT في المتصفح.', 'success', 5500);
-        return;
-    }
-
-    if (provider === 'groq') {
-        if (!model?.value || !/gpt-oss/i.test(model.value)) model.value = 'openai/gpt-oss-120b';
-        if (baseUrl) baseUrl.value = '';
-        if (keyEnv && (!keyEnv.value || keyEnv.value === 'OPENAI_API_KEY')) {
-            keyEnv.value = 'GROQ_API_KEY';
-        }
-        return;
-    }
-
-    if (provider === 'custom') {
-        showStatus('أدخل رابط OpenAI-compatible واسم النموذج ومتغير البيئة الذي يحمل المفتاح.', 'warning', 5500);
-    }
-}
-
 // Arabic: تهيئة جميع أحداث لوحة v4.
 // English: Initialize all v4 popup events.
 async function initializePopup() {
@@ -1672,7 +1657,11 @@ async function loadBrandsIntoSelect() {
         brands = await loadBrandsCacheFallback();
     }
 
-    const currentVal = select.value;
+    // Arabic: نحتفظ بالاختيار الحالي، ولو كان فاضياً نرجع لـBrandId المحفوظ بالإعدادات -
+    //         لأن loadBrandsIntoSelect قد تعمل بعد populateForm فتمسح اختيارها.
+    // English: Keep the current selection; if it is empty fall back to the saved BrandId,
+    //          because loadBrandsIntoSelect can run after populateForm and wipe its choice.
+    const currentVal = select.value || String(currentConfig.BrandId || '');
     select.innerHTML = '<option value="">— اختر براند —</option>';
     brands.forEach(b => {
         const opt = document.createElement('option');
@@ -1682,10 +1671,18 @@ async function loadBrandsIntoSelect() {
     });
     if (currentVal) select.value = currentVal;
 
-    select.onchange = () => {
-        const chosen = select.selectedOptions[0];
-        if (byId('BrandName')) byId('BrandName').value = (chosen && chosen.value) ? chosen.textContent : '';
-    };
+    select.onchange = syncBrandNameFromSelect;
+
+    // Arabic: مزامنة فورية بعد بناء الخيارات. كان هذا هو الباغ: BrandName حقل مخفي لا
+    //         يُحدَّث إلا بحدث change، وتحديد الاختيار برمجياً لا يُطلق change - فيبقى
+    //         BrandName فاضياً أو قديماً بينما القائمة تعرض البراند الصحيح، فيصل للمتجر
+    //         اسم براند خاطئ أو فاضٍ رغم أن المستخدم "اختاره".
+    // English: Sync immediately after the options are built. This was the bug: BrandName is a
+    //          hidden field updated only on a change event, and setting the selection
+    //          programmatically fires no change - so BrandName stayed empty or stale while the
+    //          dropdown displayed the right brand, and the store received a wrong or empty
+    //          brand name even though the operator had "picked" one.
+    syncBrandNameFromSelect();
 }
 
 async function addBrandToServer() {
@@ -1718,7 +1715,14 @@ async function addBrandToServer() {
     bindClick('dataRepairReportBtn', downloadDataRepairReports);
     bindClick('addBrandBtn', addBrandToServer);
 
-    byId('AIProvider')?.addEventListener('change', handleAiProviderChange);
+    // Arabic: اكتشاف منفذ الباك اند قبل أي نداء - لو كان 5000 مشغولاً فالباك اند على 5001
+    //         وكل ما بعده سيفشل بلا هذا السطر.
+    // English: Discover the backend port before any call - if 5000 was busy the backend is on
+    //          5001 and everything below fails without this.
+    try {
+        const base = await globalThis.ALPHACODE_BACKEND?.getBackendBase();
+        if (base) API_BASE = base;
+    } catch (_) { /* keep the configured port */ }
 
     try {
         // Arabic: لازم ننتظر تحميل خيارات البراند أول - لو استدعيناها بدون await، ممكن

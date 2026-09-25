@@ -6,7 +6,7 @@
 
 'use strict';
 
-importScripts('config.js', 'product_types.js', 'supplier_throttle.js');
+importScripts('config.js', 'product_types.js', 'supplier_throttle.js', 'backend_discovery.js');
 // Arabic: ملفات تعريف نوع المنتج - المصدر الوحيد لكل فروقات الأحذية/الساعات.
 // English: Product type profiles - the single source for every shoes/watches difference.
 const PRODUCT_TYPES = globalThis.ALPHACODE_PRODUCT_TYPES;
@@ -14,7 +14,13 @@ const PRODUCT_TYPES = globalThis.ALPHACODE_PRODUCT_TYPES;
 // English: The adaptive throttle for supplier-server requests - prevents a repeat of the
 //          incident where the album stopped responding.
 const SUPPLIER_THROTTLE = globalThis.ALPHACODE_SUPPLIER_THROTTLE;
-const LOCAL_API_BASE = `http://127.0.0.1:${(globalThis.ALPHACODE_DEFAULT_CONFIG || {}).BackendPort || 5000}`;
+// Arabic: نفس منطق content.js - يُصحَّح للمنفذ الحي. شوف backend_discovery.js.
+// English: Same as content.js - corrected to the live port. See backend_discovery.js.
+let LOCAL_API_BASE = `http://127.0.0.1:${(globalThis.ALPHACODE_DEFAULT_CONFIG || {}).BackendPort || 5000}`;
+
+globalThis.ALPHACODE_BACKEND?.getBackendBase().then(base => {
+    if (base) LOCAL_API_BASE = base;
+}).catch(() => {});
 const DEFAULT_SOOQIFY_ADD_URL = 'https://admin.sooqifyonline.com/admin/item/add-new';
 const FALLBACK_JOBS_KEY = 'alphacodeFallbackSubmissionJobs';
 const BATCH_QUEUE_KEY = 'alphacodeBatchQueueState';

@@ -40,6 +40,15 @@ from reportlab.pdfbase.ttfonts import TTFont
 # English: Type ids and labels come from the unified source instead of hand-written rows.
 from app.services.product_type_profiles import PROFILES, resolve_product_type
 
+# Arabic: الشكل الموحَّد لوحدات العمل وربط الهوية بين المصدرين.
+# English: The unified work-unit shape and cross-source identity linking.
+from app.services import work_units as wu
+from app.services.report_identity import (
+    load_identity_map,
+    resolve_identity,
+    unknown_user_label,
+)
+
 # Arabic: عدّل هذا المسار لأي خط .ttf يدعم العربية موجود على جهازك (اختياري).
 # English: Point this at any Arabic-capable .ttf on your machine (optional).
 ARABIC_FONT_PATH = r"C:\Windows\Fonts\tahoma.ttf"
@@ -140,6 +149,15 @@ def _entries_for_days(archive_entries, days, month_prefix=None):
     day_set = set(days or [])
     matched = []
     for item in archive_entries.values():
+        # Arabic: وحدات العمل الموحّدة تُستثنى صراحةً من قوائم "المنتجات". لولا هذا الشرط
+        #         لصار عمل تطبيق الصور يُحتسب منتجات جديدة بجداول الملخص وحسب المستخدم،
+        #         فتتضخم الأرقام. الاستثناء صريح لا ضمني: لا يعتمد على غياب `id`.
+        # English: Unified work units are explicitly excluded from "product" lists. Without
+        #          this guard, the image app's work would be counted as new products in the
+        #          summary and per-user tables, inflating the numbers. The exclusion is
+        #          explicit, not incidental: it does not rely on `id` being absent.
+        if wu.is_work_unit(item):
+            continue
         if item.get("id") is None:
             continue  # Arabic: تجاهل سجلات الحجز التفاؤلي بلا id. English: Skip optimistic-lock reservation stubs with no id.
         if month_prefix is not None:
@@ -189,7 +207,14 @@ def _build_per_user_table(entries):
     """Arabic: جدول تفصيلي بعدد المنتجات لكل مستخدم أضافها. English: A detailed table of how many products each user added."""
     by_user = defaultdict(lambda: Counter())
     for item in entries:
-        added_by = item.get("added_by") or ("Unknown" if not _ARABIC_SUPPORT else _rtl("غير محدد"))
+        # Arabic: التسمية تُخزَّن خاماً هنا وتمر بـ_rtl مرة واحدة عند العرض بالأسفل. كانت
+        #         تُشكَّل هنا ثم تُشكَّل مرة ثانية بالعرض، ومرورها بـget_display مرتين يعيد
+        #         عكسها - فكان "غير محدد" وحده يظهر مقلوباً بينما بقية الأسماء صحيحة.
+        # English: The label is stored raw here and passed through _rtl exactly once when
+        #          rendered below. It used to be shaped here and shaped again at render time,
+        #          and going through get_display twice re-reverses it - so "غير محدد" alone
+        #          printed backwards while every other name was correct.
+        added_by = item.get("added_by") or ("Unknown" if not _ARABIC_SUPPORT else "غير محدد")
         by_user[added_by]["total"] += 1
         by_user[added_by][resolve_product_type(item.get("product_type"))] += 1
 
@@ -220,6 +245,157 @@ def _build_per_user_table(entries):
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Arabic: التقرير الموحَّد - وحدات العمل من المصدرين معاً.
+# English: The unified report - work units from both sources together.
+# ---------------------------------------------------------------------------
+
+def _work_units_for_days(archive_entries, days, month_prefix=None):
+    """
+    Arabic: يجمع وحدات العمل المطابقة لنفس النطاق الزمني، بنفس منطق تصفية المنتجات حرفياً
+            (بادئة شهر للشهري، ومجموعة أيام لغيره) - فلا يوجد منطق تاريخ ثانٍ يتباعد عن الأول.
+    English: Collects the work units matching the same date scope, using literally the same
+             filtering logic as products (a month prefix for monthly, an explicit day set
+             otherwise) - so there is no second date logic to drift from the first.
+    """
+    day_set = set(days or [])
+    matched = []
+    for item in (archive_entries or {}).values():
+        if not wu.is_work_unit(item):
+            continue
+        if month_prefix is not None:
+            if str(item.get("date") or "").startswith(month_prefix):
+                matched.append(item)
+        elif _item_day(item) in day_set:
+            matched.append(item)
+    return matched
+
+
+def unified_units(product_entries, work_unit_entries, identity_map=None):
+    """
+    Arabic: يبني قائمة وحدات عمل موحَّدة: منتجات AlphaCode تُسقَط وقت القراءة، ووحدات
+            تطبيق الصور تُستخدم كما هي، ثم تُوحَّد هوية المستخدم على الطرفين.
+            **لا تُحتسب إلا الحالات المنجزة** (COUNTED_STATUSES) - الفاشل يُسجَّل ولا يُعدّ.
+    English: Builds one unified work-unit list: AlphaCode products are projected at read
+             time, image-app units are used as-is, then the user identity is unified across
+             both. **Only completed statuses are counted** (COUNTED_STATUSES) - failures are
+             recorded but never counted.
+    """
+    identity_map = identity_map or {}
+    units = []
+    for item in product_entries or []:
+        units.append(wu.project_product(item))
+    for unit in work_unit_entries or []:
+        if unit.get("status") not in wu.COUNTED_STATUSES:
+            continue
+        units.append(dict(unit))
+
+    for unit in units:
+        unit["user"] = resolve_identity(unit.get("user"), unit.get("source"), identity_map)
+    return units
+
+
+def _source_label(source_id):
+    """Arabic: تسمية المصدر بلغة التقرير. English: The source label in the report language."""
+    label_ar, label_en = wu.SOURCE_LABELS.get(source_id, (str(source_id or "?"), str(source_id or "?")))
+    return label_ar if _ARABIC_SUPPORT else label_en
+
+
+def _item_type_label(item_type):
+    """Arabic: تسمية نوع وحدة العمل. English: The work-unit type label."""
+    label_ar, label_en = wu.ITEM_TYPE_LABELS.get(item_type, (str(item_type or "?"), str(item_type or "?")))
+    return label_ar if _ARABIC_SUPPORT else label_en
+
+
+def _build_per_source_table(units):
+    """
+    Arabic: تفصيل حسب المصدر (إضافة / تطبيق المصممة) ونوع العمل، مع عدد المستخدمين
+            المشاركين من كل مصدر. كل خلية عربية تمر بـ_rtl بلا استثناء.
+    English: Breakdown by source (extension / designer's app) and work type, plus how many
+             users contributed from each source. Every Arabic cell goes through _rtl, with
+             no exception.
+    """
+    by_pair = Counter()
+    users_per_source = defaultdict(set)
+    for unit in units:
+        by_pair[(unit.get("source"), unit.get("item_type"))] += 1
+        if unit.get("user"):
+            users_per_source[unit.get("source")].add(unit.get("user"))
+
+    header = [
+        _rtl("المصدر") if _ARABIC_SUPPORT else "Source",
+        _rtl("نوع العمل") if _ARABIC_SUPPORT else "Work type",
+        _rtl("عدد الوحدات") if _ARABIC_SUPPORT else "Units",
+        _rtl("عدد المستخدمين") if _ARABIC_SUPPORT else "Users",
+    ]
+    rows = [header]
+    for (source_id, item_type), count in sorted(by_pair.items(), key=lambda pair: (-pair[1], str(pair[0]))):
+        rows.append([
+            _rtl(_source_label(source_id)) if _ARABIC_SUPPORT else _source_label(source_id),
+            _rtl(_item_type_label(item_type)) if _ARABIC_SUPPORT else _item_type_label(item_type),
+            str(count),
+            str(len(users_per_source.get(source_id, ()))),
+        ])
+
+    if len(rows) == 1:
+        rows.append(["-", "-", "0", "0"])
+    else:
+        rows.append([
+            _rtl("الإجمالي") if _ARABIC_SUPPORT else "Total",
+            "",
+            str(sum(by_pair.values())),
+            str(len({unit.get("user") for unit in units if unit.get("user")})),
+        ])
+
+    table = Table(rows, colWidths=[55 * mm, 40 * mm, 25 * mm, 30 * mm])
+    table.setStyle(_table_style(header_rows=1))
+    return table
+
+
+def _build_per_user_source_table(units):
+    """
+    Arabic: تفصيل حسب المستخدم × المصدر. غرضه المزدوج: يُظهر إنتاجية كل شخص بكل أداة،
+            **وأيضاً** يكشف فوراً لو انقسم شخص واحد لصفّين لأن الهوية لم تُربط بالخريطة
+            الصريحة - بدل أن يُبتلع الانقسام بصمت داخل رقم مجمَّع.
+    English: Breakdown by user x source. Its purpose is twofold: it shows each person's
+             output per tool, **and** it immediately exposes one person split across two rows
+             because their identity was not linked in the explicit map - instead of the split
+             being silently swallowed inside an aggregate number.
+    """
+    sources = sorted({unit.get("source") for unit in units if unit.get("source")})
+    by_user = defaultdict(Counter)
+    for unit in units:
+        user = unit.get("user") or unknown_user_label(_ARABIC_SUPPORT)
+        by_user[user]["total"] += 1
+        by_user[user][unit.get("source")] += 1
+
+    header = [_rtl("المستخدم") if _ARABIC_SUPPORT else "User",
+              _rtl("الإجمالي") if _ARABIC_SUPPORT else "Total"]
+    for source_id in sources:
+        label = _source_label(source_id)
+        header.append(_rtl(label) if _ARABIC_SUPPORT else label)
+
+    rows = [header]
+    for user, counts in sorted(by_user.items(), key=lambda pair: (-pair[1]["total"], str(pair[0]))):
+        # Arabic: اسم المستخدم عربي غالباً - يمر بـ_rtl مثل كل نص عربي آخر (نفس العيب الذي
+        #         طبع "يوسف" كـ"فسوي" سابقاً بجدول "حسب المستخدم").
+        # English: The user name is usually Arabic - it goes through _rtl like every other
+        #          Arabic string (the same defect that printed "يوسف" as "فسوي" in the
+        #          per-user table before).
+        row = [_rtl(user) if _ARABIC_SUPPORT else user, str(counts["total"])]
+        row.extend(str(counts.get(source_id, 0)) for source_id in sources)
+        rows.append(row)
+
+    if len(rows) == 1:
+        rows.append(["-", "0", *["0"] * len(sources)])
+
+    first_col = 55 * mm
+    remaining = 2 + len(sources) - 1
+    table = Table(rows, colWidths=[first_col, *[25 * mm] * remaining])
+    table.setStyle(_table_style(header_rows=1))
+    return table
 
 
 def _table_style(header_rows=1, small=False):
@@ -266,6 +442,7 @@ def generate_report(
     days=None,
     date_from=None,
     date_to=None,
+    identity_dir=None,
 ):
     """
     Arabic: يبني تقرير PDF احترافي (يومي أو شهري) من عناصر الأرشيف ويحفظه في output_path.
@@ -275,6 +452,7 @@ def generate_report(
     scope: "daily" or "monthly".
     output_path: full .pdf file path to write.
     target_date: a datetime; defaults to now.
+    identity_dir: optional folder holding report_identities.json (cross-source user map).
     """
     target_date = target_date or datetime.now()
     # Arabic: أي نطاق (قديم أو جديد) يُحوَّل لمجموعة أيام صريحة، ثم يُبنى التقرير عليها.
@@ -285,6 +463,17 @@ def generate_report(
         days = resolve_report_days(scope, target_date)
     month_prefix = target_date.strftime("%Y-%m") if scope == "monthly" else None
     entries = _entries_for_days(archive_entries, days, month_prefix=month_prefix)
+
+    # Arabic: القسم الموحَّد يُبنى من نفس النطاق: منتجات الإضافة (المُصفّاة أعلاه) مُسقَطة،
+    #         مضافاً إليها وحدات عمل تطبيق المصممة. الأقسام القديمة تبقى على `entries` وحدها
+    #         بلا أي تغيير - هذا هو ما يضمن أن النطاقات الأربعة تحتفظ بسلوكها الحرفي.
+    # English: The unified section is built from the same scope: the extension's products
+    #          (filtered above) projected, plus the designer app's work units. The old
+    #          sections still run on `entries` alone, unchanged - that is what guarantees the
+    #          four date scopes keep their literal behaviour.
+    unit_entries = _work_units_for_days(archive_entries, days, month_prefix=month_prefix)
+    identity_map = load_identity_map(identity_dir)
+    all_units = unified_units(entries, unit_entries, identity_map)
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     doc = SimpleDocTemplate(
@@ -335,6 +524,13 @@ def generate_report(
         _build_summary_table(entries),
         Paragraph(_rtl("حسب المستخدم") if _ARABIC_SUPPORT else "By User", section_style),
         _build_per_user_table(entries),
+        Paragraph(_rtl("حسب المصدر") if _ARABIC_SUPPORT else "By Source", section_style),
+        _build_per_source_table(all_units),
+        Paragraph(
+            _rtl("حسب المستخدم والمصدر") if _ARABIC_SUPPORT else "By User and Source",
+            section_style,
+        ),
+        _build_per_user_source_table(all_units),
     ]
 
     doc.build(story)

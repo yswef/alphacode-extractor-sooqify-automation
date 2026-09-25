@@ -14,7 +14,7 @@ from app.api.routes.core_routes import core_bp
 from app.api.routes.sync_routes import sync_bp
 from app.api.routes.reports_routes import reports_bp
 from app.api.routes.upload_routes import upload_bp
-from app.services.ai_helpers import configure_application_logging, load_archive, save_archive, SAVE_LOCK
+from app.services.product_helpers import configure_application_logging, load_archive, save_archive, SAVE_LOCK
 from app.services.sync_service import bind_archive_runtime
 
 
@@ -101,12 +101,12 @@ def find_available_port(start_port=5000, max_attempts=5):
 if __name__ == "__main__":
     # Arabic: تُستدعى هنا فقط (لا داخل create_app) عشان ما تلوّث سجلات pytest عند
     #         استيراد create_app() للاختبارات - هذا نظام اللوق الحقيقي الوحيد بالمشروع
-    #         (ملف + طرفية ملوّنة)؛ كان معرَّفاً بالكامل بـai_helpers.py لكن غير مستدعى
+    #         (ملف + طرفية ملوّنة)؛ كان معرَّفاً بالكامل بـproduct_helpers.py لكن غير مستدعى
     #         من أي مكان إطلاقاً بنقطة التشغيل الحالية (تحقق فعلي: alphacode.log ما
     #         تغيّر بعد طلب حقيقي)، فملف السجل والطرفية الملوّنة كانا معطّلين بصمت.
     # English: Called only here (not inside create_app) so pytest imports of create_app()
     #          don't get logging side effects - this is the project's only real logging
-    #          system (file + colored console); it was fully defined in ai_helpers.py but
+    #          system (file + colored console); it was fully defined in product_helpers.py but
     #          never invoked anywhere in the current entry point (verified live: alphacode.log
     #          did not change after a real request), so both the file log and colored
     #          console were silently disabled.
@@ -114,11 +114,15 @@ if __name__ == "__main__":
     app = create_app()
     chosen_port = find_available_port(5000, 5)
     if chosen_port != 5000:
+        # Arabic: لم يعد المستخدم بحاجة لتعديل BackendPort يدوياً - الإضافة تكتشف المنفذ
+        #         بنفسها عبر extension/backend_discovery.js (تمسح المدى وتتحقق من اسم الخدمة
+        #         في /api/health). الرسالة صارت إخبارية فقط.
+        # English: The operator no longer has to edit BackendPort by hand - the extension
+        #          discovers the port itself via extension/backend_discovery.js (it scans the
+        #          range and verifies the service name in /api/health). Informational only now.
         print(
-            f"[app.main] Port 5000 is busy - using port {chosen_port} instead.\n"
-            f"[app.main] IMPORTANT: open extension/config.js and set BackendPort: "
-            f"{chosen_port}, then reload the extension (chrome://extensions -> Reload) "
-            f"or it will keep trying to reach port 5000.",
+            f"[app.main] Port 5000 is busy - using port {chosen_port} instead." + chr(10) +
+            f"[app.main] The extension discovers this automatically; no config edit needed.",
             file=sys.stderr,
         )
     app.run(port=chosen_port, debug=False)

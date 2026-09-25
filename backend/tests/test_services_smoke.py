@@ -9,8 +9,8 @@ def setup_temp_root_dir(monkeypatch):
         monkeypatch.setenv("ALPHACODE_ROOT_DIR", temp_dir)
         yield temp_dir
 
-def test_ai_helpers_smoke():
-    from app.services.ai_helpers import normalize_text, canonicalize_brand_name
+def test_product_helpers_smoke():
+    from app.services.product_helpers import normalize_text, canonicalize_brand_name
     assert normalize_text("  hello  ") == "hello"
     assert canonicalize_brand_name("adidas") == "Adidas"
 
@@ -34,9 +34,3 @@ def test_upload_service_smoke():
     assert isinstance(settings, dict)
     assert "ExchangeRate" in settings
 
-def test_variant_extractor_service_smoke():
-    from app.services.variant_extractor_service import build_watch_variant_messages
-    msgs = build_watch_variant_messages("Some text", "ProductName", "Code", "Search")
-    assert isinstance(msgs, list)
-    assert len(msgs) == 2
-    assert msgs[0]["role"] == "system"

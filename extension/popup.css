@@ -1,18 +1,483 @@
+/* =========================================================
+   AlphaCode Extractor - Popup Design System
+   =========================================================
+   Arabic: أُعيد تصميم الواجهة بالكامل مع الحفاظ على نفس لوحة الألوان (كحلي/سماوي/نعناعي).
+           كان التنسيق سابقاً مضمَّناً داخل <style> في popup.html، وكان ملف popup.css هذا
+           موجوداً لكنه **غير مرتبط بالصفحة إطلاقاً** - أي أن أي تنسيق كُتب فيه لم يكن
+           يُطبَّق. الآن صار هو المصدر الوحيد للتنسيق ومرتبطاً فعلياً.
 
-/* Arabic: رقاقات الأيام المختارة بتقرير "أيام محددة".
-   English: Picked-day chips in the "selected days" report scope. */
+           المبادئ: مقياس مسافات ثابت، ظلال متعددة الطبقات بدل ظل مسطح واحد، زوايا أنعم،
+           حالات تركيز واضحة (إتاحة)، انتقالات قصيرة، ودعم الوضع الداكن تلقائياً.
+   English: The interface was redesigned in full while keeping the same palette (navy / cyan /
+            mint). The styling previously lived inline in a <style> block in popup.html, and
+            this popup.css file existed but was **never linked from the page** - anything
+            written in it simply never applied. It is now the single source of styling and is
+            genuinely linked.
+
+            Principles: a consistent spacing scale, layered shadows instead of one flat drop,
+            softer radii, visible focus states (accessibility), short transitions, and
+            automatic dark mode.
+   ========================================================= */
+
+:root {
+    /* Arabic: نفس ألوان الهوية السابقة بالضبط - لم تتغير.
+       English: Exactly the previous brand colours - unchanged. */
+    --navy: #0d1647;
+    --navy-2: #17115b;
+    --cyan: #48ddeb;
+    --mint: #baf8df;
+
+    --surface: #f4f7fc;
+    --surface-2: #eaf0f9;
+    --card: #ffffff;
+    --card-hover: #fbfdff;
+    --border: #dbe2ee;
+    --border-strong: #c3cede;
+
+    --text: #12172a;
+    --text-2: #3b4258;
+    --muted: #6b7280;
+
+    --success: #12864b;
+    --success-bg: #eafff4;
+    --danger: #c93649;
+    --danger-bg: #fff0f2;
+    --warning: #b46b00;
+    --warning-bg: #fff9e9;
+
+    /* Arabic: ظلال متدرجة - قريبة تُعطي حدة، وبعيدة تُعطي عمقاً.
+       English: Layered shadows - a tight one for crispness, a wide one for depth. */
+    --shadow-sm: 0 1px 2px rgba(13, 22, 71, .06), 0 1px 3px rgba(13, 22, 71, .08);
+    --shadow: 0 2px 4px rgba(13, 22, 71, .05), 0 8px 24px rgba(13, 22, 71, .09);
+    --shadow-lg: 0 4px 8px rgba(13, 22, 71, .06), 0 18px 44px rgba(13, 22, 71, .14);
+    --ring: 0 0 0 3px rgba(72, 221, 235, .38);
+
+    --r-sm: 8px;
+    --r: 12px;
+    --r-lg: 16px;
+    --r-xl: 20px;
+
+    --s-1: 4px;
+    --s-2: 8px;
+    --s-3: 12px;
+    --s-4: 16px;
+    --s-5: 20px;
+    --s-6: 28px;
+
+    --ease: cubic-bezier(.4, 0, .2, 1);
+}
+
+/* Arabic: الوضع الداكن يتبع إعداد النظام. نبدّل الأسطح والنصوص فقط - ألوان الهوية ثابتة.
+   English: Dark mode follows the system setting. Only surfaces and text swap - brand colours hold. */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --surface: #0b1020;
+        --surface-2: #111832;
+        --card: #151d36;
+        --card-hover: #1a2340;
+        --border: #263154;
+        --border-strong: #35446f;
+        --text: #eaeefb;
+        --text-2: #bcc6e3;
+        --muted: #8e9ab9;
+        --success-bg: #0d2e1f;
+        --danger-bg: #331520;
+        --warning-bg: #2e2310;
+        --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
+        --shadow: 0 2px 4px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .45);
+        --shadow-lg: 0 4px 8px rgba(0, 0, 0, .35), 0 18px 44px rgba(0, 0, 0, .55);
+    }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    width: 540px;
+    min-height: 640px;
+    background: var(--surface);
+    color: var(--text);
+    /* Arabic: خط النظام أوضح وأحدث من Tahoma، مع احتياطي عربي صريح.
+       English: The system font is crisper and more modern than Tahoma, with an explicit
+                Arabic fallback. */
+    font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Noto Sans Arabic",
+                 "Dubai", Tahoma, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+}
+
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+
+/* Arabic: حلقة تركيز موحّدة لكل عنصر تفاعلي - كانت غائبة تماماً.
+   English: One consistent focus ring on every interactive element - previously absent entirely. */
+:is(button, input, select, textarea, [tabindex]):focus-visible {
+    outline: none;
+    box-shadow: var(--ring);
+    border-color: var(--cyan);
+}
+
+/* ----------------------------------------------------------- header */
+
+.app-header {
+    padding: var(--s-5) var(--s-5) var(--s-4);
+    color: #fff;
+    background:
+        radial-gradient(120% 140% at 88% -10%, rgba(72, 221, 235, .28) 0%, transparent 55%),
+        linear-gradient(135deg, var(--navy) 0%, var(--navy-2) 100%);
+    border-bottom: 1px solid rgba(72, 221, 235, .35);
+    position: relative;
+}
+
+/* Arabic: خط سماوي رفيع متدرج بدل الحد السميك المسطح.
+   English: A thin cyan gradient hairline instead of the thick flat border. */
+.app-header::after {
+    content: "";
+    position: absolute;
+    inset-inline: 0;
+    bottom: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--cyan), var(--mint), transparent);
+}
+
+.brand-row { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
+.brand-title { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.2px; }
+.brand-subtitle { margin-top: var(--s-1); color: var(--cyan); font-size: 11px; font-weight: 600; letter-spacing: .4px; }
+
+.profile-chip {
+    border: 1px solid rgba(255, 255, 255, .22);
+    border-radius: 999px;
+    padding: 6px 13px;
+    font-size: 11px;
+    font-weight: 600;
+    background: rgba(255, 255, 255, .1);
+    backdrop-filter: blur(8px);
+    white-space: nowrap;
+}
+
+/* Arabic: كان عمودين ثابتين لمؤشرين (الخادم + الذكاء الاصطناعي). بعد حذف الذكاء صار
+           مؤشر واحد فيمتد بعرض غريب - auto-fit يجعله يتكيف مع أي عدد.
+   English: This was a fixed two-column grid for two pills (server + AI). With AI removed there
+            is one pill left and it stretched oddly - auto-fit adapts to any count. */
+.health-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: var(--s-2);
+    margin-top: var(--s-4);
+}
+
+.health-pill {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-2);
+    min-height: 34px;
+    padding: var(--s-2) var(--s-3);
+    border-radius: var(--r);
+    background: rgba(255, 255, 255, .09);
+    border: 1px solid rgba(255, 255, 255, .1);
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #9ca3af;
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, .08);
+    flex: none;
+}
+/* Arabic: نبضة خفيفة على المؤشر السليم - إشارة حياة بلا إزعاج.
+   English: A gentle pulse on the healthy dot - a sign of life without being noisy. */
+.status-dot.ok { background: #5ef0ac; animation: ac-pulse 2.4s var(--ease) infinite; }
+.status-dot.bad { background: #ff7185; }
+
+@keyframes ac-pulse {
+    0%, 100% { box-shadow: 0 0 0 3px rgba(94, 240, 172, .16); }
+    50%      { box-shadow: 0 0 0 6px rgba(94, 240, 172, .04); }
+}
+
+/* ----------------------------------------------------------- tabs */
+
+/* Arabic: صارت التبويبات تسعة، ولو ضُغطت كلها بصف واحد على عرض 540px ينكسر النص
+           لسطرين ويصير غير مقروء. الحل: تلتف على سطرين بمساحة كافية لكل تبويب.
+   English: There are nine tabs now, and forcing them into a single row at 540px wraps the
+            labels onto two lines and makes them unreadable. They wrap onto two rows instead,
+            with enough room for each label. */
+.tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-1);
+    padding: var(--s-2);
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 5;
+}
+
+/* Arabic: أزرار التبويب صارت "شرائح" بخلفية بدل خط سفلي - أوضح وأحدث.
+   English: Tab buttons are now segmented pills with a filled background rather than an
+            underline - clearer and more current. */
+.tab-button {
+    flex: 1 1 auto;
+    min-width: 88px;
+    white-space: nowrap;
+    border: 0;
+    background: transparent;
+    padding: 9px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    border-radius: var(--r-sm);
+    transition: background .18s var(--ease), color .18s var(--ease);
+}
+.tab-button:hover { background: var(--surface-2); color: var(--text-2); }
+.tab-button.active {
+    color: var(--navy-2);
+    background: linear-gradient(135deg, rgba(72, 221, 235, .2), rgba(186, 248, 223, .3));
+    box-shadow: inset 0 0 0 1px rgba(72, 221, 235, .45);
+}
+@media (prefers-color-scheme: dark) {
+    .tab-button.active { color: var(--mint); }
+}
+
+main { padding: var(--s-4) var(--s-4) 92px; }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; animation: ac-fade .22s var(--ease); }
+
+@keyframes ac-fade {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: none; }
+}
+
+/* ----------------------------------------------------------- cards */
+
+.card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    padding: var(--s-4);
+    margin-bottom: var(--s-3);
+    box-shadow: var(--shadow-sm);
+    transition: box-shadow .2s var(--ease), border-color .2s var(--ease);
+}
+.card:hover { box-shadow: var(--shadow); border-color: var(--border-strong); }
+
+.card h2 {
+    margin: 0 0 var(--s-3);
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+}
+/* Arabic: شريط سماوي صغير قبل كل عنوان - يعطي إيقاعاً بصرياً للبطاقات.
+   English: A small cyan bar before each heading - gives the cards a visual rhythm. */
+.card h2::before {
+    content: "";
+    width: 3px;
+    height: 14px;
+    border-radius: 2px;
+    background: linear-gradient(180deg, var(--cyan), var(--mint));
+    flex: none;
+}
+.card h3 { margin: var(--s-4) 0 var(--s-2); font-size: 12px; font-weight: 700; color: var(--text-2); }
+
+.hint { margin: calc(var(--s-1) * -1) 0 var(--s-3); color: var(--muted); font-size: 11px; line-height: 1.75; }
+.field-hint { display: block; margin-top: var(--s-1); color: var(--muted); font-size: 10.5px; line-height: 1.6; }
+
+/* ----------------------------------------------------------- layout helpers */
+
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-3); }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s-2); }
+.actions { display: flex; gap: var(--s-2); flex-wrap: wrap; }
+
+/* ----------------------------------------------------------- fields */
+
+.field { display: flex; flex-direction: column; gap: var(--s-1); margin-bottom: var(--s-3); }
+.field label { font-size: 11px; font-weight: 600; color: var(--text-2); }
+
+.field input, .field select, .field textarea {
+    width: 100%;
+    border: 1px solid var(--border-strong);
+    background: var(--card);
+    border-radius: var(--r);
+    min-height: 38px;
+    padding: 9px 12px;
+    outline: none;
+    color: var(--text);
+    transition: border-color .16s var(--ease), box-shadow .16s var(--ease), background .16s var(--ease);
+}
+.field input:hover, .field select:hover, .field textarea:hover { border-color: var(--muted); }
+.field input:focus, .field select:focus, .field textarea:focus {
+    border-color: var(--cyan);
+    box-shadow: var(--ring);
+}
+.field input::placeholder, .field textarea::placeholder { color: var(--muted); opacity: .8; }
+.field input:disabled, .field select:disabled { background: var(--surface-2); color: var(--muted); cursor: not-allowed; }
+
+/* ----------------------------------------------------------- buttons */
+
+.btn {
+    border: 1px solid transparent;
+    border-radius: var(--r);
+    padding: 10px 16px;
+    font-size: 12.5px;
+    font-weight: 600;
+    min-height: 40px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-2);
+    transition: transform .12s var(--ease), box-shadow .18s var(--ease), filter .18s var(--ease);
+    box-shadow: var(--shadow-sm);
+}
+.btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: var(--shadow); }
+.btn:active:not(:disabled) { transform: translateY(0); box-shadow: var(--shadow-sm); }
+.btn:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
+
+.btn-block { width: 100%; }
+.btn-grow { flex: 1; }
+
+.btn-primary { background: linear-gradient(135deg, var(--navy), var(--navy-2)); color: #fff; }
+.btn-accent  { background: linear-gradient(135deg, var(--cyan), #2fc5d6); color: #06243a; }
+.btn-mint    { background: linear-gradient(135deg, var(--mint), #8fe9c4); color: #0b3d2a; }
+.btn-danger  { background: linear-gradient(135deg, #e0596c, var(--danger)); color: #fff; }
+.btn-outline {
+    background: var(--card);
+    border-color: var(--border-strong);
+    color: var(--text-2);
+    box-shadow: none;
+}
+.btn-outline:hover:not(:disabled) { background: var(--card-hover); border-color: var(--cyan); color: var(--text); }
+
+/* ----------------------------------------------------------- toggles */
+
+.toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s-3);
+    padding: var(--s-3) 0;
+    border-bottom: 1px solid var(--border);
+}
+.toggle-row:last-child { border-bottom: 0; }
+.toggle-copy { display: flex; flex-direction: column; gap: 2px; }
+.toggle-copy strong { font-size: 12.5px; font-weight: 600; }
+.toggle-copy small { font-size: 10.5px; color: var(--muted); line-height: 1.6; }
+
+.switch { position: relative; display: inline-block; width: 44px; height: 25px; flex: none; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider {
+    position: absolute;
+    inset: 0;
+    background: var(--border-strong);
+    border-radius: 999px;
+    transition: background .2s var(--ease);
+}
+.slider::before {
+    content: "";
+    position: absolute;
+    width: 19px; height: 19px;
+    inset-inline-start: 3px;
+    top: 3px;
+    background: #fff;
+    border-radius: 50%;
+    box-shadow: var(--shadow-sm);
+    transition: transform .2s var(--ease);
+}
+.switch input:checked + .slider { background: linear-gradient(135deg, var(--cyan), #2fc5d6); }
+.switch input:checked + .slider::before { transform: translateX(19px); }
+/* Arabic: بالعربية الاتجاه معكوس، فنعكس حركة المقبض. English: RTL flips the knob travel. */
+[dir="rtl"] .switch input:checked + .slider::before,
+html[dir="rtl"] .switch input:checked + .slider::before { transform: translateX(-19px); }
+.switch input:focus-visible + .slider { box-shadow: var(--ring); }
+
+/* ----------------------------------------------------------- stats & store cards */
+
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s-2); }
+.stat {
+    background: linear-gradient(160deg, var(--surface-2), var(--card));
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    padding: var(--s-3);
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.stat strong { font-size: 18px; font-weight: 700; color: var(--navy-2); }
+@media (prefers-color-scheme: dark) { .stat strong { color: var(--cyan); } }
+.stat span { font-size: 10.5px; color: var(--muted); }
+
+.store-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s-3);
+    padding: var(--s-3);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    margin-bottom: var(--s-2);
+    background: var(--card-hover);
+}
+.store-card div { display: flex; flex-direction: column; gap: 2px; }
+.store-card strong { font-size: 12.5px; }
+.store-card span { font-size: 10.5px; color: var(--muted); }
+
+.badge {
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: .6px;
+    padding: 4px 9px;
+    border-radius: 999px;
+    background: linear-gradient(135deg, rgba(72, 221, 235, .22), rgba(186, 248, 223, .3));
+    color: var(--navy-2);
+    border: 1px solid rgba(72, 221, 235, .4);
+    white-space: nowrap;
+}
+@media (prefers-color-scheme: dark) { .badge { color: var(--mint); } }
+
+/* ----------------------------------------------------------- result boxes */
+
+.result-box {
+    margin-top: var(--s-2);
+    padding: var(--s-3);
+    border-radius: var(--r);
+    font-size: 11.5px;
+    line-height: 1.7;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    word-break: break-word;
+}
+.result-box.success { background: var(--success-bg); border-color: rgba(18, 134, 75, .3); color: var(--success); }
+.result-box.error   { background: var(--danger-bg);  border-color: rgba(201, 54, 73, .3);  color: var(--danger); }
+.result-box.warning { background: var(--warning-bg); border-color: rgba(180, 107, 0, .3);  color: var(--warning); }
+.result-box a { color: inherit; font-weight: 600; }
+
+/* ----------------------------------------------------------- report day chips */
+
+/* Arabic: رقاقات الأيام المختارة بتقرير "أيام محددة". كانت مكتوبة بملف غير مرتبط بالصفحة
+           فلم تُطبَّق إطلاقاً - الآن تعمل.
+   English: Picked-day chips for the "selected days" report scope. These lived in a file that
+            was never linked, so they never applied - they work now. */
 .report-day-chip {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 3px 8px;
+    gap: var(--s-1);
+    padding: 4px 10px;
     margin: 2px;
     border-radius: 999px;
-    background: var(--surface-2, #eef1f7);
-    border: 1px solid var(--border, #d4d9e4);
-    font-size: 12px;
+    background: var(--card);
+    border: 1px solid var(--border-strong);
+    font-size: 11.5px;
     direction: ltr;
+    transition: border-color .16s var(--ease);
 }
+.report-day-chip:hover { border-color: var(--danger); }
 .report-day-chip button {
     border: none;
     background: transparent;
@@ -20,5 +485,117 @@
     font-size: 15px;
     line-height: 1;
     padding: 0 2px;
-    color: #a82437;
+    color: var(--danger);
+    border-radius: 4px;
 }
+
+/* ----------------------------------------------------------- misc */
+
+.admin-only-element[hidden] { display: none !important; }
+
+/* Arabic: احترام تفضيل تقليل الحركة - الانتقالات زينة لا وظيفة.
+   English: Respect reduced-motion - the transitions are decoration, not function. */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+    }
+}
+
+/* ----------------------------------------------------------- log viewer */
+
+/* Arabic: عارض السجل الملوّن حسب المستوى. أُعيد هنا بعد نقل التنسيق من popup.html -
+           كان سيختفي بالكامل لو لم يُنقل.
+   English: The level-coloured log viewer. Restored here when styling moved out of
+            popup.html - it would have vanished entirely otherwise. */
+#logBox {
+    direction: ltr;
+    text-align: left;
+    font-family: "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
+    font-size: 10px;
+    line-height: 1.65;
+    min-height: 260px;
+    max-height: 360px;
+    overflow: auto;
+    background: #0b1226;
+    color: #c8f6ee;
+    border: 1px solid #1d2a4d;
+    border-radius: var(--r);
+    padding: var(--s-3);
+    white-space: pre-wrap;
+    box-shadow: inset 0 1px 6px rgba(0, 0, 0, .45);
+}
+#logBox::-webkit-scrollbar { width: 9px; }
+#logBox::-webkit-scrollbar-thumb { background: #2b3a62; border-radius: 999px; }
+#logBox::-webkit-scrollbar-track { background: transparent; }
+
+.log-line { padding: 1px 0; white-space: pre-wrap; word-break: break-word; }
+.log-line-error { color: #ff7a8a; font-weight: 600; }
+.log-line-warning { color: #ffd166; }
+.log-line-debug { color: #8b93a7; }
+.log-line-info { color: inherit; }
+
+#logPath {
+    direction: ltr;
+    text-align: left;
+    word-break: break-all;
+    color: var(--muted);
+    font-size: 10px;
+    margin-bottom: var(--s-2);
+}
+
+/* ----------------------------------------------------------- toast */
+
+/* Arabic: شريط الحالة العائم. يظهر ويختفي بحركة قصيرة بدل الظهور المفاجئ.
+   English: The floating status toast. It now slides in briefly instead of snapping. */
+#status {
+    display: none;
+    position: fixed;
+    z-index: 20;
+    inset-inline: var(--s-4);
+    bottom: 76px;
+    border-radius: var(--r);
+    padding: 11px 14px;
+    font-size: 11.5px;
+    font-weight: 600;
+    box-shadow: var(--shadow-lg);
+    animation: ac-toast .22s var(--ease);
+    border: 1px solid transparent;
+}
+@keyframes ac-toast {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: none; }
+}
+#status.success { background: var(--success-bg); color: var(--success); border-color: rgba(18, 134, 75, .35); }
+#status.error   { background: var(--danger-bg);  color: var(--danger);  border-color: rgba(201, 54, 73, .35); }
+#status.warning { background: var(--warning-bg); color: var(--warning); border-color: rgba(180, 107, 0, .35); }
+
+/* ----------------------------------------------------------- sticky footer */
+
+/* Arabic: شريط الإجراءات الثابت أسفل النافذة. كان تنسيقه بمحدّد عنصر (footer) لا بصنف،
+           فكاد يضيع عند نقل التنسيق - أُعيد هنا. ثلاثة أزرار لا عمودان: العمودان كانا
+           يقصّان الزر الثالث.
+   English: The pinned action bar. Its rule used a bare element selector (footer) rather than a
+            class, so it was nearly lost when the styling moved - restored here. Three buttons,
+            not two columns: the old two-column grid clipped the third button. */
+footer {
+    position: fixed;
+    z-index: 15;
+    inset-inline: 0;
+    bottom: 0;
+    display: grid;
+    grid-template-columns: 1.4fr 1fr 1fr;
+    gap: var(--s-2);
+    padding: var(--s-3) var(--s-4);
+    background: color-mix(in srgb, var(--card) 92%, transparent);
+    border-top: 1px solid var(--border);
+    backdrop-filter: blur(14px) saturate(140%);
+    box-shadow: 0 -4px 20px rgba(13, 22, 71, .08);
+}
+footer .btn { min-height: 42px; padding-inline: var(--s-3); font-size: 12px; }
+
+/* Arabic: نفس تنسيق .stat strong - الترميز يستخدم <b> بمكان و<strong> بمكان آخر.
+   English: Mirrors .stat strong - the markup uses <b> in one place and <strong> in another. */
+.stat b { display: block; font-size: 18px; font-weight: 700; color: var(--navy-2); }
+@media (prefers-color-scheme: dark) { .stat b { color: var(--cyan); } }

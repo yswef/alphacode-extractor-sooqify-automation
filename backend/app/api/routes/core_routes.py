@@ -39,7 +39,7 @@ def health_check():
         "success": True,
         "status": "ok",
         "service": "AlphaCode Extractor",
-        "version": "5.8.0",
+        "version": "5.8.1",
         "needs_folder_setup": not paths_state.ROOT_DIR_CONFIGURED,
         "sync_enabled": load_sync_config().get("Enabled", False),
         "root_dir_configured": paths_state.ROOT_DIR_CONFIGURED,

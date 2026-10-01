@@ -82,6 +82,8 @@ def test_api_add_brand_forwards_payload_without_typeerror(monkeypatch):
     assert response.status_code == 200
     body = response.get_json()
     assert body["success"] is True
-    assert captured["action"] == "brands/add"
+    # Arabic: لازم يطابق case 'add_brand' في sync.php حرفياً.
+    # English: Must match the 'add_brand' case in sync.php literally.
+    assert captured["action"] == "add_brand"
     assert captured["method"] == "POST"
     assert captured["payload"] == {"name": "Nike", "id": 7}

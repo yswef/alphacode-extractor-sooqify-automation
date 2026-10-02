@@ -1,0 +1,13 @@
+{
+  "source": "User-provided Sooqify Admin screenshot, 2026-10-02; verify with the page probe before import",
+  "brands": [
+    { "id": 1, "name": "Air Jordan", "store_display_name": "Air Jordan" },
+    { "id": 2, "name": "Cartier", "store_display_name": "كارتية" },
+    { "id": 3, "name": "Franck Muller", "store_display_name": "فرانك مولر" },
+    { "id": 4, "name": "New Balance", "store_display_name": "نيو بالانس" },
+    { "id": 5, "name": "Nike", "store_display_name": "Nike" },
+    { "id": 6, "name": "Patek Philippe", "store_display_name": "باتك فيليب" },
+    { "id": 7, "name": "Adidas", "store_display_name": "أديداس" },
+    { "id": 8, "name": "Rolex", "store_display_name": "رولكس" }
+  ]
+}

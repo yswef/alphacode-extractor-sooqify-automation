@@ -20,7 +20,7 @@
 - `AddedByName`: `يوسف`
 - `Enabled`: `true`
 - `Token`: لم يتأثر (كان محمياً أصلاً) — تحقق حرفي أن القيمة المخزّنة تطابق
-  `V0HEuwdDAPwCfNO10WYnnbtCd6YNpaSd0YUa` قبل عدم لمسه.
+  `[REDACTED — rotate the sync token]` قبل عدم لمسه.
 
 تم التحقق من صيغة `ServerUrl` مقابل `sync_call()` بـ`sync_service.py` (يبني
 `f"{ServerUrl}/sync.php"`) قبل الكتابة — القيمة المسترجعة بدون `/` بآخرها فتطابق الصيغة

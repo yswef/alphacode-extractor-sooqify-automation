@@ -1,0 +1,280 @@
+/*
+ * Read-only diagnostic for Sooqify Admin > Brand page.
+ * Paste this whole file into DevTools Console while logged in to /admin/brand.
+ * It does not click buttons, submit forms, or modify store data.
+ * It reports visible ID/name rows, form field metadata, and brand-related
+ * fetch/XHR requests made after installation. Sensitive fields are redacted.
+ */
+(() => {
+    'use strict';
+
+    if (globalThis.__alphaSooqifyBrandProbe?.installed) {
+        console.info('Brand probe is already installed. Use __alphaSooqifyBrandProbe.snapshot() or .copy().');
+        return globalThis.__alphaSooqifyBrandProbe;
+    }
+
+    const SENSITIVE = /token|secret|password|passwd|authorization|cookie|csrf|session|api[_-]?key/i;
+    const BRAND_URL = /brand/i;
+    const requests = [];
+
+    const cleanText = value => String(value ?? '').replace(/\s+/g, ' ').trim();
+    const redact = (key, value) => {
+        if (SENSITIVE.test(String(key || ''))) return '[redacted]';
+        if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
+        if (typeof value === 'string') return value.length > 1000 ? `${value.slice(0, 1000)}…` : value;
+        if (Array.isArray(value)) return value.map(item => redact('', item));
+        if (typeof value === 'object') {
+            return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [
+                childKey,
+                SENSITIVE.test(childKey) ? '[redacted]' : redact(childKey, childValue),
+            ]));
+        }
+        return String(value);
+    };
+
+    function safeUrl(rawUrl) {
+        try {
+            const url = new URL(String(rawUrl || ''), location.href);
+            for (const key of [...url.searchParams.keys()]) {
+                if (SENSITIVE.test(key)) url.searchParams.set(key, '[redacted]');
+            }
+            return `${url.origin}${url.pathname}${url.search}`;
+        } catch (_) {
+            return String(rawUrl || '').slice(0, 500);
+        }
+    }
+
+    function safeRequestFields(value) {
+        const usefulField = /brand|name|(^id$)|action|status|success|error/i;
+        if (Array.isArray(value)) return value.map(item => safeRequestFields(item));
+        if (value && typeof value === 'object') {
+            return Object.fromEntries(Object.entries(value).map(([key, child]) => {
+                if (SENSITIVE.test(key)) return [key, '[redacted]'];
+                return [key, usefulField.test(key) ? safeRequestFields(child) : '[omitted]'];
+            }));
+        }
+        if (typeof value === 'string') {
+            const trimmed = value.trim();
+            if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+                try { return safeRequestFields(JSON.parse(trimmed)); } catch (_) { /* treat as an ordinary value */ }
+            }
+            return trimmed.slice(0, 500);
+        }
+        return value;
+    }
+
+    function parseBody(body) {
+        if (body == null) return null;
+        if (typeof body === 'string') {
+            const trimmed = body.trim();
+            if (!trimmed) return '';
+            try {
+                return safeRequestFields(JSON.parse(trimmed));
+            } catch (_) {
+                if (trimmed.includes('=') && !trimmed.startsWith('<')) {
+                    const params = new URLSearchParams(trimmed);
+                    return safeRequestFields(Object.fromEntries(params.entries()));
+                }
+                return { body_omitted: true, length: trimmed.length };
+            }
+        }
+        if (body instanceof URLSearchParams) return safeRequestFields(Object.fromEntries(body.entries()));
+        if (body instanceof FormData) {
+            const entries = Object.fromEntries([...body.entries()].map(([key, value]) => [
+                key,
+                value instanceof File ? `[file: ${value.name}]` : String(value),
+            ]));
+            return safeRequestFields(entries);
+        }
+        if (typeof body === 'object') return safeRequestFields(body);
+        return `[${typeof body}]`;
+    }
+
+    function tableReport() {
+        const tables = [...document.querySelectorAll('table')].map((table, tableIndex) => {
+            const headRow = table.querySelector('thead tr') || table.querySelector('tr');
+            const headers = headRow ? [...headRow.querySelectorAll('th,td')].map(cell => cleanText(cell.textContent)) : [];
+            const rows = [...table.querySelectorAll('tbody tr')].map(row =>
+                [...row.querySelectorAll('td,th')].map(cell => cleanText(cell.textContent)),
+            ).filter(cells => cells.some(Boolean));
+
+            const idIndex = headers.findIndex(header => /^(?:id|no\.?|number|رقم|الرقم)$/i.test(header));
+            const nameIndex = headers.findIndex(header => /brand|اسم|العلامة|التجارية/i.test(header));
+            const countIndex = headers.findIndex(header => /product|count|إجمالي|المنتجات/i.test(header));
+            const brands = [];
+
+            if (idIndex >= 0 && nameIndex >= 0) {
+                for (const cells of rows) {
+                    const idText = (cells[idIndex] || '').replace(/[^0-9]/g, '');
+                    const name = cleanText(cells[nameIndex]);
+                    if (!idText || !name) continue;
+                    brands.push({
+                        id: Number(idText),
+                        name,
+                        ...(countIndex >= 0 ? { product_count: (cells[countIndex] || '').replace(/[^0-9]/g, '') } : {}),
+                    });
+                }
+            }
+            return { table_index: tableIndex, headers, rows, brands };
+        });
+        const candidates = tables
+            .flatMap(table => table.brands)
+            .filter(brand => Number.isInteger(brand.id) && brand.id > 0 && brand.name);
+        return { tables, brands: candidates };
+    }
+
+    function formReport() {
+        return [...document.forms].map((form, formIndex) => ({
+            form_index: formIndex,
+            action: safeUrl(form.action || location.href),
+            method: String(form.method || 'GET').toUpperCase(),
+            fields: [...form.elements].filter(element => element.name || element.id).map(element => {
+                const type = String(element.type || element.tagName || '').toLowerCase();
+                const label = element.labels?.[0]?.textContent || '';
+                const hidden = type === 'hidden';
+                const sensitive = SENSITIVE.test(`${element.name || ''} ${element.id || ''} ${label}`);
+                const item = {
+                    name: element.name || '',
+                    id: element.id || '',
+                    type,
+                    label: cleanText(label),
+                    required: Boolean(element.required),
+                    disabled: Boolean(element.disabled),
+                };
+                if (!hidden && !sensitive && !['password', 'file'].includes(type)) {
+                    item.value = cleanText(element.value).slice(0, 200);
+                } else if (hidden || sensitive) {
+                    item.value = '[redacted]';
+                }
+                return item;
+            }),
+            submit_buttons: [...form.querySelectorAll('button[type="submit"],input[type="submit"],button:not([type])')]
+                .map(button => cleanText(button.textContent || button.value)),
+        }));
+    }
+
+    function recordRequest(record) {
+        if (!BRAND_URL.test(record.url)) return;
+        requests.push({ at: new Date().toISOString(), ...record });
+        if (requests.length > 30) requests.shift();
+        console.info('[Sooqify brand probe] brand request', requests[requests.length - 1]);
+    }
+
+    // Observe future fetch calls without changing their result or timing.
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = function (...args) {
+        const input = args[0];
+        const init = args[1] || {};
+        const url = safeUrl(typeof input === 'string' ? input : input?.url);
+        const method = String(init.method || input?.method || 'GET').toUpperCase();
+        const body = parseBody(init.body);
+        const promise = originalFetch.apply(this, args);
+        if (BRAND_URL.test(url)) {
+            recordRequest({ transport: 'fetch', method, url, request_body: body });
+            promise.then(response => {
+                response.clone().text().then(text => {
+                    let responseBody = text.slice(0, 2000);
+                    try { responseBody = redact('', JSON.parse(text)); } catch (_) { /* keep bounded text */ }
+                    recordRequest({ transport: 'fetch-response', method, url, status: response.status, response_body: responseBody });
+                }).catch(() => {});
+            }).catch(() => {});
+        }
+        return promise;
+    };
+
+    // Observe future XMLHttpRequest calls (including common jQuery AJAX requests).
+    const xhrOpen = XMLHttpRequest.prototype.open;
+    const xhrSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+        this.__alphaBrandProbeRequest = {
+            method: String(method || 'GET').toUpperCase(),
+            url: safeUrl(url),
+        };
+        return xhrOpen.call(this, method, url, ...rest);
+    };
+    XMLHttpRequest.prototype.send = function (body) {
+        const info = this.__alphaBrandProbeRequest;
+        if (info && BRAND_URL.test(info.url)) {
+            recordRequest({ transport: 'xhr', ...info, request_body: parseBody(body) });
+            this.addEventListener('load', () => {
+                let responseBody = '';
+                try {
+                    if (this.responseType === 'json') {
+                        responseBody = redact('', this.response);
+                    } else if (this.responseType === '' || this.responseType === 'text') {
+                        responseBody = String(this.responseText || '').slice(0, 2000);
+                        try { responseBody = redact('', JSON.parse(responseBody)); } catch (_) { /* keep bounded text */ }
+                    } else {
+                        responseBody = `[responseType: ${this.responseType}]`;
+                    }
+                } catch (_) { responseBody = '[response unavailable]'; }
+                recordRequest({ transport: 'xhr-response', ...info, status: this.status, response_body: responseBody });
+            }, { once: true });
+        }
+        return xhrSend.call(this, body);
+    };
+
+    // Capture regular HTML form submissions too. This listener does not cancel submission.
+    const submitListener = event => {
+        const form = event.target;
+        if (!(form instanceof HTMLFormElement)) return;
+        const entries = [...new FormData(form).entries()].map(([key, value]) => [
+            key,
+            SENSITIVE.test(key)
+                ? '[redacted]'
+                : (value instanceof File ? `[file: ${value.name}]` : String(value).slice(0, 500)),
+        ]);
+        recordRequest({
+            transport: 'form-submit',
+            method: String(form.method || 'GET').toUpperCase(),
+            url: safeUrl(form.action || location.href),
+            request_body: Object.fromEntries(entries),
+        });
+    };
+    document.addEventListener('submit', submitListener, true);
+
+    const reportTables = tableReport();
+    const probe = {
+        installed: true,
+        snapshot() {
+            const tablesNow = tableReport();
+            return {
+                page: { origin: location.origin, path: location.pathname, title: document.title },
+                captured_at: new Date().toISOString(),
+                brands: tablesNow.brands,
+                tables: tablesNow.tables,
+                forms: formReport(),
+                recent_brand_requests: [...requests],
+                note: 'Sensitive token/password/cookie/CSRF fields are redacted. No form was submitted by this probe.',
+            };
+        },
+        async copy() {
+            const json = JSON.stringify(this.snapshot(), null, 2);
+            if (typeof globalThis.copy === 'function') {
+                globalThis.copy(json);
+                console.info('Brand report copied with DevTools copy().');
+            } else if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(json);
+                console.info('Brand report copied to clipboard.');
+            } else {
+                console.log(json);
+                console.info('Clipboard unavailable; copy the JSON printed above.');
+            }
+            return json;
+        },
+        uninstall() {
+            globalThis.fetch = originalFetch;
+            XMLHttpRequest.prototype.open = xhrOpen;
+            XMLHttpRequest.prototype.send = xhrSend;
+            document.removeEventListener('submit', submitListener, true);
+            delete globalThis.__alphaSooqifyBrandProbe;
+            console.info('Brand probe removed.');
+        },
+    };
+    globalThis.__alphaSooqifyBrandProbe = probe;
+
+    console.info('[Sooqify brand probe] Installed read-only. Brand rows:', reportTables.brands);
+    console.info('[Sooqify brand probe] Forms:', formReport());
+    console.info('Use __alphaSooqifyBrandProbe.snapshot() to inspect or __alphaSooqifyBrandProbe.copy() to copy JSON.');
+    return probe;
+})();

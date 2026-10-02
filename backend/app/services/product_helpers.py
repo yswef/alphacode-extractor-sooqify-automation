@@ -365,15 +365,15 @@ def get_product_image_dir(product):
         return os.path.join(paths_state.BASE_DIR, brand_folder, folder_name)
     return os.path.join(paths_state.BASE_DIR, folder_name)
 
-def sync_background_worker():
-    """Arabic: خيط خلفي يسحب تحديثات الطرف الآخر ويعيد إرسال الطابور دورياً كل 90 ثانية. English: Background thread that pulls the other side's updates and flushes the retry queue every 90 seconds."""
-    while True:
-        try:
-            sync_pull_updates()
-            sync_flush_queue()
-        except Exception as exc:
-            logger.warning("Sync background cycle failed: %s", exc)
-        time.sleep(90)
+# Arabic: حُذفت من هنا نسخة sync_background_worker القديمة (كانت تنادي sync_pull_updates
+#         وsync_flush_queue وtime بدون أي استيراد لها = NameError لو شُغّلت يوماً، ولم
+#         يستدعها أي كود أصلاً). الحلقة الحقيقية الوحيدة الآن في app/services/sync_service.py
+#         وتُشغَّل من نقطة الدخول backend/app/main.py كل 30 دقيقة افتراضياً.
+# English: The old duplicate sync_background_worker was removed from here (it called
+#          sync_pull_updates / sync_flush_queue / time without importing any of them - a
+#          NameError if it had ever run, and nothing called it anyway). The one real loop now
+#          lives in app/services/sync_service.py and is started from the entry point
+#          backend/app/main.py every 30 minutes by default.
 
 def clean_folder_name(name, fallback_code):
     """Arabic: تنظيف اسم مجلد المنتج من رموز Windows غير الصالحة. English: Sanitize a product folder name for Windows."""

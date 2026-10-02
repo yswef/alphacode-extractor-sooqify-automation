@@ -1,5 +1,50 @@
 # Changelog — AlphaCode Extractor
 
+## v5.9.0 — 2026-10-02
+
+### Fixed
+- **Sync never ran on its own.** `sync_background_worker` was defined twice and started
+  nowhere: a copy in `backend/app.py` explicitly documented as dead code, and a copy in
+  `product_helpers.py` that called `sync_pull_updates` / `sync_flush_queue` / `time` without
+  importing any of them (a `NameError` had it ever run). The real entry point,
+  `backend/app/main.py`, never started either. So products added by one operator stayed
+  invisible on the other machine until someone pressed **مزامنة الآن** by hand - the reason
+  "sync isn't working". A single real loop now lives in `sync_service.py` and is started from
+  the entry point: first cycle 20 s after launch, then every 30 minutes while the backend runs.
+- **"Was this product added?" had no answer on screen.** The extension writes a real workflow
+  status per product (`prepared → submit_started → submitted / submit_failed`), and
+  `/api/archive/recent` already returned it - but the popup never rendered it. Each product now
+  carries a colour-coded chip (✓ added / ⏳ submitting / ✗ failed / prepared only), with the
+  failure reason when present.
+- **Tests wrote into the developer's real settings.** The sync config/state/queue paths are
+  constants derived from the `backend/` root and ignore `ALPHACODE_ROOT_DIR`, so a test that
+  saved sync settings really replaced `backend/config/sync_config.json`. A new `conftest.py`
+  redirects all three files to a temporary directory for every test.
+
+### Added
+- **Automatic sync every 30 minutes**, independent of the popup or the browser - it lives in
+  the backend process. The interval is editable from the **المزامنة والمجلد** tab (5-1440
+  minutes, default 30) and changes take effect without restarting the backend. A retry-queue
+  flush runs every 5 minutes in between, so a failed push is not stuck for half an hour.
+- **Sync status that answers the question**: a second stats row shows the next automatic run,
+  how many products the last pull brought in (and how many came from the other operator), and
+  whether the automatic worker is running - with a plain warning when it is not.
+- **Archive summary and operator ranking** in the recent-products card: total, added, in
+  progress, failed and prepared-only counts, plus how many products each teammate added.
+- **"New products arrived" notification** - a `chrome.alarms` check every 10 minutes reports a
+  batch of products added by the other operator exactly once, and falls back to triggering a
+  sync itself if the backend worker is missing or overdue (older backend builds, unexpected
+  stops). The backend keeps a dedicated timestamp for the last pull that actually carried such
+  products, so an intervening empty pull can never swallow the notice.
+- **The sync tab refreshes itself** every 20 seconds while open, so arrivals and submission
+  outcomes appear without pressing anything.
+- The "sync now" button and the automatic cycle now share one function, so both return and
+  report the same result (including how many new products arrived).
+
+### Removed
+- The broken duplicate `sync_background_worker` in `product_helpers.py`, and the duplicated
+  `if (tabName === 'sync')` branch in the popup's `activateTab`.
+
 ## v5.8.1 — 2026-09-25
 
 ### Removed

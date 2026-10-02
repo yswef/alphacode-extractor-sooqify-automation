@@ -441,6 +441,21 @@ html[dir="rtl"] .switch input:checked + .slider::before { transform: translateX(
 }
 @media (prefers-color-scheme: dark) { .badge { color: var(--mint); } }
 
+/* Arabic: شارات حالة المنتج في قائمة "آخر المنتجات" - لون لكل نتيجة حتى يُعرف بنظرة واحدة
+           هل المنتج انضاف للمتجر فعلاً أم لا. (كانت الحالة تُرسل من الباك اند ولا تُعرض.)
+   English: Product status chips in the recent-products list - one colour per outcome so
+            "was this added to the store?" is answered at a glance. (The status was already
+            sent by the backend and simply never rendered.) */
+.badge.status-submitted { background: var(--success-bg); color: var(--success); border-color: rgba(18, 134, 75, .35); }
+.badge.status-progress  { background: var(--warning-bg); color: var(--warning); border-color: rgba(180, 107, 0, .35); }
+.badge.status-failed    { background: var(--danger-bg);  color: var(--danger);  border-color: rgba(201, 54, 73, .35); }
+.badge.status-prepared  { background: var(--surface-2);  color: var(--muted);   border-color: var(--border-strong); }
+
+/* Arabic: الشارات تُصطف أفقياً بجانب بعضها ولا ترث اتجاه العمود من .store-card div.
+   English: Chips line up horizontally instead of inheriting .store-card div's column direction. */
+.store-card .product-badges { flex-direction: row; align-items: center; gap: var(--s-1); flex-wrap: wrap; justify-content: flex-end; }
+.product-failure { font-size: 10px; color: var(--danger); }
+
 /* ----------------------------------------------------------- result boxes */
 
 .result-box {

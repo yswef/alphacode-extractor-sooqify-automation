@@ -43,7 +43,7 @@
         const headerRow = table.querySelector('thead tr') || table.querySelector('tr');
         if (!headerRow) return null;
         const headers = [...headerRow.querySelectorAll('th,td')].map(cell => cleanText(cell.textContent));
-        const numberIndex = headers.findIndex(header => /^(?:id|no\.?|number|رقم|الرقم)$/i.test(header));
+        const numberIndex = headers.findIndex(header => /^(?:id|si|no\.?|number|رقم|الرقم)$/i.test(header));
         const nameIndex = headers.findIndex(header => /brand|اسم|العلامة|التجارية/i.test(header));
         return numberIndex >= 0 && nameIndex >= 0 ? { headerRow, numberIndex, nameIndex } : null;
     }

@@ -1,5 +1,21 @@
-"""Arabic: منطق المزامنة مع الخادم المركزي (بدون حلقة دورية). English: Central sync business logic (no periodic worker)."""
+"""Arabic: منطق المزامنة مع الخادم المركزي، ويشمل الحلقة الدورية الحقيقية (كل 30 دقيقة افتراضياً).
+
+هذا الملف هو المكان الوحيد الذي تُشغَّل فيه المزامنة التلقائية. قبل هذا التعديل كان
+sync_background_worker معرَّفاً مرتين (backend/app.py كـ"كود ميت" وproduct_helpers.py بنسخة
+تستدعي أسماء غير مستوردة أصلاً = NameError لو شُغّلت)، ولا تُستدعى أي نسخة منهما من نقطة
+التشغيل الفعلية backend/app/main.py — فلم تكن هناك أي مزامنة تلقائية إطلاقاً، ولا تظهر
+منتجات الطرف الآخر إلا بضغط زر "مزامنة الآن" يدوياً.
+
+English: Central sync business logic, now including the real periodic worker (every 30
+minutes by default). This module is the only place the automatic sync runs. Before this
+change, sync_background_worker existed twice (backend/app.py as documented dead code, and a
+copy in product_helpers.py that called names it never imported - a NameError if ever
+invoked), and neither copy was started from the real entry point backend/app/main.py - so no
+automatic sync ever ran, and the other operator's products only appeared after pressing
+"sync now" by hand.
+"""
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timedelta
@@ -48,6 +64,252 @@ def _safe_int(value, fallback):
         return int(float(value))
     except (TypeError, ValueError):
         return int(fallback)
+
+
+# =========================================================
+# Arabic: المزامنة التلقائية الدورية - كل 30 دقيقة افتراضياً، وقابلة للتغيير من لوحة الإضافة
+#         (حقل "تكرار المزامنة التلقائية" في sync_config.json) أو من متغير البيئة
+#         ALPHACODE_SYNC_INTERVAL_SECONDS بالثواني لمن يريد ضبطاً دقيقاً/اختباراً سريعاً.
+#
+#         ليش هالدورة ضرورية أصلاً: المصالحة الكاملة كل 6 ساعات كانت تعمل فقط عند ضغط زر
+#         "مزامنة الآن" أو بدء دفعة، وبقية الوقت لا يُسحب شيء من سجلات الطرف الآخر. فلو
+#         أضاف زميلك منتجاً، ما راح يظهر عندك إطلاقاً حتى تضغط الزر يدوياً (أو تبدأ دفعة) —
+#         وهذا سبب الشكوى "المزامنة مش شغالة".
+# English: The periodic automatic sync - every 30 minutes by default, tunable from the popup
+#          ("auto sync interval" field in sync_config.json) or via the
+#          ALPHACODE_SYNC_INTERVAL_SECONDS environment variable, in seconds, for power users
+#          and fast tests.
+#
+#          Why this cycle matters: the full reconcile (every FULL_RECONCILE_INTERVAL_HOURS)
+#          only ever ran on a manual "sync now" press or at batch start; between those nothing
+#          pulled the other side's records. A teammate could add a product and it would never
+#          appear locally until the button was pressed by hand - the root cause of the
+#          "sync isn't working" report.
+# =========================================================
+DEFAULT_AUTO_SYNC_MINUTES = 30
+MIN_AUTO_SYNC_MINUTES = 5
+MAX_AUTO_SYNC_MINUTES = 1440  # 24 hours
+
+# Arabic: كم ينتظر الخيط بين كل فحص والذي يليه (يسمح بتغيير التكرار من الإعدادات بدون إعادة
+#         تشغيل الخادم، ويرد على أمر الإيقاف بسرعة).
+# English: How long the worker sleeps between checks (lets an interval change take effect
+#          without restarting the backend, and reacts to stop quickly).
+SYNC_WORKER_TICK_SECONDS = 15
+
+# Arabic: أول دورة بعد الإقلاع بقليل (لا ننتظر نصف ساعة كاملة) حتى تظهر منتجات الطرف الآخر
+#         فوراً عند فتح البرنامج.
+# English: The first cycle runs shortly after startup (not a full half hour later) so the
+#          other side's products show up right away when the backend is opened.
+SYNC_WORKER_STARTUP_DELAY_SECONDS = 20
+
+# Arabic: الطابور (رفع فشل مؤقتاً) يُعاد إرساله كل 5 دقائق بدل انتظار دورة الثلاثين دقيقة.
+# English: The retry queue is flushed every 5 minutes instead of waiting for the 30-minute cycle.
+SYNC_QUEUE_RETRY_INTERVAL_SECONDS = 300
+
+# Arabic: معلومات الخيط الحيّ - تُقرأ فقط من مسار الحالة في لوحة الإضافة، ولا تُخزَّن على القرص.
+# English: Live worker info - read by the popup's status route only, never stored on disk.
+_SYNC_WORKER_INFO = {
+    "running": False,
+    "next_cycle_at": "",
+    "started_at": "",
+}
+_sync_worker_started = False
+_sync_worker_lock = threading.Lock()
+
+
+def sync_auto_interval_seconds():
+    """
+    Arabic: تكرار المزامنة التلقائية بالثواني: متغيّر البيئة أولاً (للاختبارات والضبط الدقيق)،
+            ثم قيمة الإعدادات المحفوظة من لوحة الإضافة، وإلا 30 دقيقة.
+    English: The automatic sync interval in seconds: environment variable first (tests / fine
+             control), then the popup's saved setting, otherwise 30 minutes.
+    """
+    override = _safe_int(os.getenv("ALPHACODE_SYNC_INTERVAL_SECONDS"), 0)
+    if override > 0:
+        return max(5, override)
+
+    config = load_sync_config()
+    minutes = _safe_int(config.get("AutoSyncMinutes"), DEFAULT_AUTO_SYNC_MINUTES)
+    minutes = max(MIN_AUTO_SYNC_MINUTES, min(minutes, MAX_AUTO_SYNC_MINUTES))
+    return minutes * 60
+
+
+def sync_interval_label(interval_seconds=None):
+    """
+    Arabic: وصف مقروء للتكرار للسجلات - بالثواني لو أقل من دقيقة (متغير البيئة في الاختبارات
+            مثلاً)، وإلا بالدقائق. بدونها كان السجل يطبع "every 0 minutes" لتكرار بالثواني.
+    English: A readable interval label for the logs - seconds when under a minute (e.g. the env
+             override in tests), otherwise minutes. Without it the log printed "every 0 minutes"
+             for a seconds-based interval.
+    """
+    seconds = sync_auto_interval_seconds() if interval_seconds is None else int(interval_seconds)
+    if seconds < 60:
+        return f"{seconds} seconds"
+    return f"{max(1, round(seconds / 60))} minutes"
+
+
+def sync_worker_status():
+    """Arabic: حالة خيط المزامنة الحيّ لعرضها في اللوحة (يعمل؟/التكرار/الدورة القادمة). English: Live worker status for the popup (running? interval? next run?)."""
+    interval_seconds = sync_auto_interval_seconds()
+    return {
+        "running": bool(_SYNC_WORKER_INFO.get("running")),
+        "interval_seconds": interval_seconds,
+        "interval_minutes": max(1, round(interval_seconds / 60)),
+        "next_cycle_at": _SYNC_WORKER_INFO.get("next_cycle_at") or "",
+        "started_at": _SYNC_WORKER_INFO.get("started_at") or "",
+    }
+
+
+def sync_run_cycle(reason="manual"):
+    """
+    Arabic: دورة مزامنة كاملة واحدة: سحب تحديثات الطرف الآخر، إعادة إرسال الطابور، ثم مصالحة
+            كاملة إن حان وقتها. تُستخدم من زر "مزامنة الآن" ومن الدورة التلقائية معاً حتى
+            يتصرّف الزر والخيط بنفس الطريقة بالضبط.
+
+            ترجع ملخصاً: success/error/new_items/new_from_others/pending_queue. وnew_from_others
+            هو الرقم الذي تعتمد عليه الإضافة لإشعار "وصلت منتجات جديدة أضافها الطرف الآخر".
+    English: One full sync cycle: pull the other side's updates, flush the retry queue, then run
+             a full reconcile when due. Shared by the "sync now" button and the automatic
+             worker so both behave identically.
+
+             Returns a summary: success/error/new_items/new_from_others/pending_queue.
+             new_from_others is what the extension uses to notify "new products from the other
+             operator arrived".
+    """
+    config = load_sync_config()
+    if not config["Enabled"]:
+        result = {
+            "success": False,
+            "error": "sync_disabled",
+            "reason": reason,
+            "new_items": 0,
+            "new_from_others": 0,
+            "pending_queue": len(load_sync_queue()),
+        }
+    else:
+        pull_error = sync_pull_updates()
+        sync_flush_queue()
+        # Arabic: المصالحة الكاملة تفشل بهدوء - خطؤها لا يُبطل نجاح دورة المزامنة نفسها.
+        # English: The full reconcile fails quietly - its error must not invalidate the cycle.
+        try:
+            sync_auto_reconcile_if_due()
+        except Exception as reconcile_error:
+            logger.warning("Auto reconcile failed: %s", reconcile_error)
+
+        state = load_sync_state()
+        # Arabic: "من الطرف الآخر" تُقرأ فقط لو كانت من نفس السحب الذي يحمل العدد (نفس الطابع
+        #         الزمني)، وإلا ترجع صفراً بدل نسبة أرقام سحب قديم لهذه الدورة.
+        # English: "From the other operator" counts only when it belongs to the same pull as the
+        #          count (same timestamp); otherwise zero, never attributing an older batch here.
+        same_pull = bool(state.get("last_pull_new_from_others_at")) and (
+            state.get("last_pull_new_from_others_at") == state.get("last_pull_new_at")
+        )
+        result = {
+            "success": pull_error is None,
+            "error": pull_error or "",
+            "reason": reason,
+            "new_items": _safe_int(state.get("last_pull_new_count"), 0),
+            "new_from_others": _safe_int(state.get("last_pull_new_from_others"), 0) if same_pull else 0,
+            "new_at": state.get("last_pull_new_at") or "",
+            "pending_queue": len(load_sync_queue()),
+        }
+
+    with SYNC_LOCK:
+        state = load_sync_state()
+        state["last_cycle_at"] = datetime.now().isoformat(timespec="seconds")
+        state["last_cycle_reason"] = reason
+        save_sync_state(state)
+
+    return result
+
+
+def sync_background_worker(stop_event=None):
+    """
+    Arabic: الخيط الخلفي الحقيقي للمزامنة. يشتغل ما دام الباك اند شغالاً، ولا يحتاج فتح لوحة
+            الإضافة إطلاقاً:
+              - أول دورة بعد SYNC_WORKER_STARTUP_DELAY_SECONDS من الإقلاع (مزامنة سريعة عند التشغيل).
+              - ثم دورة كل sync_auto_interval_seconds() (30 دقيقة افتراضياً).
+              - وبين الدورات: إعادة إرسال طابور الرفع الفاشل كل 5 دقائق لو فيه عناصر.
+            الدورة نفسها تُتخطى بسرعة لو المزامنة معطّلة، والخيط يستمر بالانتظار.
+
+            English: The real background sync thread. Runs as long as the backend does and never
+                     needs the popup open:
+                       - first cycle SYNC_WORKER_STARTUP_DELAY_SECONDS after startup (a quick
+                         sync at launch),
+                       - then one cycle every sync_auto_interval_seconds() (30 minutes by default),
+                       - between cycles: flush the failed-push retry queue every 5 minutes when
+                         it holds anything.
+                     A cycle short-circuits when sync is disabled; the thread keeps waiting.
+    """
+    global _sync_worker_started
+    stop_event = stop_event or threading.Event()
+    now_monotonic = time.monotonic
+    next_cycle_at = now_monotonic() + max(0, SYNC_WORKER_STARTUP_DELAY_SECONDS)
+    next_retry_at = now_monotonic() + SYNC_QUEUE_RETRY_INTERVAL_SECONDS
+
+    _SYNC_WORKER_INFO.update({
+        "running": True,
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "next_cycle_at": datetime.fromtimestamp(
+            time.time() + max(0, SYNC_WORKER_STARTUP_DELAY_SECONDS)
+        ).isoformat(timespec="seconds"),
+    })
+    logger.info(
+        "Background sync worker started (first cycle in %ss, then every %s).",
+        SYNC_WORKER_STARTUP_DELAY_SECONDS, sync_interval_label(),
+    )
+
+    try:
+        while not stop_event.is_set():
+            current = now_monotonic()
+            if current >= next_cycle_at:
+                interval = sync_auto_interval_seconds()
+                next_cycle_at = current + interval
+                _SYNC_WORKER_INFO["next_cycle_at"] = (
+                    datetime.fromtimestamp(time.time() + interval).isoformat(timespec="seconds")
+                )
+                try:
+                    result = sync_run_cycle(reason="auto")
+                    if result.get("success") and result.get("new_from_others"):
+                        logger.info("Auto sync pulled %s new product(s) from the other operator.", result["new_from_others"])
+                except Exception as exc:
+                    logger.warning("Automatic sync cycle failed: %s", exc)
+            elif current >= next_retry_at:
+                next_retry_at = current + SYNC_QUEUE_RETRY_INTERVAL_SECONDS
+                try:
+                    if load_sync_config()["Enabled"] and load_sync_queue():
+                        sync_flush_queue()
+                except Exception as exc:
+                    logger.warning("Automatic sync retry flush failed: %s", exc)
+
+            stop_event.wait(SYNC_WORKER_TICK_SECONDS)
+    finally:
+        _SYNC_WORKER_INFO["running"] = False
+        _SYNC_WORKER_INFO["next_cycle_at"] = ""
+        _sync_worker_started = False
+        logger.info("Background sync worker stopped.")
+
+
+def start_sync_background_worker(stop_event=None):
+    """
+    Arabic: يُشغّل خيط المزامنة مرة واحدة فقط (استدعاء ثانٍ لا يفتح خيطاً ثانياً)، ويُرجع True
+            لو فعلاً بدأ الخيط الآن.
+    English: Starts the sync worker exactly once (a second call never opens a second thread);
+             returns True only when it actually started the thread now.
+    """
+    global _sync_worker_started
+    with _sync_worker_lock:
+        if _sync_worker_started:
+            return False
+        _sync_worker_started = True
+    thread = threading.Thread(
+        target=sync_background_worker,
+        kwargs={"stop_event": stop_event},
+        name="alphacode-sync-worker",
+        daemon=True,
+    )
+    thread.start()
+    return True
 
 
 def sync_call(action, payload=None, method="POST"):
@@ -233,6 +495,13 @@ def sync_pull_updates():
             save_sync_state(state)
         return error
     items = (data or {}).get("items") or {}
+    # Arabic: نحسب الجديد فعلينا (اللي مو موجود بأرشيفنا) ومن أضافه، حتى تعرض اللوحة "وصل
+    #         N منتج جديد" وتعرف الإضافة أنها منتجات الطرف الآخر فتُشعر المستخدم.
+    # English: Track what is genuinely new to us (not already in our archive) and who added it,
+    #          so the popup can show "N new products arrived" and the extension can notify.
+    my_name = str(config.get("AddedByName") or "").strip()
+    added_count = 0
+    added_from_others = 0
     if items:
         with _save_lock:
             archive = _load_archive()
@@ -241,11 +510,28 @@ def sync_pull_updates():
                 if key not in archive:
                     archive[key] = item
                     changed = True
+                    added_count += 1
+                    added_by = str((item or {}).get("added_by") or "").strip()
+                    if added_by and added_by != my_name:
+                        added_from_others += 1
             if changed:
                 _save_archive(archive)
     with SYNC_LOCK:
-        state["last_pull_at"] = (data or {}).get("server_time") or datetime.now().isoformat(timespec="seconds")
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        state["last_pull_at"] = (data or {}).get("server_time") or now_iso
         state["last_error"] = ""
+        state["last_pull_new_count"] = added_count
+        state["last_pull_new_at"] = now_iso
+        # Arabic: حقول "من الطرف الآخر" تُحدَّث فقط عند وجود منتجات فعلية منه، ولا تُصفَّر في
+        #         سحب فارغ لاحق. السبب: الإضافة تقارن هذا الطابع الزمني بما أُشعرت به سابقاً،
+        #         فلو صفّرناه بسحب فارغ بينهما يضيع الإشعار نهائياً بمنتجات وصلت فعلاً.
+        # English: The "from the other operator" fields are updated only when such products
+        #          actually arrived, and are never zeroed by a later empty pull - the extension
+        #          compares this timestamp with the last one it notified about, so zeroing it in
+        #          between would permanently swallow the notice for products that did arrive.
+        if added_from_others:
+            state["last_pull_new_from_others"] = added_from_others
+            state["last_pull_new_from_others_at"] = now_iso
         save_sync_state(state)
 
 

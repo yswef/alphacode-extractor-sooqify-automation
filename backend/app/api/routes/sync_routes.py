@@ -1,11 +1,16 @@
 import logging
+from datetime import datetime
+
 from flask import Blueprint, jsonify, request
 
 from app.services.sync_service import (
     sync_pull_updates,
-    sync_flush_queue,
     sync_reconcile_full,
-    sync_auto_reconcile_if_due,
+    sync_run_cycle,
+    sync_worker_status,
+    DEFAULT_AUTO_SYNC_MINUTES,
+    MIN_AUTO_SYNC_MINUTES,
+    MAX_AUTO_SYNC_MINUTES,
 )
 from app.repositories.sync_config_repository import load_sync_config, save_sync_config
 from app.repositories.sync_queue_repository import load_sync_queue
@@ -38,31 +43,50 @@ def api_sync_reconcile():
 
 @sync_bp.route("/api/sync/now", methods=["POST"])
 def trigger_sync_now():
-    """Arabic: تشغيل دورة مزامنة فورية عند الضغط على زر 'مزامنة الآن'. لو فشل الـpull فعلياً (خطأ شبكة من sync_call)، يرجع success:false + error بالمستوى الأعلى - نفس نمط /api/brands - بدل ادّعاء نجاح لمجرد عدم وجود Python exception. English: Run one immediate sync cycle for the 'sync now' button. If the pull actually fails (a network error from sync_call), returns success:false + a top-level error - matching the /api/brands pattern - instead of claiming success just because no Python exception was raised."""
+    """
+    Arabic: تشغيل دورة مزامنة فورية - يستدعيها زر 'مزامنة الآن' والمنبّه الدوري في الإضافة
+            (كخطة بديلة لو الخيط الخلفي متوقف لأي سبب) بنفس الدالة sync_run_cycle التي
+            يستخدمها الخيط التلقائي، فيتصرّف الاثنان بنفس الطريقة تماماً.
+
+            ترجع أيضاً new_items/new_from_others حتى تعرف الإضافة مباشرة أن منتجات جديدة
+            وصلت من الطرف الآخر وتُشعر المستخدم بدل ما يكتشف الأمر بنفسه.
+
+            لو فشل السحب فعلياً (خطأ شبكة من sync_call)، يرجع success:false + error بالمستوى
+            الأعلى - نفس نمط /api/brands - بدل ادّعاء نجاح لمجرد عدم وجود Python exception.
+
+    English: Run one immediate sync cycle - called by the 'sync now' button and by the
+             extension's periodic alarm (a fallback if the background thread ever stops),
+             sharing sync_run_cycle() with the automatic worker so both behave identically.
+
+             Also returns new_items/new_from_others so the extension knows at once that new
+             products arrived from the other operator and can notify, instead of making the
+             operator discover it by chance.
+
+             If the pull genuinely fails (a network error from sync_call), returns
+             success:false + a top-level error - matching the /api/brands pattern - instead of
+             claiming success just because no Python exception was raised.
+    """
     if not load_sync_config()["Enabled"]:
         return jsonify({"success": False, "error": "Sync is not enabled."}), 400
     try:
-        pull_error = sync_pull_updates()
-        sync_flush_queue()
-        # Arabic: مصالحة كاملة تلقائية كل عدة ساعات - تعوّض ما قد يتخطاه السحب التزايدي.
-        #         تفشل بهدوء: خطؤها لا يُبطل نجاح دورة المزامنة نفسها.
-        # English: An automatic full reconcile every few hours - catches whatever the
-        #          incremental pull may have skipped. Fails quietly: its error must not
-        #          invalidate the success of the sync cycle itself.
-        try:
-            sync_auto_reconcile_if_due()
-        except Exception as reconcile_error:
-            logger.warning("Auto reconcile failed: %s", reconcile_error)
+        result = sync_run_cycle(reason="manual")
     except Exception as exc:
+        logger.exception("Manual sync cycle failed: %s", exc)
         return jsonify({"success": False, "error": str(exc)}), 500
-    if pull_error:
+    if not result.get("success"):
         return jsonify({
             "success": False,
-            "error": pull_error,
+            "error": result.get("error") or "sync_failed",
             "status": load_sync_state(),
-            "pending_queue": len(load_sync_queue()),
+            "pending_queue": result.get("pending_queue", len(load_sync_queue())),
         }), 502
-    return jsonify({"success": True, "status": load_sync_state(), "pending_queue": len(load_sync_queue())})
+    return jsonify({
+        "success": True,
+        "status": load_sync_state(),
+        "new_items": result.get("new_items", 0),
+        "new_from_others": result.get("new_from_others", 0),
+        "pending_queue": result.get("pending_queue", len(load_sync_queue())),
+    })
 
 @sync_bp.route("/api/sync/login", methods=["POST"])
 def login_sync():
@@ -135,6 +159,9 @@ def get_sync_config():
         "AddedByName": config["AddedByName"],
         "TokenSet": bool(config["Token"]),
         "TokenPreview": masked_token,
+        "AutoSyncMinutes": config.get("AutoSyncMinutes", DEFAULT_AUTO_SYNC_MINUTES),
+        "AutoSyncMinMinutes": MIN_AUTO_SYNC_MINUTES,
+        "AutoSyncMaxMinutes": MAX_AUTO_SYNC_MINUTES,
     })
 
 @sync_bp.route("/api/sync/config", methods=["POST"])
@@ -155,27 +182,68 @@ def set_sync_config():
     server_url = normalize_text(data.get("ServerUrl")) or existing["ServerUrl"]
     added_by_name = normalize_text(data.get("AddedByName")) or existing["AddedByName"]
     enabled = data.get("Enabled") if data.get("Enabled") is not None else existing["Enabled"]
+    # Arabic: تكرار المزامنة التلقائية بالدقائق - غياب الحقل أو قيمة غير رقمية يُبقيان القيمة
+    #         السابقة (نفس حماية بقية الحقول)، والقيمة الصريحة تُقصّ للحدود المسموحة.
+    # English: Automatic sync interval in minutes - an absent or non-numeric value keeps the
+    #          previous one (same protection as the other fields); an explicit value is
+    #          clamped to the allowed range.
+    auto_sync_minutes = existing.get("AutoSyncMinutes", DEFAULT_AUTO_SYNC_MINUTES)
+    if data.get("AutoSyncMinutes") is not None:
+        try:
+            auto_sync_minutes = int(float(data.get("AutoSyncMinutes")))
+        except (TypeError, ValueError):
+            pass
+        auto_sync_minutes = max(MIN_AUTO_SYNC_MINUTES, min(auto_sync_minutes, MAX_AUTO_SYNC_MINUTES))
     save_sync_config({
         "Enabled": enabled,
         "ServerUrl": server_url,
         "Token": token,
         "AddedByName": added_by_name,
+        "AutoSyncMinutes": auto_sync_minutes,
     })
     logger.info("Sync configuration updated. enabled=%s server=%s", safe_bool(enabled), server_url)
     return jsonify({"success": True})
 
 @sync_bp.route("/api/sync/status", methods=["GET"])
 def get_sync_status():
-    """Arabic: حالة المزامنة للوحة التشخيص - آخر سحب/رفع وعدد العناصر المعلّقة. English: Sync status for the diagnostics tab - last pull/push and pending queue size."""
+    """
+    Arabic: حالة المزامنة للوحة - آخر سحب/رفع، العناصر المعلّقة، وحالة الخيط التلقائي
+            (يعمل؟ كل كم دقيقة؟ الدورة القادمة متى؟) مع نتيجة آخر سحب (كم منتج جديد وصل
+            وكم منها من الطرف الآخر). هذه الحقول هي مصدر الإشعار في الإضافة وشاشة الحالة.
+
+    English: Sync status for the popup - last pull/push, pending queue, the automatic worker
+             state (running? interval? next cycle?) and the last pull outcome (how many new
+             products arrived and how many came from the other operator). These fields feed
+             the extension's notification and the status panel.
+    """
     config = load_sync_config()
     state = load_sync_state()
     queue = load_sync_queue()
+    worker = sync_worker_status()
     return jsonify({
         "success": True,
         "enabled": config["Enabled"],
         "server_url": config["ServerUrl"],
+        "added_by_name": config.get("AddedByName") or "",
         "last_pull_at": state.get("last_pull_at") or "",
         "last_push_at": state.get("last_push_at") or "",
         "last_error": state.get("last_error") or "",
         "pending_queue": len(queue),
+        "auto_worker_running": worker["running"],
+        "auto_interval_minutes": worker["interval_minutes"],
+        "auto_interval_seconds": worker["interval_seconds"],
+        "next_auto_cycle_at": worker["next_cycle_at"],
+        "last_cycle_at": state.get("last_cycle_at") or "",
+        "last_cycle_reason": state.get("last_cycle_reason") or "",
+        "last_pull_new_count": state.get("last_pull_new_count") or 0,
+        "last_pull_new_from_others": state.get("last_pull_new_from_others") or 0,
+        "last_pull_new_at": state.get("last_pull_new_at") or "",
+        # Arabic: طابع زمني منفصل لآخر سحب فيه منتجات من الطرف الآخر - تعتمد عليه الإضافة
+        #         للإشعار مرة واحدة فقط، ولا يتأثر بسحب فارغ لاحق.
+        # English: A separate timestamp for the last pull that actually carried products from
+        #          the other operator - the extension notifies once off it, and a later empty
+        #          pull cannot clear it.
+        "last_pull_new_from_others_at": state.get("last_pull_new_from_others_at") or "",
+        "last_full_reconcile_at": state.get("last_full_reconcile_at") or "",
+        "server_time": datetime.now().isoformat(timespec="seconds"),
     })

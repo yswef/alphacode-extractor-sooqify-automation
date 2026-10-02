@@ -651,11 +651,51 @@ def get_archive_stats():
 
 @upload_bp.route("/api/archive/recent", methods=["GET"])
 def get_recent_products():
-    """Arabic: شاشة تشخيص صغيرة للمنتجات المضافة حديثاً. English: Small diagnostics view of recently added products."""
+    """
+    Arabic: قائمة آخر المنتجات مع حالة كل منتج (تمت إضافته للمتجر / جارٍ الإرسال / فشل / مجهّز
+            فقط) — هذه هي الشاشة التي تجيب سؤال "المنتج انضاف ولا لأ". كانت ترجع workflow_status
+            لكن اللوحة ما كانت تعرضه إطلاقاً، فالمستخدم يشوف الاسم والبراند ولا يشوف النتيجة.
+
+            ترجع كذلك ملخصاً لكل الأرشيف (أعداد المُضاف/الفاشل/المجهّز) وترتيب المتعاونين حسب
+            عدد المنتجات، فيعرف كل طرف من أين جاء المنتج وحالته بضغطة واحدة.
+
+    English: The latest products with each one's status (submitted to the store / submitting /
+             failed / prepared only) - the screen that answers "was this product actually
+             added?". The route already returned workflow_status, but the popup never rendered
+             it, so the operator saw the name and brand and never the outcome.
+
+             Also returns a whole-archive summary (submitted/failed/prepared counts) and the
+             operators ranked by product count, so each side can see where a product came from
+             and how it ended in one look.
+    """
     limit = max(1, min(safe_int(request.args.get("limit"), 15), 100))
     archive = load_archive(paths_state.ARCHIVE_PATH)
     entries = [item for item in _archive_entries(archive).values() if item.get("id") is not None]
     entries.sort(key=lambda item: safe_int(item.get("id"), 0), reverse=True)
+
+    summary = {"total": len(entries), "submitted": 0, "in_progress": 0, "failed": 0, "prepared": 0}
+    operators = {}
+    for item in entries:
+        status = normalize_text(item.get("workflow_status") or item.get("store_submission_status")).lower()
+        if status == "submitted":
+            summary["submitted"] += 1
+        elif status in {"submit_started", "submitting", "started"}:
+            summary["in_progress"] += 1
+        elif status == "submit_failed":
+            summary["failed"] += 1
+        else:
+            summary["prepared"] += 1
+
+        operator = normalize_text(item.get("added_by")) or "غير محدد"
+        operators[operator] = operators.get(operator, 0) + 1
+
+    def _failure_reason(item):
+        """Arabic: سبب فشل الإرسال المختصر كما سجّلته الإضافة (لو موجود). English: The short failure reason recorded by the extension, when present."""
+        details = item.get("workflow_details")
+        if isinstance(details, dict):
+            return normalize_text(details.get("error"))[:200]
+        return normalize_text(details)[:200]
+
     recent = [
         {
             "id": item.get("id"),
@@ -665,11 +705,21 @@ def get_recent_products():
             "added_by": item.get("added_by") or "غير محدد",
             "id_source": item.get("id_source") or "local_fallback",
             "created_at": item.get("created_at"),
-            "workflow_status": item.get("workflow_status"),
+            "date": item.get("date"),
+            "workflow_status": normalize_text(item.get("workflow_status")) or "prepared",
+            "store_submission_status": normalize_text(item.get("store_submission_status")) or "not_submitted",
+            "workflow_updated_at": item.get("workflow_updated_at"),
+            "failure_reason": _failure_reason(item),
         }
         for item in entries[:limit]
     ]
-    return jsonify({"success": True, "products": recent})
+    ranked_operators = sorted(operators.items(), key=lambda pair: pair[1], reverse=True)
+    return jsonify({
+        "success": True,
+        "products": recent,
+        "summary": summary,
+        "operators": [{"name": name, "count": count} for name, count in ranked_operators[:5]],
+    })
 
 
 @upload_bp.route("/api/pending/latest", methods=["GET"])

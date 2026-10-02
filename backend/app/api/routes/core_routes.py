@@ -137,7 +137,15 @@ def api_add_brand():
         return jsonify({"success": False, "error": "Sync is disabled. Enable sync to add brands."}), 400
 
     req_data = request.get_json(silent=True) or {}
-    data, error = sync_call("brands/add", method="POST", data=req_data)
+    # Arabic: التوقيع الفعلي لـ sync_call هو (action, payload=None, method="POST") - تمرير
+    #         الحمولة بالمفتاح data كان يرمي TypeError ويعطي HTTP 500 عند إضافة براند.
+    # English: sync_call's real signature is (action, payload=None, method="POST") - passing
+    #          the body as data= raised TypeError and produced HTTP 500 on brand add.
+    # Arabic: اسم الـ action في sync.php هو add_brand (بشرطة سفلية) وليس brands/add - الاسم الخاطئ
+    #         كان يرجع "Unknown action" من السيرفر فيتحول إلى HTTP 502.
+    # English: The action name in sync.php is add_brand (underscore), not brands/add - the wrong
+    #          name made the server answer "Unknown action", which surfaced as HTTP 502.
+    data, error = sync_call("add_brand", payload=req_data, method="POST")
     if error:
         return jsonify({"success": False, "error": error}), 502
     return jsonify(data or {"success": True})

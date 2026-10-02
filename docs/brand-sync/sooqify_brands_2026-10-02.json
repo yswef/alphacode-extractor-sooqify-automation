@@ -1,14 +1,17 @@
 {
-  "source": "User-provided Sooqify Admin page probe, 2026-10-02",
-  "warning": "The visible first column 1..8 appears to be display numbering, not the database ID. Candidate IDs below are inferred by pairing each visible row with delete-form actions in DOM order. Do not import this snapshot; rerun the updated row-aware probe to confirm IDs from each row's action URL.",
-  "observed_rows": [
-    { "displayed_number": 1, "candidate_delete_id": 6, "name": "Air Jordan", "product_count": 1097 },
-    { "displayed_number": 2, "candidate_delete_id": 11, "name": "كارتييه", "product_count": 0 },
-    { "displayed_number": 3, "candidate_delete_id": 13, "name": "فرانك مولر", "product_count": 0 },
-    { "displayed_number": 4, "candidate_delete_id": 9, "name": "نيو بالانس", "product_count": 550 },
-    { "displayed_number": 5, "candidate_delete_id": 7, "name": "Nike", "product_count": 1602 },
-    { "displayed_number": 6, "candidate_delete_id": 12, "name": "باتيك فيليب", "product_count": 0 },
-    { "displayed_number": 7, "candidate_delete_id": 8, "name": "أديداس", "product_count": 735 },
-    { "displayed_number": 8, "candidate_delete_id": 10, "name": "رولكس", "product_count": 340 }
+  "source": "User-provided Sooqify Admin probe v2.1.0",
+  "page": "https://admin.sooqifyonline.com/admin/brand",
+  "captured_at": "2026-10-02T21:08:19.376Z",
+  "verification": "Every ID was read from its own table row action URL (id_source=row_action_url). displayed_number is the visible row number, not the brand ID. The probe submitted no forms.",
+  "warning": "Verified at capture time; refresh the probe if the store's brand list has since changed before replacing the shared mapping.",
+  "brands": [
+    { "id": 6, "name": "Air Jordan", "store_display_name": "Air Jordan", "displayed_number": 1, "product_count": 1097, "id_source": "row_action_url" },
+    { "id": 11, "name": "Cartier", "store_display_name": "كارتييه", "displayed_number": 2, "product_count": 0, "id_source": "row_action_url" },
+    { "id": 13, "name": "Franck Muller", "store_display_name": "فرانك مولر", "displayed_number": 3, "product_count": 0, "id_source": "row_action_url" },
+    { "id": 9, "name": "New Balance", "store_display_name": "نيو بالانس", "displayed_number": 4, "product_count": 550, "id_source": "row_action_url" },
+    { "id": 7, "name": "Nike", "store_display_name": "Nike", "displayed_number": 5, "product_count": 1602, "id_source": "row_action_url" },
+    { "id": 12, "name": "Patek Philippe", "store_display_name": "باتيك فيليب", "displayed_number": 6, "product_count": 0, "id_source": "row_action_url" },
+    { "id": 8, "name": "Adidas", "store_display_name": "أديداس", "displayed_number": 7, "product_count": 735, "id_source": "row_action_url" },
+    { "id": 10, "name": "Rolex", "store_display_name": "رولكس", "displayed_number": 8, "product_count": 340, "id_source": "row_action_url" }
   ]
 }

@@ -16,15 +16,15 @@ The reference endpoint fixes that contract:
 
 The import only changes the **shared sync database mapping/archive**. It does not connect to or rewrite Sooqify's live product table. Existing products in the shop must be audited separately if they were already submitted with an incorrect `brand_id`. Product primary IDs are never changed by this code.
 
-## Inspect and import the live store list
+## Display the live store brand IDs
 
-1. Open Sooqify Admin → **العلامات التجارية** while logged in.
-2. Open DevTools → Console, paste the contents of [`../../tools/sooqify_brand_page_probe.js`](../../tools/sooqify_brand_page_probe.js), and run it. It copies the initial report to the clipboard automatically; paste that JSON directly here or into the extension.
-3. The probe is read-only: it does not click or submit forms. It gets the real brand ID from that row's edit/delete action URL when possible, and records the visible first-column number separately as `displayed_number`; that column may be just a row index. It redacts token/password/CSRF/cookie fields. If an output row has `id: null` or `id_source: "not_found"`, do not import it. If you need to inspect the add-brand request, install the probe **before** manually submitting a brand you actually intend to add; it re-copies the latest report automatically after brand-related requests. If the browser blocks automatic clipboard access, use `__alphaSooqifyBrandProbe.copy()` as a fallback.
-4. In the extension's **البراندات والمقاسات** card, paste the copied JSON into “بيانات العلامات من فاحص الصفحة” and click “مزامنة قائمة البراندات مع الجهازين”. Review the confirmation carefully. The Python API canonicalizes common Arabic brand transliterations to the English names used by the extension, while preserving the Sooqify IDs.
-5. Both machines read the same map from the shared sync endpoint. The product upload backend also refreshes that shared map and refuses an upload if the map cannot be read or the selected name has no valid ID; it does not silently fall back to the old numeric ID.
+The extension content script on `https://admin.sooqifyonline.com/admin/brand` reads each row's own edit/delete action URL and temporarily replaces the first-column row number with the actual brand ID. It runs automatically when the page opens; no DevTools paste is needed. This is a browser-only visual overlay: it sends no requests, submits no forms, and does not change Sooqify data. Reloading the page restores the server-rendered display.
 
-A screenshot-derived reference snapshot (not an authoritative import; re-run the probe before applying) is at [`../../docs/brand-sync/sooqify_brands_2026-10-02.json`](../../docs/brand-sync/sooqify_brands_2026-10-02.json).
+The optional diagnostic at [`../../tools/sooqify_brand_page_probe.js`](../../tools/sooqify_brand_page_probe.js) can still copy a redacted JSON report for troubleshooting. Its `id` values come from row action URLs and the original first-column value is retained as `displayed_number`.
+
+The popup no longer has a bulk “sync IDs from page” textarea/button. The visual overlay does not update the separate shared uploader mapping or alter existing products. The PHP `brands/sync` endpoint remains in the reference for server-side maintenance, but the popup's failed `/api/brands/sync` flow is not used. Diagnose the observed 502 response before re-enabling a bulk import workflow.
+
+A row-verified snapshot from probe v2.1.0, authoritative for its capture time (2026-10-02), is at [`../../docs/brand-sync/sooqify_brands_2026-10-02.json`](../../docs/brand-sync/sooqify_brands_2026-10-02.json). Re-run the probe if the store list changes.
 
 ## Deployment/security
 

@@ -9,9 +9,20 @@
 (() => {
     'use strict';
 
-    if (globalThis.__alphaSooqifyBrandProbe?.installed) {
-        console.info('Brand probe is already installed. Use __alphaSooqifyBrandProbe.snapshot() or .copy().');
-        return globalThis.__alphaSooqifyBrandProbe;
+    const PROBE_VERSION = '2.1.0';
+    const existingProbe = globalThis.__alphaSooqifyBrandProbe;
+    if (existingProbe?.installed) {
+        if (existingProbe.version === PROBE_VERSION) {
+            console.info(`Brand probe v${PROBE_VERSION} is already installed. Use __alphaSooqifyBrandProbe.snapshot() or .copy().`);
+            return existingProbe;
+        }
+        if (typeof existingProbe.uninstall === 'function') {
+            console.info(`Replacing older brand probe${existingProbe.version ? ` v${existingProbe.version}` : ''} with v${PROBE_VERSION}.`);
+            existingProbe.uninstall();
+        } else {
+            console.warn('An older brand probe is still installed and cannot be replaced safely. Refresh this page, then paste the updated probe.');
+            return null;
+        }
     }
 
     const SENSITIVE = /token|secret|password|passwd|authorization|cookie|csrf|session|api[_-]?key/i;
@@ -283,10 +294,12 @@
 
     const reportTables = tableReport();
     const probe = {
+        version: PROBE_VERSION,
         installed: true,
         snapshot() {
             const tablesNow = tableReport();
             return {
+                probe_version: PROBE_VERSION,
                 page: { origin: location.origin, path: location.pathname, title: document.title },
                 captured_at: new Date().toISOString(),
                 brands: tablesNow.brands,

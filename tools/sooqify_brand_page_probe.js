@@ -2,18 +2,21 @@
  * Read-only diagnostic for Sooqify Admin > Brand page.
  * Paste this whole file into DevTools Console while logged in to /admin/brand.
  * It does not click buttons, submit forms, or modify store data.
- * It reports brand names plus real IDs from row action URLs when available (the visible
- * first-column number may be only a row index), form metadata, and brand-related requests.
- * Sensitive fields are redacted.
+ * For convenience, it temporarily replaces the visible row number with the real brand ID
+ * in this browser tab only; the original number is retained in the report. Refreshing the page
+ * or uninstalling the probe restores the original display. Sensitive fields are redacted.
  */
 (() => {
     'use strict';
 
-    const PROBE_VERSION = '2.1.0';
+    const PROBE_VERSION = '2.2.0';
     const existingProbe = globalThis.__alphaSooqifyBrandProbe;
     if (existingProbe?.installed) {
         if (existingProbe.version === PROBE_VERSION) {
-            console.info(`Brand probe v${PROBE_VERSION} is already installed. Use __alphaSooqifyBrandProbe.snapshot() or .copy().`);
+            console.info(`Brand probe v${PROBE_VERSION} is already installed; copying a fresh report.`);
+            existingProbe.copy({ automatic: true, reason: 'probe rerun' }).catch(error => {
+                console.warn('[Sooqify brand probe] Automatic clipboard copy failed:', error);
+            });
             return existingProbe;
         }
         if (typeof existingProbe.uninstall === 'function') {
@@ -141,17 +144,96 @@
         return { id: null, source: 'not_found' };
     }
 
+    function showRealBrandIdsInTable() {
+        const updatedRows = [];
+        for (const table of document.querySelectorAll('table')) {
+            const headRow = table.querySelector('thead tr') || table.querySelector('tr');
+            const headerCells = headRow ? [...headRow.querySelectorAll('th,td')] : [];
+            const headers = headerCells.map(cell => cleanText(cell.textContent));
+            const numberIndex = headers.findIndex(header => /^(?:id|no\.?|number|رقم|الرقم)$/i.test(header));
+            const nameIndex = headers.findIndex(header => /brand|اسم|العلامة|التجارية/i.test(header));
+            if (numberIndex < 0 || nameIndex < 0) continue;
+
+            const numberHeader = headerCells[numberIndex];
+            if (numberHeader && !numberHeader.hasAttribute('data-alpha-brand-probe-id-header')) {
+                numberHeader.setAttribute('data-alpha-brand-probe-id-header', '1');
+                const oldTitle = numberHeader.getAttribute('title');
+                if (oldTitle !== null) {
+                    numberHeader.setAttribute('data-alpha-brand-probe-had-title', '1');
+                    numberHeader.setAttribute('data-alpha-brand-probe-original-title', oldTitle);
+                }
+                numberHeader.setAttribute('title', 'معرّف قاعدة البيانات الفعلي — عرض محلي فقط');
+            }
+
+            for (const row of table.querySelectorAll('tbody tr')) {
+                const cells = [...row.querySelectorAll('td,th')];
+                const numberCell = cells[numberIndex];
+                if (!numberCell || !cleanText(cells[nameIndex]?.textContent)) continue;
+                const record = rowRecordId(row);
+                if (!Number.isInteger(record.id) || record.id <= 0) continue;
+
+                if (!row.hasAttribute('data-alpha-brand-probe-original-number')) {
+                    row.setAttribute('data-alpha-brand-probe-original-number', numberCell.textContent || '');
+                    numberCell.setAttribute('data-alpha-brand-probe-id-cell', '1');
+                    numberCell.setAttribute('data-alpha-brand-probe-original-text', numberCell.textContent || '');
+                    const oldTitle = numberCell.getAttribute('title');
+                    if (oldTitle !== null) {
+                        numberCell.setAttribute('data-alpha-brand-probe-had-title', '1');
+                        numberCell.setAttribute('data-alpha-brand-probe-original-title', oldTitle);
+                    }
+                }
+                numberCell.textContent = String(record.id);
+                numberCell.setAttribute('title', `ID الفعلي: ${record.id} — رقم العرض الأصلي: ${cleanText(row.getAttribute('data-alpha-brand-probe-original-number'))}`);
+                updatedRows.push({ id: record.id, name: cleanText(cells[nameIndex].textContent) });
+            }
+        }
+        return updatedRows;
+    }
+
+    function restoreOriginalBrandNumbers() {
+        for (const cell of document.querySelectorAll('[data-alpha-brand-probe-id-cell="1"]')) {
+            cell.textContent = cell.getAttribute('data-alpha-brand-probe-original-text') || '';
+            if (cell.getAttribute('data-alpha-brand-probe-had-title') === '1') {
+                cell.setAttribute('title', cell.getAttribute('data-alpha-brand-probe-original-title') || '');
+            } else {
+                cell.removeAttribute('title');
+            }
+            cell.removeAttribute('data-alpha-brand-probe-id-cell');
+            cell.removeAttribute('data-alpha-brand-probe-original-text');
+            cell.removeAttribute('data-alpha-brand-probe-had-title');
+            cell.removeAttribute('data-alpha-brand-probe-original-title');
+        }
+        for (const row of document.querySelectorAll('[data-alpha-brand-probe-original-number]')) {
+            row.removeAttribute('data-alpha-brand-probe-original-number');
+        }
+        for (const header of document.querySelectorAll('[data-alpha-brand-probe-id-header="1"]')) {
+            if (header.getAttribute('data-alpha-brand-probe-had-title') === '1') {
+                header.setAttribute('title', header.getAttribute('data-alpha-brand-probe-original-title') || '');
+            } else {
+                header.removeAttribute('title');
+            }
+            header.removeAttribute('data-alpha-brand-probe-id-header');
+            header.removeAttribute('data-alpha-brand-probe-had-title');
+            header.removeAttribute('data-alpha-brand-probe-original-title');
+        }
+    }
+
     function tableReport() {
         const tables = [...document.querySelectorAll('table')].map((table, tableIndex) => {
             const headRow = table.querySelector('thead tr') || table.querySelector('tr');
             const headers = headRow ? [...headRow.querySelectorAll('th,td')].map(cell => cleanText(cell.textContent)) : [];
             const rowEntries = [...table.querySelectorAll('tbody tr')].map(row => ({
+                row,
                 cells: [...row.querySelectorAll('td,th')].map(cell => cleanText(cell.textContent)),
                 record: rowRecordId(row),
             })).filter(entry => entry.cells.some(Boolean));
-            const rows = rowEntries.map(entry => entry.cells);
 
             const rowNumberIndex = headers.findIndex(header => /^(?:id|no\.?|number|رقم|الرقم)$/i.test(header));
+            for (const entry of rowEntries) {
+                const originalNumber = entry.row.getAttribute('data-alpha-brand-probe-original-number');
+                if (originalNumber !== null && rowNumberIndex >= 0) entry.cells[rowNumberIndex] = originalNumber;
+            }
+            const rows = rowEntries.map(entry => entry.cells);
             const nameIndex = headers.findIndex(header => /brand|اسم|العلامة|التجارية/i.test(header));
             const countIndex = headers.findIndex(header => /product|count|إجمالي|المنتجات/i.test(header));
             const brands = [];
@@ -293,6 +375,7 @@
     document.addEventListener('submit', submitListener, true);
 
     const reportTables = tableReport();
+    const visuallyUpdatedRows = showRealBrandIdsInTable();
     const probe = {
         version: PROBE_VERSION,
         installed: true,
@@ -306,7 +389,7 @@
                 tables: tablesNow.tables,
                 forms: formReport(),
                 recent_brand_requests: [...requests],
-                note: 'Sensitive token/password/cookie/CSRF fields are redacted. No form was submitted by this probe.',
+                note: 'Sensitive token/password/cookie/CSRF fields are redacted. The visible first-column IDs are a browser-only display overlay; the original row number is retained as displayed_number. Refresh or uninstall to restore it. No form was submitted by this probe.',
             };
         },
         async copy({ automatic = false, reason = '' } = {}) {
@@ -334,6 +417,7 @@
             XMLHttpRequest.prototype.open = xhrOpen;
             XMLHttpRequest.prototype.send = xhrSend;
             document.removeEventListener('submit', submitListener, true);
+            restoreOriginalBrandNumbers();
             probeReference = null;
             delete globalThis.__alphaSooqifyBrandProbe;
             console.info('Brand probe removed.');
@@ -342,9 +426,10 @@
     probeReference = probe;
     globalThis.__alphaSooqifyBrandProbe = probe;
 
-    console.info('[Sooqify brand probe] Installed read-only. Brand rows:', reportTables.brands);
+    console.info(`[Sooqify brand probe] Installed v${PROBE_VERSION}. Actual IDs are shown in the first column for ${visuallyUpdatedRows.length} rows in this browser tab only; refresh or uninstall to restore.`);
+    console.info('[Sooqify brand probe] Verified brand rows:', reportTables.brands);
     console.info('[Sooqify brand probe] Forms:', formReport());
-    console.info('The report is copied automatically. After any brand request, the updated report is copied again. Use __alphaSooqifyBrandProbe.copy() if manual copying is needed.');
+    console.info('The report is copied automatically. After any brand request, the updated report is copied again. Use __alphaSooqifyBrandProbe.copy() if automatic clipboard access is blocked.');
     queueAutoCopy('initial page scan', 0);
     return probe;
 })();

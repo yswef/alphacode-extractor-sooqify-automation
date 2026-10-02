@@ -1,5 +1,5 @@
 // =========================================================
-// AlphaCode Extractor v5.7.1 - Shared Default Configuration
+// AlphaCode Extractor v5.9.0 - Shared Default Configuration
 // Arabic: الإعدادات الافتراضية للتنقل بموقع المورد والصور.
 // English: Central defaults for supplier navigation and images.
 // =========================================================

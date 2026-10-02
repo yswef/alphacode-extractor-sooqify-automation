@@ -1506,6 +1506,100 @@ chrome.alarms.onAlarm.addListener(alarm => {
 // Arabic: لا نستدعيها فوراً عند بدء التشغيل — الـalarm سيُشغّلها بعد ساعة.
 // English: Do not call immediately on startup — the alarm will trigger it after one hour.
 
+// =========================================================
+// Arabic: متابعة المزامنة التلقائية وإشعار المستخدم بالمنتجات الواردة من الطرف الآخر.
+//
+//         المزامنة نفسها صارت تعمل داخل الباك اند كل 30 دقيقة (app/services/sync_service.py)،
+//         فهذا المنبّه لا يزامن بنفسه عادةً — وظيفته:
+//           1) فحص خفيف لحالة المزامنة المحلية كل 10 دقائق.
+//           2) خطة بديلة: لو طلع الخيط الخلفي متوقفاً (نسخة باك اند قديمة، أو توقف غير متوقع)
+//              أو تأخّرت دورته، يُشغّل دورة مزامنة فوراً حتى لا تتوقف المزامنة أبداً.
+//           3) إشعار نظام مرة واحدة لكل دفعة منتجات جديدة، حتى يعرف المستخدم أن منتجات
+//              الطرف الآخر وصلت لجهازه بدون أن يفتح اللوحة ويحدّث يدوياً.
+//
+// English: Automatic-sync follow-up and the "products arrived from the other operator" notice.
+//
+//          The sync itself now runs inside the backend every 30 minutes
+//          (app/services/sync_service.py), so this alarm does not normally sync on its own. Its
+//          job is:
+//            1) a light poll of the local sync status every 10 minutes,
+//            2) a fallback: when the background worker is not running (an older backend build,
+//               or an unexpected stop) or its cycle is overdue, trigger a cycle at once so sync
+//               never silently stops,
+//            3) one OS notification per batch of newly arrived products, so the operator learns
+//               the other side's products reached this machine without opening the popup and
+//               refreshing by hand.
+// =========================================================
+const SYNC_ALARM_NAME = 'alphacode_auto_sync_check';
+const SYNC_LAST_NOTIFIED_KEY = 'alphacode_sync_last_notified_pull_at';
+const SYNC_CHECK_PERIOD_MINUTES = 10;
+
+async function fetchSyncStatus() {
+    const response = await fetch(`${LOCAL_API_BASE}/api/sync/status`, { cache: 'no-store' });
+    if (!response.ok) return null;
+    const data = await response.json().catch(() => null);
+    return data?.success ? data : null;
+}
+
+async function runAutoSyncCheck() {
+    try {
+        let status = await fetchSyncStatus();
+        if (!status || !status.enabled) return;
+
+        // Arabic: الطابع الزمني الصحيح للإشعار هو last_pull_new_from_others_at (لا يتأثر بسحب
+        //         فارغ لاحق) — وهو نفس الحقل الذي يقارنه الباك اند عند حساب new_from_others.
+        // English: The right timestamp for the notice is last_pull_new_from_others_at (unaffected
+        //          by a later empty pull) - the same field the backend compares.
+        const lastCycleMs = status.last_cycle_at ? Date.parse(status.last_cycle_at) : 0;
+        const intervalMs = Math.max(5, Number(status.auto_interval_minutes || 30)) * 60000;
+        const overdue = !status.auto_worker_running
+            || !lastCycleMs
+            || (Date.now() - lastCycleMs > intervalMs * 1.5);
+
+        if (overdue) {
+            const triggered = await fetch(`${LOCAL_API_BASE}/api/sync/now`, { method: 'POST' });
+            if (triggered.ok) {
+                status = (await fetchSyncStatus()) || status;
+            }
+        }
+
+        const notifiedAt = status.last_pull_new_from_others_at || '';
+        const fromOthers = Number(status.last_pull_new_from_others || 0);
+        if (!notifiedAt || fromOthers <= 0) return;
+
+        const stored = await chrome.storage.local.get(SYNC_LAST_NOTIFIED_KEY);
+        if (stored?.[SYNC_LAST_NOTIFIED_KEY] === notifiedAt) return;
+
+        await showBatchNotification(
+            'AlphaCode — وصلت منتجات جديدة',
+            `وصل ${fromOthers} منتج أضافه الطرف الآخر إلى جهازك. افتح تبويب "المزامنة والمجلد" لمراجعتها وإضافتها إن لزم.`,
+            'alphacode_sync_notice',
+        );
+        await chrome.storage.local.set({ [SYNC_LAST_NOTIFIED_KEY]: notifiedAt });
+    } catch (_) {
+        // Arabic: الباك اند غير متاح مؤقتاً - تجاهل بصمت وحاول في الدورة القادمة.
+        // English: Backend temporarily unavailable - fail silently and retry next cycle.
+    }
+}
+
+// Arabic: نُنشئ المنبّه فقط لو غير موجود - إعادة إنشائه عند كل إيقاظ للـService Worker
+//         تصفّر عدّاده فتبقى المتابعة مؤجلة أبداً أثناء الدفعات. (نفس الفخ ينطبق على منبّه
+//         إصلاح البيانات أعلاه، لكنه خارج نطاق هذا التعديل.)
+// English: Create the alarm only when missing - recreating it on every service-worker wake
+//          resets its countdown, which can postpone the check forever during batch activity.
+//          (The same trap applies to the data-repair alarm above, left out of this change.)
+chrome.alarms.get(SYNC_ALARM_NAME, existing => {
+    if (!existing) {
+        chrome.alarms.create(SYNC_ALARM_NAME, {
+            delayInMinutes: 2,
+            periodInMinutes: SYNC_CHECK_PERIOD_MINUTES,
+        });
+    }
+});
+chrome.alarms.onAlarm.addListener(alarm => {
+    if (alarm.name === SYNC_ALARM_NAME) runAutoSyncCheck().catch(() => {});
+});
+
 // Arabic: توجيه رسائل الإضافة إلى الوظيفة المناسبة.
 // English: Route extension messages to the proper background action.
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

@@ -2,8 +2,9 @@
  * Read-only diagnostic for Sooqify Admin > Brand page.
  * Paste this whole file into DevTools Console while logged in to /admin/brand.
  * It does not click buttons, submit forms, or modify store data.
- * It reports visible ID/name rows, form field metadata, and brand-related
- * fetch/XHR requests made after installation. Sensitive fields are redacted.
+ * It reports brand names plus real IDs from row action URLs when available (the visible
+ * first-column number may be only a row index), form metadata, and brand-related requests.
+ * Sensitive fields are redacted.
  */
 (() => {
     'use strict';
@@ -102,26 +103,60 @@
         return `[${typeof body}]`;
     }
 
+    function rowRecordId(row) {
+        const actionCandidates = [];
+        for (const form of row.querySelectorAll('form[action]')) actionCandidates.push(form.action);
+        for (const link of row.querySelectorAll('a[href]')) actionCandidates.push(link.href);
+        for (const element of row.querySelectorAll('[formaction],[data-url],[data-href]')) {
+            actionCandidates.push(element.getAttribute('formaction') || element.getAttribute('data-url') || element.getAttribute('data-href') || '');
+        }
+
+        for (const candidate of actionCandidates) {
+            try {
+                const pathname = new URL(candidate, location.href).pathname;
+                const match = pathname.match(/\/brand\/(?:delete|edit|update|show)\/(\d+)\/?$/i);
+                if (match) return { id: Number(match[1]), source: 'row_action_url' };
+            } catch (_) { /* ignore malformed page attributes */ }
+        }
+
+        // Only explicitly named record-ID attributes are trusted as a fallback. Generic
+        // data-id / the visible number column may be a row index, so do not treat them as IDs.
+        for (const element of row.querySelectorAll('[data-brand-id],[data-record-id]')) {
+            const raw = element.getAttribute('data-brand-id') || element.getAttribute('data-record-id') || '';
+            if (/^\d+$/.test(raw)) return { id: Number(raw), source: 'row_record_data_attribute' };
+        }
+        const rowRecordId = row.getAttribute('data-brand-id') || row.getAttribute('data-record-id') || '';
+        if (/^\d+$/.test(rowRecordId)) return { id: Number(rowRecordId), source: 'row_record_data_attribute' };
+        return { id: null, source: 'not_found' };
+    }
+
     function tableReport() {
         const tables = [...document.querySelectorAll('table')].map((table, tableIndex) => {
             const headRow = table.querySelector('thead tr') || table.querySelector('tr');
             const headers = headRow ? [...headRow.querySelectorAll('th,td')].map(cell => cleanText(cell.textContent)) : [];
-            const rows = [...table.querySelectorAll('tbody tr')].map(row =>
-                [...row.querySelectorAll('td,th')].map(cell => cleanText(cell.textContent)),
-            ).filter(cells => cells.some(Boolean));
+            const rowEntries = [...table.querySelectorAll('tbody tr')].map(row => ({
+                cells: [...row.querySelectorAll('td,th')].map(cell => cleanText(cell.textContent)),
+                record: rowRecordId(row),
+            })).filter(entry => entry.cells.some(Boolean));
+            const rows = rowEntries.map(entry => entry.cells);
 
-            const idIndex = headers.findIndex(header => /^(?:id|no\.?|number|رقم|الرقم)$/i.test(header));
+            const rowNumberIndex = headers.findIndex(header => /^(?:id|no\.?|number|رقم|الرقم)$/i.test(header));
             const nameIndex = headers.findIndex(header => /brand|اسم|العلامة|التجارية/i.test(header));
             const countIndex = headers.findIndex(header => /product|count|إجمالي|المنتجات/i.test(header));
             const brands = [];
 
-            if (idIndex >= 0 && nameIndex >= 0) {
-                for (const cells of rows) {
-                    const idText = (cells[idIndex] || '').replace(/[^0-9]/g, '');
+            if (rowNumberIndex >= 0 && nameIndex >= 0) {
+                for (const entry of rowEntries) {
+                    const cells = entry.cells;
+                    const displayedNumberText = (cells[rowNumberIndex] || '').replace(/[^0-9]/g, '');
                     const name = cleanText(cells[nameIndex]);
-                    if (!idText || !name) continue;
+                    if (!name) continue;
                     brands.push({
-                        id: Number(idText),
+                        // Use the record ID from the row's edit/delete URL. The visible first
+                        // column can be a display index (1..N), not the database primary key.
+                        id: entry.record.id,
+                        id_source: entry.record.source,
+                        ...(displayedNumberText ? { displayed_number: Number(displayedNumberText) } : {}),
                         name,
                         ...(countIndex >= 0 ? { product_count: (cells[countIndex] || '').replace(/[^0-9]/g, '') } : {}),
                     });

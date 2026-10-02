@@ -150,7 +150,7 @@
             const headRow = table.querySelector('thead tr') || table.querySelector('tr');
             const headerCells = headRow ? [...headRow.querySelectorAll('th,td')] : [];
             const headers = headerCells.map(cell => cleanText(cell.textContent));
-            const numberIndex = headers.findIndex(header => /^(?:id|no\.?|number|رقم|الرقم)$/i.test(header));
+            const numberIndex = headers.findIndex(header => /^(?:id|si|no\.?|number|رقم|الرقم)$/i.test(header));
             const nameIndex = headers.findIndex(header => /brand|اسم|العلامة|التجارية/i.test(header));
             if (numberIndex < 0 || nameIndex < 0) continue;
 
@@ -228,7 +228,7 @@
                 record: rowRecordId(row),
             })).filter(entry => entry.cells.some(Boolean));
 
-            const rowNumberIndex = headers.findIndex(header => /^(?:id|no\.?|number|رقم|الرقم)$/i.test(header));
+            const rowNumberIndex = headers.findIndex(header => /^(?:id|si|no\.?|number|رقم|الرقم)$/i.test(header));
             for (const entry of rowEntries) {
                 const originalNumber = entry.row.getAttribute('data-alpha-brand-probe-original-number');
                 if (originalNumber !== null && rowNumberIndex >= 0) entry.cells[rowNumberIndex] = originalNumber;

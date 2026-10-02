@@ -26,7 +26,7 @@ from app.core.utils import (
 from app.core.config import write_json_temp
 from app.repositories.archive_repository import load_archive, save_archive
 from app.repositories.sync_config_repository import load_sync_config
-from app.services.sync_service import sync_push_product, sync_reserve_id, sync_reserve_key
+from app.services.sync_service import sync_call, sync_push_product, sync_reserve_id, sync_reserve_key
 from app.services.upload_service import (
     build_variant_fields,
     build_watch_variations_from_absolute_yuan,
@@ -61,6 +61,7 @@ from app.services.product_helpers import (
     get_product_image_dir,
     normalize_allowed_brands,
     parse_brand_map_json,
+    parse_brand_records,
     rebuild_archive_metadata,
     resolve_allowed_brand,
     update_product_workflow_status,
@@ -81,6 +82,21 @@ logger = logging.getLogger(__name__)
 
 upload_bp = Blueprint("upload_bp", __name__)
 SAVE_LOCK = threading.RLock()
+
+
+def _load_brand_map_for_upload(settings):
+    """Return the canonical store map; never trust a stale client ID when shared sync is on."""
+    if load_sync_config().get("Enabled"):
+        remote, error = sync_call("brands", method="GET")
+        if error:
+            return {}, True, f"Could not refresh the shared store brand IDs: {error}"
+        if not isinstance(remote, dict) or not remote.get("success"):
+            return {}, True, "The shared sync server did not return a valid brand list."
+        brand_map = parse_brand_records(remote.get("brands"))
+        if not brand_map:
+            return {}, True, "The shared brand list is empty or contains no valid IDs."
+        return brand_map, True, None
+    return parse_brand_map_json(settings.get("BrandMapJson")), False, None
 
 
 def _archive_entries(archive):
@@ -214,15 +230,50 @@ def extract_product():
     description_en = normalize_text(data.get("DescriptionEN") or data.get("Description"))
     name_ar = normalize_text(data.get("NameAR")) or name_en
     description_ar = normalize_text(data.get("DescriptionAR")) or description_en
-    brand_map = parse_brand_map_json(settings.get("BrandMapJson"))
+    brand_map, shared_brand_map, brand_map_error = _load_brand_map_for_upload(settings)
+    if brand_map_error:
+        logger.warning("Rejecting upload because its authoritative brand map is unavailable: %s", brand_map_error)
+        return jsonify({
+            "success": False,
+            "error": brand_map_error,
+            "code": "brand_map_unavailable",
+            "product_saved": False,
+        }), 503
+
     allowed_store_brands = list(brand_map.keys()) or [settings["BrandName"]]
+    if shared_brand_map:
+        requested_brand = canonicalize_brand_name(data.get("BrandName") or settings["BrandName"])
+        if requested_brand and requested_brand.casefold() not in {name.casefold() for name in allowed_store_brands}:
+            return jsonify({
+                "success": False,
+                "error": f"البراند المحدد '{requested_brand}' غير موجود في القائمة الحالية للمتجر؛ حدّث القائمة قبل الرفع.",
+                "code": "brand_name_not_mapped",
+                "brand_name": requested_brand,
+                "product_saved": False,
+            }), 409
+
     brand_name = resolve_allowed_brand(
         data.get("BrandName"),
         settings["BrandName"],
         allowed_store_brands,
         f"{data.get('NameEN', '')} {data.get('NameAR', '')} {data.get('DescriptionEN', '')}",
     )
-    brand_id = brand_map.get(brand_name, safe_int(data.get("BrandId"), settings["BrandId"]))
+    if shared_brand_map:
+        # Arabic: عند تفعيل المزامنة، الـID القادم من جهاز الإضافة أو الكاش المحلي ليس مرجعاً.
+        #         نشتق الرقم من اسم البراند في الخريطة المشتركة، ونرفض الرفع بدل إرسال ID متقادم.
+        # English: With shared sync enabled, the extension/cache ID is not authoritative. Resolve
+        #          from the shared map and reject instead of sending a stale numeric ID.
+        brand_id = brand_map.get(brand_name)
+        if not brand_id:
+            return jsonify({
+                "success": False,
+                "error": f"البراند '{brand_name}' غير موجود في قائمة المتجر المشتركة. حدّث قائمة البراندات أولاً.",
+                "code": "brand_id_not_mapped",
+                "brand_name": brand_name,
+                "product_saved": False,
+            }), 409
+    else:
+        brand_id = brand_map.get(brand_name, safe_int(data.get("BrandId"), settings["BrandId"]))
     sizes = unique_text_values(data.get("Sizes") if isinstance(data.get("Sizes"), list) else [])
     supplier_store_name = normalize_text(data.get("SupplierStoreName") or settings["SupplierStoreName"])
     supplier_store_id = normalize_text(data.get("SupplierStoreId") or settings["SupplierStoreId"])

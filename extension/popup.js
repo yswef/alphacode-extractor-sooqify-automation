@@ -101,6 +101,20 @@ function byId(id) {
     return document.getElementById(id);
 }
 
+// Arabic: مفتاح مقارنة موحّد لأسماء البراندات، بما فيها كتابة المتجر بالعربية.
+// English: Stable comparison key for brand names, including Arabic store spellings.
+function brandNameKey(value) {
+    const raw = String(value || '').trim().toLocaleLowerCase().replace(/\s+/g, ' ');
+    const aliases = {
+        'كارتيه': 'cartier', 'كارتية': 'cartier', 'كارتير': 'cartier', 'كارتيير': 'cartier', 'كارتييه': 'cartier',
+        'فرانك مولر': 'franck muller', 'نيو بالانس': 'new balance', 'نايك': 'nike',
+        'باتك فيليب': 'patek philippe', 'باتيك فيليب': 'patek philippe', 'باتيك فيليبس': 'patek philippe',
+        'أديداس': 'adidas', 'اديداس': 'adidas', 'رولكس': 'rolex',
+        'اير جوردن': 'air jordan', 'اير جوردان': 'air jordan',
+    };
+    return aliases[raw] || raw;
+}
+
 // Arabic: تعبئة عناصر النموذج من الإعدادات.
 // English: Populate form controls from configuration.
 // Arabic: يجعل BrandId المصدر الوحيد للحقيقة ويشتق منه BrandName دائماً، ثم يعرض نوع
@@ -130,11 +144,23 @@ function populateForm(config) {
         const element = byId(key);
         if (!element) continue;
 
+        if (key === 'BrandId') continue; // resolve by saved brand name below; IDs may have changed
         if (BOOLEAN_FIELDS.has(key)) {
             element.checked = Boolean(config[key]);
         } else {
             element.value = config[key] ?? '';
         }
+    }
+
+    const brandSelect = byId('BrandId');
+    if (brandSelect) {
+        const savedBrandName = brandNameKey(config.BrandName);
+        const savedBrandOption = [...brandSelect.options].find(option =>
+            option.value && brandNameKey(option.textContent) === savedBrandName,
+        );
+        if (savedBrandOption) brandSelect.value = savedBrandOption.value;
+        else if (!savedBrandName) brandSelect.value = String(config.BrandId || '');
+        else brandSelect.value = '';
     }
 
     if (byId('profileChip')) {
@@ -1780,11 +1806,17 @@ async function loadBrandsIntoSelect() {
         brands = await loadBrandsCacheFallback();
     }
 
-    // Arabic: نحتفظ بالاختيار الحالي، ولو كان فاضياً نرجع لـBrandId المحفوظ بالإعدادات -
-    //         لأن loadBrandsIntoSelect قد تعمل بعد populateForm فتمسح اختيارها.
-    // English: Keep the current selection; if it is empty fall back to the saved BrandId,
-    //          because loadBrandsIntoSelect can run after populateForm and wipe its choice.
-    const currentVal = select.value || String(currentConfig.BrandId || '');
+    // Arabic: نحتفظ باسم الاختيار لا رقمه؛ رقم البراند قد يتغير بعد مزامنة القائمة من
+    //         المتجر، والاحتفاظ بالرقم القديم قد يختار براندًا مختلفًا بعد إعادة الترتيب.
+    // English: Preserve the selected brand name, not its old ID. IDs can change after a store
+    //          refresh; reusing the old number could silently select another brand.
+    const currentName = brandNameKey(
+        select.selectedOptions[0]?.textContent
+        || byId('BrandName')?.value
+        || currentConfig.BrandName
+        || '',
+    );
+    const previousId = select.value || String(currentConfig.BrandId || '');
     select.innerHTML = '<option value="">— اختر براند —</option>';
     brands.forEach(b => {
         const opt = document.createElement('option');
@@ -1792,7 +1824,11 @@ async function loadBrandsIntoSelect() {
         opt.textContent = b.name;
         select.appendChild(opt);
     });
-    if (currentVal) select.value = currentVal;
+    const byName = [...select.options].find(option =>
+        option.value && brandNameKey(option.textContent) === currentName,
+    );
+    if (byName) select.value = byName.value;
+    else if (!currentName && previousId) select.value = previousId;
 
     select.onchange = syncBrandNameFromSelect;
 
@@ -1813,7 +1849,7 @@ async function addBrandToServer() {
     const id = parseInt(byId('NewBrandId')?.value || '0', 10);
     const resultBox = byId('addBrandResult');
     if (!name || !id) {
-        if (resultBox) { resultBox.style.display = ''; resultBox.className = 'result-box error'; resultBox.textContent = 'أدخل اسم البراند والـ ID.'; }
+        if (resultBox) { resultBox.style.display = ''; resultBox.className = 'result-box error'; resultBox.textContent = 'أدخل اسم البراند والـ ID الفعلي من المتجر.'; }
         return;
     }
     try {
@@ -1825,7 +1861,7 @@ async function addBrandToServer() {
         if (resultBox) {
             resultBox.style.display = '';
             resultBox.className = res.ok && data.success ? 'result-box success' : 'result-box error';
-            resultBox.textContent = res.ok && data.success ? `تمت إضافة "${name}" (${id}) بنجاح.` : (data.error || 'تعذرت الإضافة.');
+            resultBox.textContent = res.ok && data.success ? `تمت إضافة ربط "${name}" بالـID ${id}.` : (data.error || 'تعذرت الإضافة.');
         }
         if (res.ok && data.success) await loadBrandsIntoSelect();
     } catch (err) {
@@ -1833,10 +1869,72 @@ async function addBrandToServer() {
     }
 }
 
+async function syncBrandsFromStore() {
+    const resultBox = byId('syncBrandsResult');
+    const showResult = (message, kind = 'error') => {
+        if (!resultBox) return;
+        resultBox.style.display = '';
+        resultBox.className = `result-box ${kind}`;
+        resultBox.textContent = message;
+    };
+
+    let parsed;
+    try {
+        parsed = JSON.parse((byId('brandSyncJson')?.value || '').trim());
+    } catch (_) {
+        showResult('JSON غير صالح. شغّل فاحص الصفحة وانسخ التقرير كاملاً.');
+        return;
+    }
+    const rawBrands = Array.isArray(parsed) ? parsed : parsed?.brands;
+    if (!Array.isArray(rawBrands) || !rawBrands.length) {
+        showResult('لم أجد قائمة brands داخل JSON.');
+        return;
+    }
+    const brands = rawBrands.map(item => ({
+        id: Number(item?.id ?? item?.brand_id),
+        name: String(item?.name ?? item?.brand_name ?? '').trim(),
+    }));
+    if (brands.some(item => !Number.isInteger(item.id) || item.id <= 0 || !item.name)) {
+        showResult('كل صف يحتاج اسماً ورقم ID موجباً؛ لم يتم إرسال أي تغيير.');
+        return;
+    }
+    const preview = brands.map(item => `${item.id}: ${item.name}`).join('\n');
+    if (!window.confirm(`سيتم استبدال خريطة البراندات المشتركة بهذه القائمة (${brands.length}):\n\n${preview}\n\nلن تتغير أرقام المنتجات في متجر Sooqify. متابعة؟`)) {
+        return;
+    }
+
+    try {
+        const res = await fetch(`${API_BASE}/api/brands/sync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ brands, confirm_replace: true }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+            showResult(data.error || 'تعذرت مزامنة خريطة البراندات.');
+            return;
+        }
+        if (Array.isArray(data.brands)) {
+            const refreshed = data.brands.map(item => ({ id: item.id, name: item.name }));
+            await chrome.storage.local.set({ [BRANDS_CACHE_STORAGE_KEY]: refreshed });
+        }
+        await loadBrandsIntoSelect();
+        const unmapped = Number(data.unmapped_product_count || 0);
+        const updatedProducts = Number(data.updated_shared_products || 0);
+        const warning = unmapped > 0
+            ? ` وهناك ${unmapped} منتجات قديمة في أرشيف المزامنة لم يُعرف براندها بالاسم وتحتاج مراجعة.`
+            : '';
+        showResult(`تمت مزامنة ${data.brand_count || brands.length} براند، وصُحح brand_id بالاسم في ${updatedProducts} سجل أرشيف مشترك.${warning}`, unmapped ? 'warning' : 'success');
+    } catch (err) {
+        showResult(`تعذر الاتصال بخادم المزامنة: ${String(err)}`);
+    }
+}
+
     bindClick('dataRepairScanBtn', scanDataRepair);
     bindClick('dataRepairApplyBtn', applyDataRepairFix);
     bindClick('dataRepairReportBtn', downloadDataRepairReports);
     bindClick('addBrandBtn', addBrandToServer);
+    bindClick('syncBrandsFromStoreBtn', syncBrandsFromStore);
 
     // Arabic: اكتشاف منفذ الباك اند قبل أي نداء - لو كان 5000 مشغولاً فالباك اند على 5001
     //         وكل ما بعده سيفشل بلا هذا السطر.

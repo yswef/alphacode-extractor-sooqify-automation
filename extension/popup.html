@@ -196,13 +196,23 @@
                 <div class="field"><label for="SizeTitle">عنوان الخاصية</label><input id="SizeTitle" type="text"></div>
             </div>
             <hr style="margin:14px 0">
-            <h3 style="margin-bottom:8px;font-size:14px">إضافة براند جديد (يُحفظ على السيرفر)</h3>
+            <h3 style="margin-bottom:8px;font-size:14px">ربط براند موجود في المتجر</h3>
             <div class="grid-2">
-                <div class="field"><label for="NewBrandName">اسم البراند</label><input id="NewBrandName" type="text" placeholder="مثال: Casio"></div>
-                <div class="field"><label for="NewBrandId">Brand ID في المتجر</label><input id="NewBrandId" type="number" min="1"></div>
+                <div class="field"><label for="NewBrandName">اسم البراند في المتجر</label><input id="NewBrandName" type="text" placeholder="مثال: Casio"></div>
+                <div class="field"><label for="NewBrandId">Brand ID الفعلي</label><input id="NewBrandId" type="number" min="1"></div>
             </div>
-            <button class="btn btn-accent btn-block" id="addBrandBtn" type="button">إضافة البراند للسيرفر</button>
+            <small class="field-hint">هذا يضيف الربط إلى خريطة المزامنة فقط؛ أنشئ البراند أولاً في Sooqify ثم استخدم ID الظاهر في لوحة المتجر.</small>
+            <button class="btn btn-accent btn-block" id="addBrandBtn" type="button">إضافة الربط للخريطة المشتركة</button>
             <div class="result-box" id="addBrandResult" style="margin-top:8px;display:none"></div>
+            <hr style="margin:14px 0">
+            <h3 style="margin-bottom:8px;font-size:14px">مزامنة كل IDs من المتجر</h3>
+            <small class="field-hint">في صفحة العلامات التجارية شغّل فاحص الصفحة؛ ينسخ JSON تلقائياً، ثم الصقه هنا. هذه العملية تحدّث خريطة البراندات المشتركة فقط ولا تغيّر أرقام المنتجات في المتجر.</small>
+            <div class="field" style="margin-top:8px">
+                <label for="brandSyncJson">بيانات العلامات من فاحص الصفحة</label>
+                <textarea id="brandSyncJson" rows="5" placeholder='{"brands":[{"id":1,"name":"Air Jordan"}]}'></textarea>
+            </div>
+            <button class="btn btn-block" id="syncBrandsFromStoreBtn" type="button">مزامنة قائمة البراندات مع الجهازين</button>
+            <div class="result-box" id="syncBrandsResult" style="margin-top:8px;display:none"></div>
         </article>
     </section>
 

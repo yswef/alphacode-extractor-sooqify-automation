@@ -16,6 +16,18 @@
     const SENSITIVE = /token|secret|password|passwd|authorization|cookie|csrf|session|api[_-]?key/i;
     const BRAND_URL = /brand/i;
     const requests = [];
+    let autoCopyTimer = null;
+    let probeReference = null;
+
+    function queueAutoCopy(reason, delay = 250) {
+        if (!probeReference) return;
+        clearTimeout(autoCopyTimer);
+        autoCopyTimer = setTimeout(() => {
+            probeReference?.copy({ automatic: true, reason }).catch(error => {
+                console.warn('[Sooqify brand probe] Automatic clipboard copy failed:', error);
+            });
+        }, delay);
+    }
 
     const cleanText = value => String(value ?? '').replace(/\s+/g, ' ').trim();
     const redact = (key, value) => {
@@ -158,6 +170,7 @@
         requests.push({ at: new Date().toISOString(), ...record });
         if (requests.length > 30) requests.shift();
         console.info('[Sooqify brand probe] brand request', requests[requests.length - 1]);
+        queueAutoCopy('brand request captured');
     }
 
     // Observe future fetch calls without changing their result or timing.
@@ -248,33 +261,42 @@
                 note: 'Sensitive token/password/cookie/CSRF fields are redacted. No form was submitted by this probe.',
             };
         },
-        async copy() {
+        async copy({ automatic = false, reason = '' } = {}) {
             const json = JSON.stringify(this.snapshot(), null, 2);
-            if (typeof globalThis.copy === 'function') {
-                globalThis.copy(json);
-                console.info('Brand report copied with DevTools copy().');
-            } else if (navigator.clipboard?.writeText) {
-                await navigator.clipboard.writeText(json);
-                console.info('Brand report copied to clipboard.');
-            } else {
+            try {
+                if (typeof globalThis.copy === 'function') {
+                    globalThis.copy(json);
+                } else if (navigator.clipboard?.writeText) {
+                    await navigator.clipboard.writeText(json);
+                } else {
+                    throw new Error('Clipboard API is unavailable in this browser context');
+                }
+                console.info(automatic
+                    ? `[Sooqify brand probe] Latest report copied automatically${reason ? ` (${reason})` : ''}. Paste it here.`
+                    : '[Sooqify brand probe] Report copied.');
+            } catch (error) {
+                console.warn('[Sooqify brand probe] Clipboard copy was blocked; the report is printed below.', error);
                 console.log(json);
-                console.info('Clipboard unavailable; copy the JSON printed above.');
             }
             return json;
         },
         uninstall() {
+            clearTimeout(autoCopyTimer);
             globalThis.fetch = originalFetch;
             XMLHttpRequest.prototype.open = xhrOpen;
             XMLHttpRequest.prototype.send = xhrSend;
             document.removeEventListener('submit', submitListener, true);
+            probeReference = null;
             delete globalThis.__alphaSooqifyBrandProbe;
             console.info('Brand probe removed.');
         },
     };
+    probeReference = probe;
     globalThis.__alphaSooqifyBrandProbe = probe;
 
     console.info('[Sooqify brand probe] Installed read-only. Brand rows:', reportTables.brands);
     console.info('[Sooqify brand probe] Forms:', formReport());
-    console.info('Use __alphaSooqifyBrandProbe.snapshot() to inspect or __alphaSooqifyBrandProbe.copy() to copy JSON.');
+    console.info('The report is copied automatically. After any brand request, the updated report is copied again. Use __alphaSooqifyBrandProbe.copy() if manual copying is needed.');
+    queueAutoCopy('initial page scan', 0);
     return probe;
 })();

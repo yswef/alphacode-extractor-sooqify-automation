@@ -19,8 +19,8 @@ The import only changes the **shared sync database mapping/archive**. It does no
 ## Inspect and import the live store list
 
 1. Open Sooqify Admin → **العلامات التجارية** while logged in.
-2. Open DevTools → Console, paste the contents of [`../../tools/sooqify_brand_page_probe.js`](../../tools/sooqify_brand_page_probe.js), and run `__alphaSooqifyBrandProbe.copy()`.
-3. The probe is read-only: it does not click or submit forms. It copies the visible `{id, name}` rows and safe form metadata. It redacts token/password/CSRF/cookie fields. If you need to inspect the add-brand request, install the probe **before** manually submitting a brand you actually intend to add; it logs only brand-related requests.
+2. Open DevTools → Console, paste the contents of [`../../tools/sooqify_brand_page_probe.js`](../../tools/sooqify_brand_page_probe.js), and run it. It copies the initial report to the clipboard automatically; paste that JSON directly here or into the extension.
+3. The probe is read-only: it does not click or submit forms. It copies the visible `{id, name}` rows and safe form metadata. It redacts token/password/CSRF/cookie fields. If you need to inspect the add-brand request, install the probe **before** manually submitting a brand you actually intend to add; it re-copies the latest report automatically after brand-related requests. If the browser blocks automatic clipboard access, use `__alphaSooqifyBrandProbe.copy()` as a fallback.
 4. In the extension's **البراندات والمقاسات** card, paste the copied JSON into “بيانات العلامات من فاحص الصفحة” and click “مزامنة قائمة البراندات مع الجهازين”. Review the confirmation carefully. The Python API canonicalizes common Arabic brand transliterations to the English names used by the extension, while preserving the Sooqify IDs.
 5. Both machines read the same map from the shared sync endpoint. The product upload backend also refreshes that shared map and refuses an upload if the map cannot be read or the selected name has no valid ID; it does not silently fall back to the old numeric ID.
 

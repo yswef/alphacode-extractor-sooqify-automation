@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Sooqify Audit — لوحة التحكم</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+  <script src="/static/dashboard.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/dashboard" aria-label="Sooqify Audit الرئيسية">
+      <span class="brand-mark">S</span>
+      <span><strong>Sooqify Audit</strong><small>مركز الفحص والتقارير</small></span>
+    </a>
+    <div class="top-actions">
+      <span class="timezone-chip"><span class="live-dot"></span> توقيت Asia/Aden</span>
+      <button class="button button-quiet" id="refresh-button" type="button">تحديث الحالة</button>
+      <button class="button button-quiet" id="lock-button" type="button">قفل الجلسة</button>
+    </div>
+  </header>
+
+  <main class="page-shell">
+    <section class="intro-row">
+      <div>
+        <p class="eyebrow">المراقبة اليومية · قراءة فقط</p>
+        <h1>لوحة تدقيق Sooqify</h1>
+        <p class="intro-copy">متابعة اتصال WhatsApp، فحص القائمة، وتقارير الفريق اليومية — من دون الوصول إلى صفحات تفاصيل المنتجات.</p>
+      </div>
+      <div class="schedule-chip"><span class="schedule-icon">◷</span><span><b>موعد التقرير</b><small>كل يوم · 9:00 مساءً</small></span></div>
+    </section>
+
+    <section id="token-gate" class="token-gate" aria-labelledby="token-title">
+      <div class="gate-icon">⌑</div>
+      <div class="gate-content">
+        <p class="eyebrow">جلسة آمنة</p>
+        <h2 id="token-title">أدخل رمز الوصول</h2>
+        <p>استخدم قيمة <code>AUDIT_API_TOKEN</code> المضبوطة في متغيرات Railway. يُحفظ الرمز في <code>sessionStorage</code> لهذه الجلسة فقط، ولا يظهر في عنوان الصفحة.</p>
+        <form id="token-form" class="token-form">
+          <label class="visually-hidden" for="token-input">رمز الوصول</label>
+          <input id="token-input" type="password" autocomplete="current-password" placeholder="Bearer token" required minlength="20" dir="ltr">
+          <button class="button button-primary" type="submit">اتصال آمن <span aria-hidden="true">←</span></button>
+        </form>
+        <p class="inline-error" id="gate-error" role="alert"></p>
+      </div>
+    </section>
+
+    <div id="dashboard-content" class="dashboard-content" hidden>
+      <div id="global-notice" class="notice" role="status" hidden></div>
+
+      <section class="status-grid" aria-label="حالة الخدمة">
+        <article class="card status-card">
+          <div class="card-heading"><span class="card-icon icon-whatsapp">◉</span><span class="card-kicker">القناة المرتبطة</span><span id="wa-indicator" class="status-pill status-neutral">جارٍ التحقق</span></div>
+          <h2 id="wa-state">—</h2>
+          <p id="wa-number" class="muted">رقم WhatsApp المصرّح به غير ظاهر</p>
+          <p id="wa-error" class="error-copy" hidden></p>
+          <div class="card-footer"><span>الرمز يتجدد تلقائياً</span><span id="wa-updated">—</span></div>
+        </article>
+
+        <article class="card status-card scan-card">
+          <div class="card-heading"><span class="card-icon icon-scan">⌕</span><span class="card-kicker">آخر فحص مكتمل</span><span id="scan-status" class="status-pill status-neutral">لا توجد لقطة</span></div>
+          <h2 id="scan-count">—</h2>
+          <p id="scan-meta" class="muted">شغّل الفحص من صفحة قائمة المنتجات في Sooqify.</p>
+          <div class="card-footer"><span id="scan-id">Scan ID —</span><span id="scan-pages">— صفحة</span></div>
+        </article>
+
+        <article class="card status-card queue-card">
+          <div class="card-heading"><span class="card-icon icon-queue">↗</span><span class="card-kicker">قيد المعالجة</span><span class="status-pill status-neutral">طوابير آمنة</span></div>
+          <h2 id="queue-count">0</h2>
+          <p class="muted">رسائل وتقارير وطلبات أرشيف تنتظر اتصال الإضافة أو WhatsApp.</p>
+          <div class="card-footer"><span id="queue-delete">0 طلب أرشيف</span><span id="queue-tombstones">0 منع حذف نشط</span></div>
+        </article>
+      </section>
+
+      <section class="main-grid">
+        <article class="card qr-card">
+          <div class="section-heading">
+            <div><p class="eyebrow">ربط آمن</p><h2>WhatsApp Web</h2><p class="muted">اربط جهازاً واحداً بمسح QR من تطبيق WhatsApp الرسمي.</p></div>
+            <span id="qr-countdown" class="countdown"></span>
+          </div>
+          <div id="qr-frame" class="qr-frame">
+            <div id="qr-placeholder" class="qr-placeholder"><span class="qr-placeholder-icon">▦</span><b>بانتظار رمز الربط</b><small>سيظهر الرمز هنا بعد بدء العامل.</small></div>
+            <img id="qr-image" alt="رمز QR مؤقت لربط WhatsApp" hidden>
+          </div>
+          <div class="qr-instructions">
+            <span class="step-number">1</span><p>افتح WhatsApp على الهاتف المصرّح به.</p>
+            <span class="step-number">2</span><p>الإعدادات ← الأجهزة المرتبطة ← ربط جهاز.</p>
+            <span class="step-number">3</span><p>امسح الرمز الظاهر قبل انتهاء صلاحيته.</p>
+          </div>
+          <div class="security-note"><span>◇</span><p>QR مؤقت في الذاكرة فقط، لا يُكتب إلى القرص أو السجل. تحقق من رقم الهاتف قبل استخدام الخدمة.</p></div>
+        </article>
+
+        <article class="card reports-card">
+          <div class="section-heading">
+            <div><p class="eyebrow">تصدير التقارير</p><h2>تقرير التدقيق اليومي</h2><p class="muted">تفاصيل المطابقة، ملخص الموظفين، وملف Excel متعدد الأوراق.</p></div>
+            <span class="report-badge">CSV · XLSX</span>
+          </div>
+          <div class="report-meta-grid">
+            <div><span>التوقيت</span><b>21:00 · Asia/Aden</b></div>
+            <div><span>ملخص الفريق</span><b>CSV مستقل + ورقة Excel</b></div>
+          </div>
+          <button id="generate-report" class="button button-primary button-wide" type="button"><span class="button-icon">✦</span> إنشاء تقرير الآن</button>
+          <div id="report-result" class="report-result" role="status" hidden></div>
+          <div class="download-grid">
+            <button class="button button-outline" data-download="csv" type="button">تنزيل التفاصيل CSV <span>↓</span></button>
+            <button class="button button-outline" data-download="employees" type="button">تنزيل ملخص الموظفين CSV <span>↓</span></button>
+            <button class="button button-outline button-wide" data-download="xlsx" type="button">تنزيل ملف Excel XLSX <span>↓</span></button>
+          </div>
+          <p class="fine-print">لا يُنشأ تقرير إذا تعذر جلب الأرشيف المشترك أو لم توجد لقطة قائمة كاملة.</p>
+        </article>
+      </section>
+
+      <section class="card command-card">
+        <div class="section-heading command-heading">
+          <div><p class="eyebrow">المساعد المرتبط</p><h2>أوامر WhatsApp</h2><p class="muted">الأوامر تُقبل من الرقم المصرّح به فقط.</p></div>
+          <span class="command-lock">⌑ الرقم الموثّق فقط</span>
+        </div>
+        <div class="command-list">
+          <div><code>HELP</code><span>عرض قائمة الأوامر</span></div>
+          <div><code>REPORT</code><span>إنشاء التقرير وإرسال CSV وXLSX</span></div>
+          <div><code>STATUS</code><span>حالة الخدمة وآخر فحص</span></div>
+          <div><code>DELETE &lt;LocalID&gt;</code><span>معاينة سجل واحد؛ يلزم تأكيد منفصل</span></div>
+          <div><code>CONFIRM DELETE &lt;CODE&gt;</code><span>تنفيذ الطلب بعد حفظ النسخة الاحتياطية</span></div>
+          <div><code>CANCEL &lt;CODE&gt;</code><span>إلغاء طلب حذف لم يُنفّذ</span></div>
+          <div><code>RESTORE &lt;BackupID&gt;</code><span>محاولة الاستعادة من الأرشيف المشترك</span></div>
+        </div>
+        <div class="warning-note"><span>!</span><p><b>نطاق الحذف:</b> يحذف سجلاً محلياً واحداً بعد أمر وتأكيد صريح، مع نسخة احتياطية وسجل تدقيق. لا يحذف منتجات Sooqify ولا صورها. تظل نسخة الأرشيف المشترك هي مصدر الاستعادة؛ وقد يتطلب اكتمال العملية اتصال الإضافة ومزامنة المصدر.</p></div>
+      </section>
+
+      <section class="card tombstone-card">
+        <div class="section-heading"><div><p class="eyebrow">سجل الاسترجاع</p><h2>منع الحذف والنسخ الاحتياطية</h2><p class="muted">الطلبات النشطة تُطبّقها الإضافة على الأجهزة المتصلة بالخدمة.</p></div><span id="tombstone-count" class="count-pill">0 نشط</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Local ID</th><th>معرّف النسخة</th><th>تاريخ الطلب</th><th>أمر الاسترجاع</th></tr></thead><tbody id="tombstone-rows"><tr><td colspan="4" class="empty-cell">لا توجد طلبات نشطة.</td></tr></tbody></table></div>
+      </section>
+
+      <section class="card events-card">
+        <div class="section-heading"><div><p class="eyebrow">آخر الأنشطة</p><h2>سجل الأرشيف</h2></div><span class="muted">آخر 30 حدثاً</span></div>
+        <div id="event-list" class="event-list"><p class="empty-cell">لا توجد أحداث بعد.</p></div>
+      </section>
+    </div>
+
+    <footer class="footer"><span>Sooqify Audit v6</span><span>خدمة معزولة · الأرشيف المشترك للقراءة فقط · لا حذف من المتجر</span></footer>
+  </main>
+</body>
+</html>

@@ -111,6 +111,19 @@ START_ALPHACODE.bat
 4. Select the `extension` folder.
 5. After every code update, click **Reload** and hard-refresh supplier/store pages with `Ctrl + Shift + R`.
 
+## Sooqify Audit v6 companion
+
+The isolated Railway service and WhatsApp worker live in `extension/sooqify_railway/`; they do not replace or modify the existing local backend or live PHP sync service. The extension checkout references the paginated-list-only collector in `manifest.json` and the secure Railway bridge in `background.js`.
+
+1. Load/reload the `extension` folder in Chrome, sign in to Sooqify normally, and solve any CAPTCHA manually.
+2. Open the paginated `/admin/item/list` page. The floating **تدقيق Railway — قراءة فقط** control appears there.
+3. Enter the HTTPS Railway service origin and the same `AUDIT_API_TOKEN` configured in Railway. The extension stores the token in local Chrome storage.
+4. Start the scan. It reads list pages only, extracts Store IDs from action-link URLs already in each row, and never requests product view/edit/delete pages. Fields not visible in the list remain unavailable. A snapshot is accepted only after every page and unique Store ID are verified.
+5. Deploy the isolated service using `extension/sooqify_railway/README.md`. The service can generate daily details CSV, employee-summary CSV and XLSX files at 21:00 `Asia/Aden`, and send them through the linked-device WhatsApp worker.
+6. WhatsApp archive deletion, if explicitly requested, is limited to one Local ID at a time, requires a preview and confirmation, backs up the record, and only removes local archive copies on updated extension clients. It never deletes products from Sooqify or alters the shared PHP source archive; restore depends on the shared archive still containing the record.
+
+See `extension/sooqify_railway/README.md` for Railway variables, deployment steps, API details and deletion/restore boundaries.
+
 ## First-run setup: choose a save folder
 
 As of v4.5.2 there is no default save path. On first launch, open the popup's **المزامنة والمجلد** tab and click **اختيار / تغيير مجلد الحفظ** to open a native folder picker and choose where product images, the archive, and the Excel file are stored. Product saving is blocked with a clear error until this is done. Each machine keeps its own independent choice — the two saved folders never need to match.

@@ -40,6 +40,15 @@ backend/data/sync_queue.json
 backend/data/sync_state.json
 backend/id_counter.json
 
+# Arabic: قفل الإيقاف الطارئ وحالة إعادة الرفع ومجلد النسخ الاحتياطية — كلها حالة جهاز محلي
+#         (القفل يحمل بصمة رمز الحماية المحلي، والنسخ تحمل بيانات المنتجات). لا تُرفع أبداً.
+# English: The emergency-shutdown lock, the re-upload state and the backup folder - all local
+#          machine state (the lock holds the local guard hash, the backups hold product data).
+backend/config/sync_lock.json
+backend/data/restore_state.json
+backend/data/neutralize_state.json
+backend/backups/
+
 # ملف تكوين المسارات يحتوي على مسارات الجهاز المحلي
 # paths_config contains local machine paths
 backend/paths_config.json
@@ -150,3 +159,17 @@ package-lock.json
 # English: Reports panel credentials - never commit (was previously tracked in plaintext).
 backend/config/reports_config.json
 reports_config.json
+
+
+# ─────────────────────────────────────────
+# ملفات الاستضافة التي لا تدخل Git أبداً (سكربت المزامنة نفسه مُتتبَّع لتوثيق العقد)
+# Host files that never enter Git (the sync script itself is tracked to document the contract)
+# ─────────────────────────────────────────
+hostinger/alphacode_storage/db.php
+hostinger/alphacode_storage/db_config.php
+hostinger/alphacode_storage/sync_write_helpers.php
+hostinger/alphacode_storage/check_db_health.php
+hostinger/alphacode_storage/test_connection.php
+# Arabic: ملف القفل الذي يكتبه action=erase على الاستضافة (حالة تشغيل لا كود).
+# English: The lock file action=erase writes on the host (runtime state, not code).
+hostinger/alphacode_storage/shutdown.lock

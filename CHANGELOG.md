@@ -1,5 +1,88 @@
 # Changelog — AlphaCode Extractor
 
+## v5.10.0 — 2026-10-06
+
+### Added
+
+- **The danger zone lives in its own «حذف البيانات» tab.** *حذف البيانات* is a standalone popup tab
+  (`data-tab="danger"` / `#tab-danger`) holding the five ordered sections — ١ a full backup, ٢ the
+  server erase, ٢‑ب the DB-side wipe kit, ٢‑ج the old-`sync.php` neutralize, ٣ the re-upload. Its
+  button carries the `admin-only-tab` class and is shown to the **admin** and **project_manager** only:
+  the member whitelist hides it, the panel is hidden explicitly as well, and a member left standing on
+  it is moved back to *الإعدادات*. `activateTab('danger')` refreshes the lock banner, the backup list
+  and the job progress, and the 20-second polling now covers whichever of the two tabs is open.
+- **Admin danger zone: a complete backup, then the server data is erased and sync stops for good.**
+  The admin-only danger card (now on its own **حذف البيانات** tab) runs a fixed, enforced order:
+  1. *تنزيل نسخة احتياطية كاملة الآن* pulls **everything** from the server (no time filter) plus the
+     brand list, adds this machine's whole `archive_db.json`, and writes one JSON file into
+     `<save folder>/backups/` — offered as a download too, and it never contains the sync token.
+  2. After typing `DELETE-SERVER` and confirming a second dialog, `sync.php` runs `action=erase`,
+     which deletes every row of every table (products, members, aliases, brands, ID reservations) in
+     one transaction and writes a `shutdown.lock` file on the host. From then on the endpoint answers
+     `410 Gone` to everything, even from a machine still holding the old token.
+  3. This machine locks itself: server URL and token wiped, retry queue emptied, and **no network
+     request leaves for the sync server again** — `sync_call`, the background worker, the pull/push
+     helpers and the retry flush all short-circuit on the lock.
+  4. *استعادة النسخة إلى السيرفر* re-uploads a backup later to a new server (brands → products →
+     `bump_sequence`) with polled progress, and it is the explicit `ConfirmUnlock` action that
+     releases the lock — a plain settings save is rejected with HTTP 409 while locked.
+- **Admin-only local login while locked, with an optional local guard.** After the shutdown, sign-in
+  accepts only the local `admin` account; set the optional guard password and that login requires it
+  too (salted SHA-256 hash only), so a member cannot revive their own extension copy with
+  `admin/admin`. Members get a clear "sync is permanently stopped" refusal instead of a fake login.
+- **٢‑ج — a server shutdown that works against the deployed old `sync.php` (no host access needed).**
+  Because the old copy has no delete action, the card unifies instead: it replaces the brands table
+  with one placeholder through `brands/sync` (a wholesale table replacement), then rewrites every
+  product **in place** through `push` — same `id`, so the update is accepted instead of being refused
+  as a duplicate, while name/description/style/search codes, price, images, sizes and variants are all
+  wiped and the placeholder brand is attached. A `neutralized_by` marker makes a second run skip what
+  is already done, `reserve_id` can advance the counter, and the machine locks itself like the erase
+  path. The **same mandatory backup runs first** — no backup means no neutralizing, and a refused
+  `brands/sync` aborts before a single product is touched. The plan endpoint shows every warning and a
+  time estimate before anything is written, and the panel states plainly what this cannot do: members
+  stay in the database so a valid account can still log in, and rows are overwritten rather than
+  deleted (the DB-side `wipe_db.sql` remains the complete answer).
+- **`hostinger/alphacode_storage/sync.php` is now tracked in Git** and gains `action=erase`,
+  `action=bump_sequence` and the `shutdown.lock` gate, alongside the existing actions unchanged.
+  `hostinger/alphacode_storage/README.md` documents the deployment, the safe order and how to revive
+  the endpoint.
+
+### Fixed
+
+- **Losing access without a real erase is now impossible.** The backup is written to disk *before* any
+  delete, and an unreachable server or a `sync.php` without `action=erase` cancels the whole operation
+  and leaves the machine untouched (no lock, no cleared settings).
+- **Restored IDs can no longer collide with new ones.** Erasing empties `id_sequence`, so a restore
+  raises the counter above the highest restored product ID (`bump_sequence`) — otherwise the next new
+  product would reuse an ID the store had already seen.
+- The README's sync setup pointed at a `$SECRET_TOKEN` constant that no longer exists; it now describes
+  the `ALPHACODE_SYNC_TOKEN` environment variable the endpoint actually reads.
+
+### Added (follow-up: an old `sync.php` that cannot be updated)
+
+- **The wipe kit, for the case where the deployed `sync.php` predates `action=erase` and the hosting
+  panel is out of reach.** That copy cannot delete a single row (all its actions are reads or
+  inserts/updates; the only delete is `brands/sync`, limited to the brands table), so the erase has to
+  run database-side. The danger zone's new section **٢‑ب** prepares, in one click:
+  - `alphacode_wipe_db.sql` - lists the tables, disables FK checks, deletes every row of every table
+    in one transaction using the real `information_schema` table list, restarts the `id_sequence`
+    counter (guarded, since `ALTER TABLE` is an implicit commit in MySQL), prints the remaining row
+    count per table as proof, and documents a manual per-table fallback. Canonical copy:
+    `backend/app/data/wipe_db.sql`, with a mirrored, drift-tested copy in
+    `hostinger/alphacode_storage/wipe_db.sql`.
+  - A ready support request (Arabic/English) filled with the tool URL and account hint: run the SQL
+    (or drop the database), delete the tool's files, confirm with the numbers.
+- **A real explanation instead of `Unknown action`.** When the erase is refused because the deployed
+  script is old, the backend now names the cause, points to the wipe kit, and still cancels everything
+  (no lock, no cleared credentials) so the machine stays usable.
+
+### Notes
+
+- Member accounts and passwords are **not** in the backup: `sync.php` has no read action for them and
+  the backup file states that explicitly. Recreate them on the host after a re-upload.
+- `backend/config/sync_lock.json`, `backend/data/restore_state.json`, `backend/backups/` and the host
+  credential files are git-ignored (machine state and secrets, never code).
+
 ## v5.9.0 — 2026-10-02
 
 ### Fixed

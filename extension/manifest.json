@@ -18,7 +18,8 @@
     "http://127.0.0.1:5002/*",
     "http://127.0.0.1:5003/*",
     "http://127.0.0.1:5004/*",
-    "https://admin.sooqifyonline.com/*"
+    "https://admin.sooqifyonline.com/*",
+    "https://*.up.railway.app/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -77,7 +78,8 @@
       "js": [
         "config.js",
         "product_types.js",
-        "admin_autofill.js"
+        "admin_autofill.js",
+        "sooqify_railway/extension/store_scanner.js"
       ],
       "css": [
         "admin_autofill.css"

@@ -6,7 +6,7 @@
 
 'use strict';
 
-importScripts('config.js', 'product_types.js', 'supplier_throttle.js', 'backend_discovery.js');
+importScripts('config.js', 'product_types.js', 'supplier_throttle.js', 'backend_discovery.js', 'sooqify_railway/extension/service_worker.js');
 // Arabic: ملفات تعريف نوع المنتج - المصدر الوحيد لكل فروقات الأحذية/الساعات.
 // English: Product type profiles - the single source for every shoes/watches difference.
 const PRODUCT_TYPES = globalThis.ALPHACODE_PRODUCT_TYPES;
@@ -1600,6 +1600,170 @@ chrome.alarms.onAlarm.addListener(alarm => {
     if (alarm.name === SYNC_ALARM_NAME) runAutoSyncCheck().catch(() => {});
 });
 
+const RAILWAY_BASELINE_RETRY_ALARM_NAME = 'sooqify_railway_baseline_retry';
+chrome.alarms.get(RAILWAY_BASELINE_RETRY_ALARM_NAME, existing => {
+    if (!existing) {
+        chrome.alarms.create(RAILWAY_BASELINE_RETRY_ALARM_NAME, {
+            delayInMinutes: 10,
+            periodInMinutes: 15,
+        });
+    }
+});
+chrome.alarms.onAlarm.addListener(alarm => {
+    if (alarm.name === RAILWAY_BASELINE_RETRY_ALARM_NAME) {
+        globalThis.ALPHACODE_RAILWAY_AUDIT.handle({
+            action: 'SOOQIFY_RAILWAY_FLUSH_PENDING_BASELINES',
+        }).catch(() => {});
+    }
+});
+
+const RAILWAY_ARCHIVE_JOB_ALARM_NAME = 'sooqify_railway_archive_jobs';
+const RAILWAY_ARCHIVE_WORKER_ID_KEY = 'sooqifyRailwayArchiveWorkerId';
+let railwayArchiveJobRunPromise = null;
+
+function railwayArchiveApi(method, path, body) {
+    return globalThis.ALPHACODE_RAILWAY_AUDIT.handle({
+        action: 'SOOQIFY_RAILWAY_API',
+        request: { method, path, ...(body === undefined ? {} : { body }) },
+    });
+}
+
+async function getRailwayArchiveWorkerId() {
+    const saved = await chrome.storage.local.get(RAILWAY_ARCHIVE_WORKER_ID_KEY);
+    let workerId = String(saved[RAILWAY_ARCHIVE_WORKER_ID_KEY] || '');
+    if (!/^[a-f0-9-]{36}$/i.test(workerId)) {
+        workerId = crypto.randomUUID();
+        await chrome.storage.local.set({ [RAILWAY_ARCHIVE_WORKER_ID_KEY]: workerId });
+    }
+    return workerId;
+}
+
+async function localArchiveRequest(path, options = {}) {
+    let discovered = '';
+    try { discovered = await globalThis.ALPHACODE_BACKEND?.getBackendBase?.() || ''; } catch (_) {}
+    if (discovered) LOCAL_API_BASE = discovered;
+    const response = await fetch(`${LOCAL_API_BASE}${path}`, {
+        method: options.method || 'GET',
+        cache: 'no-store',
+        credentials: 'omit',
+        headers: options.body === undefined ? {} : { 'Content-Type': 'application/json' },
+        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+        signal: AbortSignal.timeout(30000),
+    });
+    let result = {};
+    try { result = await response.json(); } catch (_) {}
+    return { response, result };
+}
+
+async function completeRailwayArchiveJob(job, success, error = '', alreadyAbsent = false) {
+    return railwayArchiveApi('POST', `/api/whatsapp/worker/archive-jobs/${job.job_id}/complete`, {
+        lease_id: job.lease_id,
+        success,
+        error: String(error || '').slice(0, 200),
+        already_absent: Boolean(alreadyAbsent),
+    });
+}
+
+async function processRailwayArchiveJob(job) {
+    const localId = Number(job?.local_id || 0);
+    if (!Number.isSafeInteger(localId) || localId <= 0 || !/^[a-f0-9]{32}$/.test(String(job?.job_id || ''))) {
+        throw new Error('طلب الأرشيف الوارد غير صالح؛ لم يُنفّذ.');
+    }
+
+    if (job.action === 'delete_local_archive_record') {
+        const path = `/api/archive/product/${localId}`;
+        const current = await localArchiveRequest(path);
+        if (current.response.status === 404) {
+            await completeRailwayArchiveJob(job, true, '', !job.local_backup_received);
+            return;
+        }
+        if (!current.response.ok || current.result?.success !== true || Number(current.result?.product?.id) !== localId) {
+            throw new Error(current.result?.error || `تعذر قراءة Local ID ${localId} على هذا الجهاز.`);
+        }
+
+        // Keep the full local record on the Railway Volume before calling the existing
+        // local delete route. The image files remain untouched (delete_images=false).
+        await railwayArchiveApi('POST', `/api/whatsapp/worker/archive-jobs/${job.job_id}/backup`, {
+            lease_id: job.lease_id,
+            record: current.result.product,
+        });
+        const deleted = await localArchiveRequest(path, { method: 'DELETE', body: { delete_images: false } });
+        if (!deleted.response.ok || deleted.result?.success !== true || Number(deleted.result?.id) !== localId) {
+            throw new Error(deleted.result?.error || `تعذر حذف السجل المحلي ${localId}.`);
+        }
+        const verification = await localArchiveRequest(path);
+        if (verification.response.status !== 404) {
+            throw new Error(`لم يتأكد اختفاء Local ID ${localId} بعد طلب الحذف.`);
+        }
+        await completeRailwayArchiveJob(job, true);
+        return;
+    }
+
+    if (job.action === 'restore_local_archive_record') {
+        const reconciled = await localArchiveRequest('/api/sync/reconcile', { method: 'POST' });
+        if (!reconciled.response.ok || reconciled.result?.success !== true) {
+            throw new Error(reconciled.result?.error || 'تعذرت مزامنة الأرشيف المشترك؛ لم يُلغَ منع الحذف.');
+        }
+        const restored = await localArchiveRequest(`/api/archive/product/${localId}`);
+        if (!restored.response.ok || restored.result?.success !== true || Number(restored.result?.product?.id) !== localId) {
+            throw new Error('لم يظهر السجل المحلي بعد المزامنة؛ بقي منع الحذف نشطاً.');
+        }
+        await completeRailwayArchiveJob(job, true);
+        return;
+    }
+    throw new Error('نوع طلب الأرشيف غير مدعوم.');
+}
+
+async function applyRailwayArchiveTombstones() {
+    const response = await railwayArchiveApi('GET', '/api/whatsapp/worker/archive-tombstones');
+    const tombstones = Array.isArray(response.tombstones) ? response.tombstones : [];
+    for (const item of tombstones.slice(0, 1000)) {
+        const localId = Number(item.local_id || 0);
+        if (!Number.isSafeInteger(localId) || localId <= 0) continue;
+        const path = `/api/archive/product/${localId}`;
+        const current = await localArchiveRequest(path);
+        if (current.response.status === 404) continue;
+        if (!current.response.ok || current.result?.success !== true || Number(current.result?.product?.id) !== localId) continue;
+        const removed = await localArchiveRequest(path, { method: 'DELETE', body: { delete_images: false } });
+        if (!removed.response.ok || removed.result?.success !== true) {
+            console.warn(`Railway archive tombstone could not be applied to Local ID ${localId}.`);
+        }
+    }
+}
+
+async function runRailwayArchiveJobCycle() {
+    if (railwayArchiveJobRunPromise) return railwayArchiveJobRunPromise;
+    railwayArchiveJobRunPromise = (async () => {
+        try {
+            const config = await globalThis.ALPHACODE_RAILWAY_AUDIT.handle({ action: 'SOOQIFY_RAILWAY_GET_CONFIG' });
+            if (!config?.configured) return;
+            const workerId = await getRailwayArchiveWorkerId();
+            const claimed = await railwayArchiveApi('POST', '/api/whatsapp/worker/archive-jobs/claim', { worker_id: workerId });
+            if (claimed.job) {
+                try {
+                    await processRailwayArchiveJob(claimed.job);
+                } catch (error) {
+                    console.warn(`Railway archive request ${claimed.job.action} failed: ${String(error?.message || error).slice(0, 180)}`);
+                    try { await completeRailwayArchiveJob(claimed.job, false, error?.message || 'local archive request failed'); } catch (_) {}
+                }
+            }
+            await applyRailwayArchiveTombstones();
+        } catch (_) {
+            // No service request is made until the Railway URL/token have been configured.
+        }
+    })().finally(() => { railwayArchiveJobRunPromise = null; });
+    return railwayArchiveJobRunPromise;
+}
+
+chrome.alarms.get(RAILWAY_ARCHIVE_JOB_ALARM_NAME, existing => {
+    if (!existing) {
+        chrome.alarms.create(RAILWAY_ARCHIVE_JOB_ALARM_NAME, { delayInMinutes: 1, periodInMinutes: 5 });
+    }
+});
+chrome.alarms.onAlarm.addListener(alarm => {
+    if (alarm.name === RAILWAY_ARCHIVE_JOB_ALARM_NAME) runRailwayArchiveJobCycle().catch(() => {});
+});
+
 // Arabic: توجيه رسائل الإضافة إلى الوظيفة المناسبة.
 // English: Route extension messages to the proper background action.
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -1607,6 +1771,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     (async () => {
         try {
+            if (String(message.action).startsWith('SOOQIFY_RAILWAY_')) {
+                sendResponse(await globalThis.ALPHACODE_RAILWAY_AUDIT.handle(message));
+                return;
+            }
+
             if (message.action === 'FETCH_LOCAL_FILE') {
                 sendResponse(await fetchLocalFile(message));
                 return;

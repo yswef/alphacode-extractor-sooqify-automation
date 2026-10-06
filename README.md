@@ -14,6 +14,7 @@
 - Notify the operating system after each submitted product and after batch completion.
 - Optionally sync two machines working on the same store, preventing duplicate product IDs and duplicate product additions.
 - Sync **automatically every 30 minutes** while the backend runs - no button press, no popup open, no browser needed - with a browser notification the moment products added by the other operator arrive.
+- **Stop the whole thing safely (admin only):** one card takes a complete backup - this machine's archive plus every server product and brand, token excluded - then erases the server data (products, members, brands, ID reservations) and permanently stops this machine from syncing, protects the remaining local login with an optional guard password, and can re-upload the backup to a new server later with the ID counter fixed.
 - See at a glance **whether each product was actually added to the store** (✓ added / ⏳ submitting / ✗ failed / prepared only), with a whole-archive summary and a per-teammate product count.
 - Detect and repair older products missing newer fields via the **إصلاح البيانات** (Data Repair) tab, with operator-approved defaults, an automatic backup before any write, and downloadable error/extra-field reports.
 - Automatically back off for a cooldown period when the sync host returns HTTP 403 (rate-limit/anti-flood block), instead of hammering it with more requests.
@@ -67,7 +68,9 @@ extension/
   icons/
 hostinger/
   alphacode_storage/
-    sync.php               Central sync endpoint (MySQL edition — same API contract as before)
+    sync.php               Central sync endpoint (tracked in Git; adds action=erase, bump_sequence, shutdown.lock)
+    README.md              Deployment notes, the erase/lock behaviour and how to revive the endpoint
+    wipe_db.sql            Ready SQL that wipes every table's rows (phpMyAdmin / host support)
     db.php                 PDO connection helper (MySQL in production, SQLite for local tests)
     db_config.php           Database credentials (fill in on the host, never commit real values)
     sync_write_helpers.php Shared write/lock helpers used by sync.php
@@ -79,7 +82,7 @@ docs/
   AlphaCode_Project_Documentation_EN.pdf
 ```
 
-`sync.php` (and the rest of the `hostinger/alphacode_storage/` files) do not live in the extension or backend folders because they are not run locally — they are uploaded once to a PHP-capable web host with a MySQL database and shared by every machine. Run `schema.sql` once, fill in `db_config.php`, and change `$SECRET_TOKEN` in `sync.php` before going live.
+`sync.php` (and the rest of the `hostinger/alphacode_storage/` files) do not live in the extension or backend folders because they are not run locally — they are uploaded once to a PHP-capable web host with a MySQL database and shared by every machine. Run `schema.sql` once, fill in `db_config.php`, and set the `ALPHACODE_SYNC_TOKEN` environment variable on the host before going live. `sync.php` is the only file of that folder tracked in Git (it documents the wire contract); the credential files next to it are git-ignored. See [hostinger/alphacode_storage/README.md](hostinger/alphacode_storage/README.md) for the deployment and the erase/shutdown-lock behaviour.
 
 The backend also creates a few small runtime files next to `app.py` on first run — `paths_config.json`, `sync_config.json`, `sync_queue.json`, `sync_state.json`. These are machine-specific and should stay out of version control (add them to `.gitignore`).
 
@@ -133,13 +136,121 @@ As of v4.5.2 there is no default save path. On first launch, open the popup's **
 Lets two operators run AlphaCode on two separate machines against the same Sooqify store without colliding on product IDs or duplicating the same product.
 
 1. Upload `hostinger/alphacode_storage/sync.php` to a PHP-capable web host (any shared hosting works, no extra setup needed).
-2. Open the file on the host and change the `$SECRET_TOKEN` placeholder to a long random value. Keep it private between the two operators.
+2. Set the `ALPHACODE_SYNC_TOKEN` environment variable on the host to a long random value (PHP-FPM/Apache), and use the same value in the popup. It is never written inside the file.
 3. On **each** machine, open the popup's **المزامنة والمجلد** tab, enable **تفعيل المزامنة**, and enter the same server URL and secret token, plus a short operator name.
 4. Save. From then on, new products are ID-reserved and duplicate-checked centrally before any image is downloaded, and every finished product is pushed to the shared archive automatically.
 
 If the sync server is unreachable, AlphaCode keeps working locally: it falls back to local ID numbering (flagged as `local_fallback` in the diagnostics list) and queues the push for automatic retry once the connection returns. Sync only covers products added after it is enabled — products already in an existing local archive are not retroactively uploaded.
 
 Every action on `sync.php`, including sign-in (`whoami`), requires the same secret token — so login is blocked upfront with a clear message ("أدخل كود المزامنة من تبويب الإعدادات أولاً") if the token field is empty, instead of failing later with a generic server rejection.
+
+### Shutting sync down for good (admin only)
+
+The popup's **المزامنة والمجلد** tab carries an admin-only **منطقة خطر** card for the case where the
+team stops working on the shared archive, or the operator loses hosting access and wants the store's
+data gone. It runs in a fixed order and never skips a step:
+
+1. **Full backup first.** *تنزيل نسخة احتياطية كاملة الآن* pulls **everything** from the server (no
+   time filter) plus the brand list, adds this machine's whole `archive_db.json`, and writes one JSON
+   file into `<save folder>/backups/` (or `backend/backups/` before a save folder is chosen). The sync
+   token is **never** in that file. It is also offered as a download so a copy lives outside the
+   machine. Member accounts and passwords are **not** in the backup: `sync.php` has no read action for
+   them, and the file says so explicitly instead of pretending otherwise.
+2. **Erase + stop.** After typing `DELETE-SERVER` (and a second confirmation dialog) the backend asks
+   `sync.php` for `action=erase`, which deletes every row of every table — products, members, aliases,
+   brands, ID reservations — and writes a `shutdown.lock` file on the host that makes the endpoint
+   answer `410 Gone` to everything afterwards, even a machine still holding the old token. Then this
+   machine locks itself: the server URL and secret token are wiped, the retry queue is emptied, and
+   **no network request leaves for the sync server again** (`sync_call` refuses to run while the lock
+   file exists). Because the order is enforced, a failed backup, an unreachable server or a `sync.php`
+   without `action=erase` cancels the whole thing and changes nothing — losing access without a real
+   erase is worse than not erasing.
+3. **Admin-only local login.** While locked, sign-in only accepts the local `admin` account. Set the
+   optional **رمز حماية محلي** in the card and that login requires it too (only a salted SHA-256 hash
+   is stored), so a member cannot revive their own copy of the extension with `admin/admin`.
+4. **Re-upload later.** *استعادة النسخة إلى السيرفر* takes a backup file plus a new sync server URL and
+   token, verifies the connection, then pushes in the only order the server accepts: brands
+   (`brands/sync`), every product (`push`), and finally `bump_sequence` so the ID counter sits above
+   the highest restored ID. Products that were only reserved placeholders are skipped. Progress is
+   polled in the panel until it finishes. This path also releases the lock — it is the explicit
+   `ConfirmUnlock` action, so nothing re-enables sync silently.
+
+The extension itself hides the whole card behind the `admin` / `project_manager` roles (it lives in
+the admin-only sync tab), and re-enabling sync through a plain settings save is rejected with HTTP 409
+while the lock exists. Deleting `backend/config/sync_lock.json` by hand is the deliberate escape hatch
+if the local guard password is ever forgotten.
+
+#### When the deployed `sync.php` is an older copy (no host access)
+
+The erase step needs the updated `sync.php` (`action=erase`). If the copy on the host predates this
+release and cannot be replaced - the case when the hosting panel is out of reach - erasing from the
+extension is technically impossible: that copy has no power to delete a single row. Every action it
+offers is either a read (`whoami`, `pull`, `lookup`, `brands`) or an insert/update (`reserve_id`,
+`reserve_key`, `push`, `brands/add`), and the only delete is `brands/sync`, which clears the brands
+table alone and refuses an empty list anyway. The backend says exactly this when it happens (instead of
+a bare `Unknown action`) and cancels the whole operation - it never locks the machine without a
+successful erase.
+
+For that case the danger zone has **٢‑ب — حذف البيانات لِمَن يملك وصولاً لقاعدة البيانات**, one button
+that prepares:
+
+- **`alphacode_wipe_db.sql`** - a ready script for phpMyAdmin or host support. It lists the tables
+  first, disables foreign-key checks, deletes every row of every table in one transaction (building the
+  `DELETE` from the real `information_schema` table list, so no child table is left holding data),
+  restarts the `id_sequence` counter, then prints the remaining row count per table as proof - and it
+  carries a written manual fallback (`DELETE FROM products; brands; members; member_aliases;
+  id_sequence;`) for whoever cannot run the dynamic part. The canonical copy lives in
+  `backend/app/data/wipe_db.sql`, with an identical file in `hostinger/alphacode_storage/`, and a unit
+  test fails if the two ever drift apart.
+- **A ready support request** (Arabic and English) filled with the tool URL and the account hint,
+  asking the host to run that SQL (or `DROP DATABASE` when the database exists only for this tool),
+  to delete the tool's files (`sync.php`, `db.php`, `db_config.php`, `sync_write_helpers.php`, …) and
+  to confirm with the numbers - stating up front that panel access was lost (an automatic block from
+  the request rate limit, typically IP-based, which often also covers the panel and FTP; trying
+  another network or a mobile hotspot is worth a shot).
+
+Everything else in this feature works today without touching the host: the full backup (`pull` +
+`brands`), locking this machine and clearing its credentials, and the admin-only local login. Only the
+row deletion itself and the `shutdown.lock` gate need the newer `sync.php`.
+
+#### ٢‑ج — Taking the shared data away with the old copy only (no host access, no DB panel)
+
+Even with no DB panel and no host access, the old copy still has *write* actions, and those are enough
+to make the shared store useless to everyone who follows. **تعطيل بيانات السيرفر** uses nothing else:
+
+1. The phrase `NEUTRALIZE` must be typed in the panel (the same admin-only card, same roles).
+2. A reachability check, then the **same mandatory full backup** as the erase path — the job aborts with
+   no write at all if the backup fails or the server cannot be read.
+3. `brands/sync` with a single placeholder brand. That action replaces the whole table, so every real
+   brand becomes `AlphaCode` (the name and id are editable before the run).
+4. Every product is rewritten **in place**: the payload carries the product's *own* `id` (which is what
+   makes `push` update the row instead of refusing it as a duplicate ID) and replaces everything else
+   with one unified set of values — empty names/descriptions/codes, price `0`, no images, no sizes, no
+   variants, the placeholder brand, plus a `neutralized_by` marker. `product_type` is preserved so the
+   per-type code paths keep working.
+5. Optionally the ID counter is advanced (`reserve_id` N steps, off by default), and the machine locks
+   itself exactly like the erase path (URL and token wiped, no further network calls).
+
+If `brands/sync` is refused (a foreign key on the brands table), nothing is touched at all — no product
+is rewritten. Re-adding one of the unified products later hits the server's key reservation and answers
+`duplicate`; a genuinely new product is forced onto the placeholder brand, because the real brand names
+no longer exist in the shared map. Running the job twice is safe: already-marked products are skipped.
+
+What this honestly cannot do, and the panel writes it out before starting:
+
+- **Members cannot be deleted or blocked.** None of the old actions reads or deletes `members` /
+  `member_aliases`, and login is validated against those rows. Anyone holding a copy of the extension
+  and a still-valid account can sign in — they simply find nothing usable to work with.
+- **Rows are overwritten, not deleted**, and child-table rows may survive if `sync_write_helpers.php`
+  does not purge them per key.
+- **Advancing the counter only changes new IDs.** It blocks nobody. For a total kill of the data
+  itself, the DB-side path above (`wipe_db.sql` / `DROP DATABASE`) or a host-managed
+  `shutdown.lock` on a newer `sync.php` is still the only complete answer.
+
+Verified end to end against a replica of the deployed old endpoint: 3 products → 2 rewritten in place
+(IDs `1` and `2` kept, everything else replaced), 1 untouched reserved placeholder, `brands` went from
+`['Air Jordan', 'Rolex']` to `['AlphaCode']`, 5 ID reservations pushed, and this machine locked with
+every later sync call refused (HTTP 409).
 
 ### Automatic sync (every 30 minutes)
 
@@ -327,6 +438,7 @@ of every behavioural change; the most recent are:
 | [Reversed names and the sync data gap](docs/changes/2026-09-22_report_names_and_sync_data_gap.md) | Fixes reversed Arabic names in PDFs and the silently lossy incremental sync |
 | [AI removal, UI redesign, field fixes](docs/changes/2026-09-25_remove_ai_redesign_ui_and_field_fixes.md) | Removes AI entirely, redesigns the popup, fixes the brand field, backend port discovery and image bandwidth |
 | [Automatic sync and product status](docs/changes/2026-10-02_auto_sync_every_30_minutes_and_product_status.md) | A real 30-minute background sync that needs no button, and a store-submission status per product ("was it added?") with a notification for arriving products |
+| [Emergency shutdown: backup, server wipe, admin lock](docs/changes/2026-10-06_admin_emergency_backup_erase_and_sync_lock.md) | Admin-only danger zone: a full backup, then the server data is erased and this machine locks sync for good, with a verified re-upload path later |
 
 ## License
 

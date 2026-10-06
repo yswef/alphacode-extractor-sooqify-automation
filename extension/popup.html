@@ -34,7 +34,7 @@
 <header class="app-header">
     <div class="brand-row">
         <div>
-            <h1 class="brand-title">AlphaCode Extractor 5.8.1</h1>
+            <h1 class="brand-title">AlphaCode Extractor 5.9.0</h1>
             <div class="brand-subtitle">SZWEGO → Python → Sooqify</div>
         </div>
         <div class="profile-chip" id="profileChip">Sooqify Online</div>
@@ -196,12 +196,13 @@
                 <div class="field"><label for="SizeTitle">عنوان الخاصية</label><input id="SizeTitle" type="text"></div>
             </div>
             <hr style="margin:14px 0">
-            <h3 style="margin-bottom:8px;font-size:14px">إضافة براند جديد (يُحفظ على السيرفر)</h3>
+            <h3 style="margin-bottom:8px;font-size:14px">ربط براند موجود في المتجر</h3>
             <div class="grid-2">
-                <div class="field"><label for="NewBrandName">اسم البراند</label><input id="NewBrandName" type="text" placeholder="مثال: Casio"></div>
-                <div class="field"><label for="NewBrandId">Brand ID في المتجر</label><input id="NewBrandId" type="number" min="1"></div>
+                <div class="field"><label for="NewBrandName">اسم البراند في المتجر</label><input id="NewBrandName" type="text" placeholder="مثال: Casio"></div>
+                <div class="field"><label for="NewBrandId">Brand ID الفعلي</label><input id="NewBrandId" type="number" min="1"></div>
             </div>
-            <button class="btn btn-accent btn-block" id="addBrandBtn" type="button">إضافة البراند للسيرفر</button>
+            <small class="field-hint">هذا يضيف الربط إلى خريطة المزامنة فقط؛ أنشئ البراند أولاً في Sooqify ثم استخدم ID الظاهر في لوحة المتجر.</small>
+            <button class="btn btn-accent btn-block" id="addBrandBtn" type="button">إضافة الربط للخريطة المشتركة</button>
             <div class="result-box" id="addBrandResult" style="margin-top:8px;display:none"></div>
         </article>
     </section>
@@ -280,6 +281,7 @@
         <article class="card">
             <h2>مزامنة بين مستخدمين (Hostinger)</h2>
             <p class="hint">تمنع تكرار أرقام ID وتكرار إضافة نفس المنتج عندما يعمل شخصان على نفس المتجر، كل واحد من جهازه. يتطلب رفع مجلد alphacode_storage (ويتضمن sync.php) على استضافتك.</p>
+            <p class="hint">بعد التفعيل تعمل المزامنة <strong>تلقائياً كل 30 دقيقة</strong> (قابلة للتغيير أدناه) ما دام الباك اند شغالاً — بدون فتح هذه اللوحة.</p>
             <div class="toggle-row">
                 <div class="toggle-copy"><strong>تفعيل المزامنة</strong><small>يشترط ضبط الرابط والمفتاح السري أدناه.</small></div>
                 <label class="switch"><input id="SyncEnabled" type="checkbox"><span class="slider"></span></label>
@@ -287,6 +289,11 @@
             <div class="field"><label for="SyncServerUrl">رابط مجلد المزامنة</label><input id="SyncServerUrl" dir="ltr" type="url" placeholder="https://engyusef.alpha-code.net/alphacode_storage"></div>
             <div class="field"><label for="SyncToken">المفتاح السري</label><input id="SyncToken" dir="ltr" type="text" placeholder="اتركه فارغاً للإبقاء على المفتاح المحفوظ"></div>
             <div class="field"><label for="AddedByName">اسمك (يظهر في شاشة التشخيص)</label><input id="AddedByName" type="text" placeholder="مثال: يوسف"></div>
+            <!-- Arabic: تكرار المزامنة التلقائية - الدورة تعمل من الباك اند نفسه ولا تحتاج فتح
+                 هذه اللوحة، فالإضافة تشتغل لوحدها ما دام الخادم المحلي شغالاً.
+                 English: The automatic sync interval - the cycle runs inside the backend itself and
+                 needs no popup open, so sync keeps working while the local server runs. -->
+            <div class="field"><label for="SyncAutoMinutes">تكرار المزامنة التلقائية (بالدقائق)</label><input id="SyncAutoMinutes" type="number" min="5" max="1440" step="5" placeholder="30"></div>
             <button class="btn btn-accent btn-block" id="saveSyncBtn" type="button">حفظ إعدادات المزامنة</button>
             <div class="result-box" id="syncSettingsResult"></div>
             <h3>حالة المزامنة</h3>
@@ -295,14 +302,21 @@
                 <div class="stat"><b id="syncLastPull">—</b><span>آخر سحب</span></div>
                 <div class="stat"><b id="syncLastPush">—</b><span>آخر رفع</span></div>
             </div>
+            <div class="stats" style="margin-top:8px;">
+                <div class="stat"><b id="syncNextRun">—</b><span>الدورة التلقائية القادمة</span></div>
+                <div class="stat"><b id="syncNewCount">—</b><span>وصل بآخر سحب</span></div>
+                <div class="stat"><b id="syncAutoState">—</b><span>المزامنة التلقائية</span></div>
+            </div>
             <button class="btn btn-outline btn-block" id="syncNowBtn" type="button" style="margin-top:10px;">مزامنة الآن</button>
             <button class="btn btn-primary btn-block" id="reconcileFullBtn" type="button" style="margin-top:10px;">دمج كامل مع الأرشيف المركزي</button>
             <div class="result-box" id="syncStatusResult"></div>
         </article>
 
         <article class="card">
-            <h2>آخر المنتجات المضافة (من الطرفين)</h2>
-            <button class="btn btn-outline btn-block" id="refreshRecentBtn" type="button">تحديث القائمة</button>
+            <h2>آخر المنتجات — وهل انضافت للمتجر فعلاً؟</h2>
+            <p class="hint">كل منتج يظهر مع نتيجته: ✓ تمت الإضافة للمتجر، ⏳ جارٍ الإرسال، ✗ فشل الإرسال، أو «مجهّز» أي لم يُرسل بعد. القائمة تُحدَّث تلقائياً كل 20 ثانية أثناء فتح التبويب.</p>
+            <div class="result-box" id="recentProductsSummary">جارِ التحميل...</div>
+            <button class="btn btn-outline btn-block" id="refreshRecentBtn" type="button" style="margin-top:8px;">تحديث القائمة</button>
             <div id="recentProductsBox" style="margin-top:10px;"></div>
         </article>
 

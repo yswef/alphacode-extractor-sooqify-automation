@@ -13,6 +13,8 @@
 - Add one product manually or select several products and run a persistent batch queue.
 - Notify the operating system after each submitted product and after batch completion.
 - Optionally sync two machines working on the same store, preventing duplicate product IDs and duplicate product additions.
+- Sync **automatically every 30 minutes** while the backend runs - no button press, no popup open, no browser needed - with a browser notification the moment products added by the other operator arrive.
+- See at a glance **whether each product was actually added to the store** (✓ added / ⏳ submitting / ✗ failed / prepared only), with a whole-archive summary and a per-teammate product count.
 - Detect and repair older products missing newer fields via the **إصلاح البيانات** (Data Repair) tab, with operator-approved defaults, an automatic backup before any write, and downloadable error/extra-field reports.
 - Automatically back off for a cooldown period when the sync host returns HTTP 403 (rate-limit/anti-flood block), instead of hammering it with more requests.
 - Enter product names and descriptions by hand, or paste a JSON template - the AI feature was removed entirely, and the fields start empty rather than pre-filled with generated text.
@@ -109,6 +111,19 @@ START_ALPHACODE.bat
 4. Select the `extension` folder.
 5. After every code update, click **Reload** and hard-refresh supplier/store pages with `Ctrl + Shift + R`.
 
+## Sooqify Audit v6 companion
+
+The isolated Railway service and WhatsApp worker live in `extension/sooqify_railway/`; they do not replace or modify the existing local backend or live PHP sync service. The audit scan now runs in a Railway-hosted Chromium session; the old extension upload API remains for compatibility but is not required for the new server-side scan.
+
+1. Deploy the isolated service with its included Dockerfile, enable `REMOTE_BROWSER_ENABLED=true`, and mount a persistent Railway Volume at `/data`.
+2. Open `/dashboard` over HTTPS and authenticate with `AUDIT_API_TOKEN`. Start the remote Chromium browser, sign in to Sooqify there, and solve any CAPTCHA manually; no local browser profile is transferred.
+3. Verify/open the `/admin/item/list` page and start the Railway scan. The server requests list pages only, extracts Store IDs from links in visible rows, and blocks product view/edit/delete routes. Incomplete scans never replace the last complete snapshot.
+4. The authenticated remote view uses compressed screenshots and mouse/keyboard controls. Screenshot updates still consume some operator-side internet; the Sooqify list requests and scan uploads originate from Railway.
+5. Test report generation after the scan; the AlphaCode PHP archive remains a read-only source. Afterward, optionally enable daily reports and pair WhatsApp, which receives a queued completion/failure notice for server-side scans.
+6. WhatsApp archive deletion, if explicitly requested, is still limited to one Local ID at a time, requires a preview and confirmation, backs up the record, and only removes local archive copies on updated extension clients. It never deletes products from Sooqify or alters the shared PHP source archive; restore depends on the shared archive still containing the record.
+
+See `extension/sooqify_railway/README.md` for Railway variables, deployment steps, API details and deletion/restore boundaries.
+
 ## First-run setup: choose a save folder
 
 As of v4.5.2 there is no default save path. On first launch, open the popup's **المزامنة والمجلد** tab and click **اختيار / تغيير مجلد الحفظ** to open a native folder picker and choose where product images, the archive, and the Excel file are stored. Product saving is blocked with a clear error until this is done. Each machine keeps its own independent choice — the two saved folders never need to match.
@@ -126,6 +141,19 @@ If the sync server is unreachable, AlphaCode keeps working locally: it falls bac
 
 Every action on `sync.php`, including sign-in (`whoami`), requires the same secret token — so login is blocked upfront with a clear message ("أدخل كود المزامنة من تبويب الإعدادات أولاً") if the token field is empty, instead of failing later with a generic server rejection.
 
+### Automatic sync (every 30 minutes)
+
+As of v5.9.0 the sync cycle runs **inside the backend process** and needs nothing else — not the popup, not the supplier page, not even the browser:
+
+- A first cycle runs ~20 seconds after the backend starts (so the other side's products appear right away), then one **every 30 minutes**.
+- The interval is editable in the **المزامنة والمجلد** tab (**تكرار المزامنة التلقائية**, 5–1440 minutes, default 30) and a change takes effect without restarting the backend. `ALPHACODE_SYNC_INTERVAL_SECONDS` overrides it in seconds for fine control.
+- Between cycles, a failed push queue is retried every 5 minutes instead of waiting for the next full cycle.
+- A full reconcile still runs automatically when due (every 6 hours), now reliably, because a cycle finally runs on its own.
+
+The tab shows the next automatic run, how many products the last pull brought in (and how many came from the other operator), and whether the worker is running — with a clear warning if it is not. The recent-products list is refreshed every 20 seconds while the tab is open and labels every product with its real outcome: **✓ تمت الإضافة** (added to the store), **⏳ جارٍ الإرسال** (submitting), **✗ فشل الإرسال** (failed, with the reason), or **مجهّز — لم يُضف** (prepared, not sent yet), plus a summary and a per-teammate count.
+
+A browser notification reports each batch of products added by the other operator, once per batch. If the extension finds the backend worker missing or overdue (an older backend build, or an unexpected stop), it triggers a sync itself instead of leaving the machine silently behind.
+
 ### Sync resilience & host rate-limiting
 
 Shared hosts (Hostinger included) commonly rate-limit or briefly block a client that sends many requests in a short burst — this can happen the first time a device with a large local archive reconciles against the server, since every missing product is pushed one request at a time. To avoid that:
@@ -133,7 +161,7 @@ Shared hosts (Hostinger included) commonly rate-limit or briefly block a client 
 - A short pacing delay (`SYNC_REQUEST_PACING_SECONDS`, default `0.3s`) is applied between consecutive push requests during a full reconcile or a Data Repair apply, so a big batch never floods the host fast enough to trigger a block in the first place.
 - If the host still responds with HTTP 403, AlphaCode stops calling it immediately, records a cooldown (`SYNC_THROTTLE_COOLDOWN_SECONDS`, default `300s` / 5 minutes) in `sync_state.json`, and shows a plain-language explanation in the sync status panel instead of retrying and extending the block. Normal syncing resumes automatically once the cooldown passes.
 
-Both values are constants near the top of `backend/app.py` and can be tuned to match your host's specific rate-limit policy.
+Both values are constants near the top of `backend/app/services/sync_service.py` and can be tuned to match your host's specific rate-limit policy.
 
 ## Data repair tab (optional maintenance)
 
@@ -298,6 +326,7 @@ of every behavioural change; the most recent are:
 | [Reports, login sync, session gate, throttle](docs/changes/2026-09-22_reports_login_session_throttle.md) | Flexible report dates, sync on the login screen, store-session check, adaptive back-off |
 | [Reversed names and the sync data gap](docs/changes/2026-09-22_report_names_and_sync_data_gap.md) | Fixes reversed Arabic names in PDFs and the silently lossy incremental sync |
 | [AI removal, UI redesign, field fixes](docs/changes/2026-09-25_remove_ai_redesign_ui_and_field_fixes.md) | Removes AI entirely, redesigns the popup, fixes the brand field, backend port discovery and image bandwidth |
+| [Automatic sync and product status](docs/changes/2026-10-02_auto_sync_every_30_minutes_and_product_status.md) | A real 30-minute background sync that needs no button, and a store-submission status per product ("was it added?") with a notification for arriving products |
 
 ## License
 

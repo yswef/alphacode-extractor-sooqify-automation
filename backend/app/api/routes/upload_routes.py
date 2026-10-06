@@ -26,7 +26,7 @@ from app.core.utils import (
 from app.core.config import write_json_temp
 from app.repositories.archive_repository import load_archive, save_archive
 from app.repositories.sync_config_repository import load_sync_config
-from app.services.sync_service import sync_push_product, sync_reserve_id, sync_reserve_key
+from app.services.sync_service import sync_call, sync_push_product, sync_reserve_id, sync_reserve_key
 from app.services.upload_service import (
     build_variant_fields,
     build_watch_variations_from_absolute_yuan,
@@ -61,6 +61,7 @@ from app.services.product_helpers import (
     get_product_image_dir,
     normalize_allowed_brands,
     parse_brand_map_json,
+    parse_brand_records,
     rebuild_archive_metadata,
     resolve_allowed_brand,
     update_product_workflow_status,
@@ -81,6 +82,21 @@ logger = logging.getLogger(__name__)
 
 upload_bp = Blueprint("upload_bp", __name__)
 SAVE_LOCK = threading.RLock()
+
+
+def _load_brand_map_for_upload(settings):
+    """Return the canonical store map; never trust a stale client ID when shared sync is on."""
+    if load_sync_config().get("Enabled"):
+        remote, error = sync_call("brands", method="GET")
+        if error:
+            return {}, True, f"Could not refresh the shared store brand IDs: {error}"
+        if not isinstance(remote, dict) or not remote.get("success"):
+            return {}, True, "The shared sync server did not return a valid brand list."
+        brand_map = parse_brand_records(remote.get("brands"))
+        if not brand_map:
+            return {}, True, "The shared brand list is empty or contains no valid IDs."
+        return brand_map, True, None
+    return parse_brand_map_json(settings.get("BrandMapJson")), False, None
 
 
 def _archive_entries(archive):
@@ -214,15 +230,50 @@ def extract_product():
     description_en = normalize_text(data.get("DescriptionEN") or data.get("Description"))
     name_ar = normalize_text(data.get("NameAR")) or name_en
     description_ar = normalize_text(data.get("DescriptionAR")) or description_en
-    brand_map = parse_brand_map_json(settings.get("BrandMapJson"))
+    brand_map, shared_brand_map, brand_map_error = _load_brand_map_for_upload(settings)
+    if brand_map_error:
+        logger.warning("Rejecting upload because its authoritative brand map is unavailable: %s", brand_map_error)
+        return jsonify({
+            "success": False,
+            "error": brand_map_error,
+            "code": "brand_map_unavailable",
+            "product_saved": False,
+        }), 503
+
     allowed_store_brands = list(brand_map.keys()) or [settings["BrandName"]]
+    if shared_brand_map:
+        requested_brand = canonicalize_brand_name(data.get("BrandName") or settings["BrandName"])
+        if requested_brand and requested_brand.casefold() not in {name.casefold() for name in allowed_store_brands}:
+            return jsonify({
+                "success": False,
+                "error": f"البراند المحدد '{requested_brand}' غير موجود في القائمة الحالية للمتجر؛ حدّث القائمة قبل الرفع.",
+                "code": "brand_name_not_mapped",
+                "brand_name": requested_brand,
+                "product_saved": False,
+            }), 409
+
     brand_name = resolve_allowed_brand(
         data.get("BrandName"),
         settings["BrandName"],
         allowed_store_brands,
         f"{data.get('NameEN', '')} {data.get('NameAR', '')} {data.get('DescriptionEN', '')}",
     )
-    brand_id = brand_map.get(brand_name, safe_int(data.get("BrandId"), settings["BrandId"]))
+    if shared_brand_map:
+        # Arabic: عند تفعيل المزامنة، الـID القادم من جهاز الإضافة أو الكاش المحلي ليس مرجعاً.
+        #         نشتق الرقم من اسم البراند في الخريطة المشتركة، ونرفض الرفع بدل إرسال ID متقادم.
+        # English: With shared sync enabled, the extension/cache ID is not authoritative. Resolve
+        #          from the shared map and reject instead of sending a stale numeric ID.
+        brand_id = brand_map.get(brand_name)
+        if not brand_id:
+            return jsonify({
+                "success": False,
+                "error": f"البراند '{brand_name}' غير موجود في قائمة المتجر المشتركة. حدّث قائمة البراندات أولاً.",
+                "code": "brand_id_not_mapped",
+                "brand_name": brand_name,
+                "product_saved": False,
+            }), 409
+    else:
+        brand_id = brand_map.get(brand_name, safe_int(data.get("BrandId"), settings["BrandId"]))
     sizes = unique_text_values(data.get("Sizes") if isinstance(data.get("Sizes"), list) else [])
     supplier_store_name = normalize_text(data.get("SupplierStoreName") or settings["SupplierStoreName"])
     supplier_store_id = normalize_text(data.get("SupplierStoreId") or settings["SupplierStoreId"])
@@ -651,11 +702,51 @@ def get_archive_stats():
 
 @upload_bp.route("/api/archive/recent", methods=["GET"])
 def get_recent_products():
-    """Arabic: شاشة تشخيص صغيرة للمنتجات المضافة حديثاً. English: Small diagnostics view of recently added products."""
+    """
+    Arabic: قائمة آخر المنتجات مع حالة كل منتج (تمت إضافته للمتجر / جارٍ الإرسال / فشل / مجهّز
+            فقط) — هذه هي الشاشة التي تجيب سؤال "المنتج انضاف ولا لأ". كانت ترجع workflow_status
+            لكن اللوحة ما كانت تعرضه إطلاقاً، فالمستخدم يشوف الاسم والبراند ولا يشوف النتيجة.
+
+            ترجع كذلك ملخصاً لكل الأرشيف (أعداد المُضاف/الفاشل/المجهّز) وترتيب المتعاونين حسب
+            عدد المنتجات، فيعرف كل طرف من أين جاء المنتج وحالته بضغطة واحدة.
+
+    English: The latest products with each one's status (submitted to the store / submitting /
+             failed / prepared only) - the screen that answers "was this product actually
+             added?". The route already returned workflow_status, but the popup never rendered
+             it, so the operator saw the name and brand and never the outcome.
+
+             Also returns a whole-archive summary (submitted/failed/prepared counts) and the
+             operators ranked by product count, so each side can see where a product came from
+             and how it ended in one look.
+    """
     limit = max(1, min(safe_int(request.args.get("limit"), 15), 100))
     archive = load_archive(paths_state.ARCHIVE_PATH)
     entries = [item for item in _archive_entries(archive).values() if item.get("id") is not None]
     entries.sort(key=lambda item: safe_int(item.get("id"), 0), reverse=True)
+
+    summary = {"total": len(entries), "submitted": 0, "in_progress": 0, "failed": 0, "prepared": 0}
+    operators = {}
+    for item in entries:
+        status = normalize_text(item.get("workflow_status") or item.get("store_submission_status")).lower()
+        if status == "submitted":
+            summary["submitted"] += 1
+        elif status in {"submit_started", "submitting", "started"}:
+            summary["in_progress"] += 1
+        elif status == "submit_failed":
+            summary["failed"] += 1
+        else:
+            summary["prepared"] += 1
+
+        operator = normalize_text(item.get("added_by")) or "غير محدد"
+        operators[operator] = operators.get(operator, 0) + 1
+
+    def _failure_reason(item):
+        """Arabic: سبب فشل الإرسال المختصر كما سجّلته الإضافة (لو موجود). English: The short failure reason recorded by the extension, when present."""
+        details = item.get("workflow_details")
+        if isinstance(details, dict):
+            return normalize_text(details.get("error"))[:200]
+        return normalize_text(details)[:200]
+
     recent = [
         {
             "id": item.get("id"),
@@ -665,11 +756,21 @@ def get_recent_products():
             "added_by": item.get("added_by") or "غير محدد",
             "id_source": item.get("id_source") or "local_fallback",
             "created_at": item.get("created_at"),
-            "workflow_status": item.get("workflow_status"),
+            "date": item.get("date"),
+            "workflow_status": normalize_text(item.get("workflow_status")) or "prepared",
+            "store_submission_status": normalize_text(item.get("store_submission_status")) or "not_submitted",
+            "workflow_updated_at": item.get("workflow_updated_at"),
+            "failure_reason": _failure_reason(item),
         }
         for item in entries[:limit]
     ]
-    return jsonify({"success": True, "products": recent})
+    ranked_operators = sorted(operators.items(), key=lambda pair: pair[1], reverse=True)
+    return jsonify({
+        "success": True,
+        "products": recent,
+        "summary": summary,
+        "operators": [{"name": name, "count": count} for name, count in ranked_operators[:5]],
+    })
 
 
 @upload_bp.route("/api/pending/latest", methods=["GET"])

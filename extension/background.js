@@ -6,7 +6,7 @@
 
 'use strict';
 
-importScripts('config.js', 'product_types.js', 'supplier_throttle.js', 'backend_discovery.js');
+importScripts('config.js', 'product_types.js', 'supplier_throttle.js', 'backend_discovery.js', 'sooqify_railway/extension/service_worker.js');
 // Arabic: ملفات تعريف نوع المنتج - المصدر الوحيد لكل فروقات الأحذية/الساعات.
 // English: Product type profiles - the single source for every shoes/watches difference.
 const PRODUCT_TYPES = globalThis.ALPHACODE_PRODUCT_TYPES;
@@ -1506,6 +1506,264 @@ chrome.alarms.onAlarm.addListener(alarm => {
 // Arabic: لا نستدعيها فوراً عند بدء التشغيل — الـalarm سيُشغّلها بعد ساعة.
 // English: Do not call immediately on startup — the alarm will trigger it after one hour.
 
+// =========================================================
+// Arabic: متابعة المزامنة التلقائية وإشعار المستخدم بالمنتجات الواردة من الطرف الآخر.
+//
+//         المزامنة نفسها صارت تعمل داخل الباك اند كل 30 دقيقة (app/services/sync_service.py)،
+//         فهذا المنبّه لا يزامن بنفسه عادةً — وظيفته:
+//           1) فحص خفيف لحالة المزامنة المحلية كل 10 دقائق.
+//           2) خطة بديلة: لو طلع الخيط الخلفي متوقفاً (نسخة باك اند قديمة، أو توقف غير متوقع)
+//              أو تأخّرت دورته، يُشغّل دورة مزامنة فوراً حتى لا تتوقف المزامنة أبداً.
+//           3) إشعار نظام مرة واحدة لكل دفعة منتجات جديدة، حتى يعرف المستخدم أن منتجات
+//              الطرف الآخر وصلت لجهازه بدون أن يفتح اللوحة ويحدّث يدوياً.
+//
+// English: Automatic-sync follow-up and the "products arrived from the other operator" notice.
+//
+//          The sync itself now runs inside the backend every 30 minutes
+//          (app/services/sync_service.py), so this alarm does not normally sync on its own. Its
+//          job is:
+//            1) a light poll of the local sync status every 10 minutes,
+//            2) a fallback: when the background worker is not running (an older backend build,
+//               or an unexpected stop) or its cycle is overdue, trigger a cycle at once so sync
+//               never silently stops,
+//            3) one OS notification per batch of newly arrived products, so the operator learns
+//               the other side's products reached this machine without opening the popup and
+//               refreshing by hand.
+// =========================================================
+const SYNC_ALARM_NAME = 'alphacode_auto_sync_check';
+const SYNC_LAST_NOTIFIED_KEY = 'alphacode_sync_last_notified_pull_at';
+const SYNC_CHECK_PERIOD_MINUTES = 10;
+
+async function fetchSyncStatus() {
+    const response = await fetch(`${LOCAL_API_BASE}/api/sync/status`, { cache: 'no-store' });
+    if (!response.ok) return null;
+    const data = await response.json().catch(() => null);
+    return data?.success ? data : null;
+}
+
+async function runAutoSyncCheck() {
+    try {
+        let status = await fetchSyncStatus();
+        if (!status || !status.enabled) return;
+
+        // Arabic: الطابع الزمني الصحيح للإشعار هو last_pull_new_from_others_at (لا يتأثر بسحب
+        //         فارغ لاحق) — وهو نفس الحقل الذي يقارنه الباك اند عند حساب new_from_others.
+        // English: The right timestamp for the notice is last_pull_new_from_others_at (unaffected
+        //          by a later empty pull) - the same field the backend compares.
+        const lastCycleMs = status.last_cycle_at ? Date.parse(status.last_cycle_at) : 0;
+        const intervalMs = Math.max(5, Number(status.auto_interval_minutes || 30)) * 60000;
+        const overdue = !status.auto_worker_running
+            || !lastCycleMs
+            || (Date.now() - lastCycleMs > intervalMs * 1.5);
+
+        if (overdue) {
+            const triggered = await fetch(`${LOCAL_API_BASE}/api/sync/now`, { method: 'POST' });
+            if (triggered.ok) {
+                status = (await fetchSyncStatus()) || status;
+            }
+        }
+
+        const notifiedAt = status.last_pull_new_from_others_at || '';
+        const fromOthers = Number(status.last_pull_new_from_others || 0);
+        if (!notifiedAt || fromOthers <= 0) return;
+
+        const stored = await chrome.storage.local.get(SYNC_LAST_NOTIFIED_KEY);
+        if (stored?.[SYNC_LAST_NOTIFIED_KEY] === notifiedAt) return;
+
+        await showBatchNotification(
+            'AlphaCode — وصلت منتجات جديدة',
+            `وصل ${fromOthers} منتج أضافه الطرف الآخر إلى جهازك. افتح تبويب "المزامنة والمجلد" لمراجعتها وإضافتها إن لزم.`,
+            'alphacode_sync_notice',
+        );
+        await chrome.storage.local.set({ [SYNC_LAST_NOTIFIED_KEY]: notifiedAt });
+    } catch (_) {
+        // Arabic: الباك اند غير متاح مؤقتاً - تجاهل بصمت وحاول في الدورة القادمة.
+        // English: Backend temporarily unavailable - fail silently and retry next cycle.
+    }
+}
+
+// Arabic: نُنشئ المنبّه فقط لو غير موجود - إعادة إنشائه عند كل إيقاظ للـService Worker
+//         تصفّر عدّاده فتبقى المتابعة مؤجلة أبداً أثناء الدفعات. (نفس الفخ ينطبق على منبّه
+//         إصلاح البيانات أعلاه، لكنه خارج نطاق هذا التعديل.)
+// English: Create the alarm only when missing - recreating it on every service-worker wake
+//          resets its countdown, which can postpone the check forever during batch activity.
+//          (The same trap applies to the data-repair alarm above, left out of this change.)
+chrome.alarms.get(SYNC_ALARM_NAME, existing => {
+    if (!existing) {
+        chrome.alarms.create(SYNC_ALARM_NAME, {
+            delayInMinutes: 2,
+            periodInMinutes: SYNC_CHECK_PERIOD_MINUTES,
+        });
+    }
+});
+chrome.alarms.onAlarm.addListener(alarm => {
+    if (alarm.name === SYNC_ALARM_NAME) runAutoSyncCheck().catch(() => {});
+});
+
+const RAILWAY_BASELINE_RETRY_ALARM_NAME = 'sooqify_railway_baseline_retry';
+chrome.alarms.get(RAILWAY_BASELINE_RETRY_ALARM_NAME, existing => {
+    if (!existing) {
+        chrome.alarms.create(RAILWAY_BASELINE_RETRY_ALARM_NAME, {
+            delayInMinutes: 10,
+            periodInMinutes: 15,
+        });
+    }
+});
+chrome.alarms.onAlarm.addListener(alarm => {
+    if (alarm.name === RAILWAY_BASELINE_RETRY_ALARM_NAME) {
+        globalThis.ALPHACODE_RAILWAY_AUDIT.handle({
+            action: 'SOOQIFY_RAILWAY_FLUSH_PENDING_BASELINES',
+        }).catch(() => {});
+    }
+});
+
+const RAILWAY_ARCHIVE_JOB_ALARM_NAME = 'sooqify_railway_archive_jobs';
+const RAILWAY_ARCHIVE_WORKER_ID_KEY = 'sooqifyRailwayArchiveWorkerId';
+let railwayArchiveJobRunPromise = null;
+
+function railwayArchiveApi(method, path, body) {
+    return globalThis.ALPHACODE_RAILWAY_AUDIT.handle({
+        action: 'SOOQIFY_RAILWAY_API',
+        request: { method, path, ...(body === undefined ? {} : { body }) },
+    });
+}
+
+async function getRailwayArchiveWorkerId() {
+    const saved = await chrome.storage.local.get(RAILWAY_ARCHIVE_WORKER_ID_KEY);
+    let workerId = String(saved[RAILWAY_ARCHIVE_WORKER_ID_KEY] || '');
+    if (!/^[a-f0-9-]{36}$/i.test(workerId)) {
+        workerId = crypto.randomUUID();
+        await chrome.storage.local.set({ [RAILWAY_ARCHIVE_WORKER_ID_KEY]: workerId });
+    }
+    return workerId;
+}
+
+async function localArchiveRequest(path, options = {}) {
+    let discovered = '';
+    try { discovered = await globalThis.ALPHACODE_BACKEND?.getBackendBase?.() || ''; } catch (_) {}
+    if (discovered) LOCAL_API_BASE = discovered;
+    const response = await fetch(`${LOCAL_API_BASE}${path}`, {
+        method: options.method || 'GET',
+        cache: 'no-store',
+        credentials: 'omit',
+        headers: options.body === undefined ? {} : { 'Content-Type': 'application/json' },
+        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+        signal: AbortSignal.timeout(30000),
+    });
+    let result = {};
+    try { result = await response.json(); } catch (_) {}
+    return { response, result };
+}
+
+async function completeRailwayArchiveJob(job, success, error = '', alreadyAbsent = false) {
+    return railwayArchiveApi('POST', `/api/whatsapp/worker/archive-jobs/${job.job_id}/complete`, {
+        lease_id: job.lease_id,
+        success,
+        error: String(error || '').slice(0, 200),
+        already_absent: Boolean(alreadyAbsent),
+    });
+}
+
+async function processRailwayArchiveJob(job) {
+    const localId = Number(job?.local_id || 0);
+    if (!Number.isSafeInteger(localId) || localId <= 0 || !/^[a-f0-9]{32}$/.test(String(job?.job_id || ''))) {
+        throw new Error('طلب الأرشيف الوارد غير صالح؛ لم يُنفّذ.');
+    }
+
+    if (job.action === 'delete_local_archive_record') {
+        const path = `/api/archive/product/${localId}`;
+        const current = await localArchiveRequest(path);
+        if (current.response.status === 404) {
+            await completeRailwayArchiveJob(job, true, '', !job.local_backup_received);
+            return;
+        }
+        if (!current.response.ok || current.result?.success !== true || Number(current.result?.product?.id) !== localId) {
+            throw new Error(current.result?.error || `تعذر قراءة Local ID ${localId} على هذا الجهاز.`);
+        }
+
+        // Keep the full local record on the Railway Volume before calling the existing
+        // local delete route. The image files remain untouched (delete_images=false).
+        await railwayArchiveApi('POST', `/api/whatsapp/worker/archive-jobs/${job.job_id}/backup`, {
+            lease_id: job.lease_id,
+            record: current.result.product,
+        });
+        const deleted = await localArchiveRequest(path, { method: 'DELETE', body: { delete_images: false } });
+        if (!deleted.response.ok || deleted.result?.success !== true || Number(deleted.result?.id) !== localId) {
+            throw new Error(deleted.result?.error || `تعذر حذف السجل المحلي ${localId}.`);
+        }
+        const verification = await localArchiveRequest(path);
+        if (verification.response.status !== 404) {
+            throw new Error(`لم يتأكد اختفاء Local ID ${localId} بعد طلب الحذف.`);
+        }
+        await completeRailwayArchiveJob(job, true);
+        return;
+    }
+
+    if (job.action === 'restore_local_archive_record') {
+        const reconciled = await localArchiveRequest('/api/sync/reconcile', { method: 'POST' });
+        if (!reconciled.response.ok || reconciled.result?.success !== true) {
+            throw new Error(reconciled.result?.error || 'تعذرت مزامنة الأرشيف المشترك؛ لم يُلغَ منع الحذف.');
+        }
+        const restored = await localArchiveRequest(`/api/archive/product/${localId}`);
+        if (!restored.response.ok || restored.result?.success !== true || Number(restored.result?.product?.id) !== localId) {
+            throw new Error('لم يظهر السجل المحلي بعد المزامنة؛ بقي منع الحذف نشطاً.');
+        }
+        await completeRailwayArchiveJob(job, true);
+        return;
+    }
+    throw new Error('نوع طلب الأرشيف غير مدعوم.');
+}
+
+async function applyRailwayArchiveTombstones() {
+    const response = await railwayArchiveApi('GET', '/api/whatsapp/worker/archive-tombstones');
+    const tombstones = Array.isArray(response.tombstones) ? response.tombstones : [];
+    for (const item of tombstones.slice(0, 1000)) {
+        const localId = Number(item.local_id || 0);
+        if (!Number.isSafeInteger(localId) || localId <= 0) continue;
+        const path = `/api/archive/product/${localId}`;
+        const current = await localArchiveRequest(path);
+        if (current.response.status === 404) continue;
+        if (!current.response.ok || current.result?.success !== true || Number(current.result?.product?.id) !== localId) continue;
+        const removed = await localArchiveRequest(path, { method: 'DELETE', body: { delete_images: false } });
+        if (!removed.response.ok || removed.result?.success !== true) {
+            console.warn(`Railway archive tombstone could not be applied to Local ID ${localId}.`);
+        }
+    }
+}
+
+async function runRailwayArchiveJobCycle() {
+    if (railwayArchiveJobRunPromise) return railwayArchiveJobRunPromise;
+    railwayArchiveJobRunPromise = (async () => {
+        try {
+            const config = await globalThis.ALPHACODE_RAILWAY_AUDIT.handle({ action: 'SOOQIFY_RAILWAY_GET_CONFIG' });
+            if (!config?.configured) return;
+            const workerId = await getRailwayArchiveWorkerId();
+            const claimed = await railwayArchiveApi('POST', '/api/whatsapp/worker/archive-jobs/claim', { worker_id: workerId });
+            if (claimed.job) {
+                try {
+                    await processRailwayArchiveJob(claimed.job);
+                } catch (error) {
+                    console.warn(`Railway archive request ${claimed.job.action} failed: ${String(error?.message || error).slice(0, 180)}`);
+                    try { await completeRailwayArchiveJob(claimed.job, false, error?.message || 'local archive request failed'); } catch (_) {}
+                }
+            }
+            await applyRailwayArchiveTombstones();
+        } catch (_) {
+            // No service request is made until the Railway URL/token have been configured.
+        }
+    })().finally(() => { railwayArchiveJobRunPromise = null; });
+    return railwayArchiveJobRunPromise;
+}
+
+chrome.alarms.get(RAILWAY_ARCHIVE_JOB_ALARM_NAME, existing => {
+    if (!existing) {
+        chrome.alarms.create(RAILWAY_ARCHIVE_JOB_ALARM_NAME, { delayInMinutes: 1, periodInMinutes: 5 });
+    }
+});
+chrome.alarms.onAlarm.addListener(alarm => {
+    if (alarm.name === RAILWAY_ARCHIVE_JOB_ALARM_NAME) runRailwayArchiveJobCycle().catch(() => {});
+});
+
 // Arabic: توجيه رسائل الإضافة إلى الوظيفة المناسبة.
 // English: Route extension messages to the proper background action.
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -1513,6 +1771,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     (async () => {
         try {
+            if (String(message.action).startsWith('SOOQIFY_RAILWAY_')) {
+                sendResponse(await globalThis.ALPHACODE_RAILWAY_AUDIT.handle(message));
+                return;
+            }
+
             if (message.action === 'FETCH_LOCAL_FILE') {
                 sendResponse(await fetchLocalFile(message));
                 return;

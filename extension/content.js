@@ -2447,6 +2447,21 @@ async function submitProduct(context) {
             lastAlphaCodeProductId: result.id,
         });
 
+        // Optional v6 sidecar: send only pricing inputs to Railway after the unchanged
+        // local backend has saved the product. The service never receives cookies/passwords.
+        safeRuntimeMessage({
+            action: 'SOOQIFY_RAILWAY_PRICE_BASELINE',
+            product: {
+                local_id: Number(result.id),
+                name_en: payload.NameEN,
+                name_ar: payload.NameAR,
+                product_type: payload.ProductType,
+                original_price_yuan: payload.OriginalPrice,
+                price_sar: payload.PriceSAR,
+                settings: payload.Settings,
+            },
+        }).catch(() => {});
+
         await logExtractorEvent(
             'INFO',
             'product_saved_for_store',
@@ -3685,6 +3700,18 @@ async function prepareBatchDraftForStore(draft, batchId, batchIndex, batchTotal,
         } else {
             productId = Number(result.id || 0);
             pendingProduct = result.pending_product;
+            safeRuntimeMessage({
+                action: 'SOOQIFY_RAILWAY_PRICE_BASELINE',
+                product: {
+                    local_id: productId,
+                    name_en: payload.NameEN,
+                    name_ar: payload.NameAR,
+                    product_type: payload.ProductType,
+                    original_price_yuan: payload.OriginalPrice,
+                    price_sar: payload.PriceSAR,
+                    settings: payload.Settings,
+                },
+            }).catch(() => {});
         }
     }
 

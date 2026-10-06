@@ -365,15 +365,15 @@ def get_product_image_dir(product):
         return os.path.join(paths_state.BASE_DIR, brand_folder, folder_name)
     return os.path.join(paths_state.BASE_DIR, folder_name)
 
-def sync_background_worker():
-    """Arabic: خيط خلفي يسحب تحديثات الطرف الآخر ويعيد إرسال الطابور دورياً كل 90 ثانية. English: Background thread that pulls the other side's updates and flushes the retry queue every 90 seconds."""
-    while True:
-        try:
-            sync_pull_updates()
-            sync_flush_queue()
-        except Exception as exc:
-            logger.warning("Sync background cycle failed: %s", exc)
-        time.sleep(90)
+# Arabic: حُذفت من هنا نسخة sync_background_worker القديمة (كانت تنادي sync_pull_updates
+#         وsync_flush_queue وtime بدون أي استيراد لها = NameError لو شُغّلت يوماً، ولم
+#         يستدعها أي كود أصلاً). الحلقة الحقيقية الوحيدة الآن في app/services/sync_service.py
+#         وتُشغَّل من نقطة الدخول backend/app/main.py كل 30 دقيقة افتراضياً.
+# English: The old duplicate sync_background_worker was removed from here (it called
+#          sync_pull_updates / sync_flush_queue / time without importing any of them - a
+#          NameError if it had ever run, and nothing called it anyway). The one real loop now
+#          lives in app/services/sync_service.py and is started from the entry point
+#          backend/app/main.py every 30 minutes by default.
 
 def clean_folder_name(name, fallback_code):
     """Arabic: تنظيف اسم مجلد المنتج من رموز Windows غير الصالحة. English: Sanitize a product folder name for Windows."""
@@ -656,8 +656,44 @@ def canonicalize_brand_name(value):
     brand = re.sub(r"\s+", " ", normalize_text(value)).strip(" -–—|,.;:")
     if not brand or len(brand) > 80:
         return ""
+
+    # Arabic: أسماء العلامات في لوحة المتجر قد تظهر مترجمة/مكتوبة بالعربية، بينما الإضافة
+    #         تحفظ الاسم الإنجليزي. نطبع أشهر الأسماء إلى اسم واحد قبل مطابقة الـID.
+    # English: The store admin may display Arabic transliterations while the extension stores
+    #          English names. Canonicalize common spellings before resolving the numeric ID.
+    arabic_key = re.sub(r"[\u064b-\u065f\u0670]", "", brand)
+    arabic_key = re.sub(r"\s+", " ", arabic_key).strip()
+    arabic_key = arabic_key.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا").replace("ى", "ي")
+    arabic_aliases = {
+        "اير جوردن": "Air Jordan",
+        "اير جوردان": "Air Jordan",
+        "كارتيه": "Cartier",
+        "كارتية": "Cartier",
+        "كارتير": "Cartier",
+        "كارتيير": "Cartier",
+        "كارتييه": "Cartier",
+        "فرانك مولر": "Franck Muller",
+        "نيو بالانس": "New Balance",
+        "نايك": "Nike",
+        "باتك فيليب": "Patek Philippe",
+        "باتيك فيليب": "Patek Philippe",
+        "باتيك فيليبس": "Patek Philippe",
+        "اديداس": "Adidas",
+        "رولكس": "Rolex",
+    }
+    if arabic_key in arabic_aliases:
+        return arabic_aliases[arabic_key]
+
     if re.search(r"\b(?:air\s+jordan|jordan\s+brand|jordan\s*\d+|aj\s*\d+)\b", brand, re.I) or brand.casefold() == "jordan":
         return "Air Jordan"
+    if re.search(r"\bcartier\b", brand, re.I):
+        return "Cartier"
+    if re.search(r"\bfranck\s+muller\b", brand, re.I):
+        return "Franck Muller"
+    if re.search(r"\bpatek\s+philippe\b", brand, re.I):
+        return "Patek Philippe"
+    if re.search(r"\brolex\b", brand, re.I):
+        return "Rolex"
     if re.search(r"\bnike\b", brand, re.I):
         return "Nike"
     if re.search(r"\badidas\b", brand, re.I):
@@ -677,6 +713,25 @@ def canonicalize_brand_name(value):
     if re.search(r"\bunder\s+armour\b", brand, re.I):
         return "Under Armour"
     return brand
+
+def parse_brand_records(records):
+    """Arabic: تحويل صفوف [{id,name}] إلى خريطة اسم→ID مع توحيد الأسماء العربية.
+    English: Convert [{id,name}] records to a canonical name-to-ID map, including Arabic aliases.
+    """
+    result = {}
+    seen_ids = set()
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        name = canonicalize_brand_name(record.get("name", record.get("brand_name", "")))
+        brand_id = safe_int(record.get("id", record.get("brand_id")), 0)
+        if not name or brand_id <= 0 or brand_id in seen_ids:
+            continue
+        if name in result:
+            continue
+        result[name] = brand_id
+        seen_ids.add(brand_id)
+    return result
 
 def parse_brand_map_json(value):
     """Arabic: قراءة خريطة البراندات الآمنة من الإعدادات. English: Parse the configured allow-list brand map safely."""

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AlphaCode Product Extractor",
-  "version": "5.8.1",
+  "version": "5.9.0",
   "description": "أداة داخلية تستخرج بيانات المنتجات من متجر المورد الصيني وترفعها تلقائياً إلى متجر Sooqify، مع مزامنة مركزية للأرشيف بين المستخدمين.",
   "permissions": [
     "activeTab",
@@ -18,7 +18,8 @@
     "http://127.0.0.1:5002/*",
     "http://127.0.0.1:5003/*",
     "http://127.0.0.1:5004/*",
-    "https://admin.sooqifyonline.com/*"
+    "https://admin.sooqifyonline.com/*",
+    "https://*.up.railway.app/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -63,12 +64,22 @@
     },
     {
       "matches": [
+        "https://admin.sooqifyonline.com/admin/brand*"
+      ],
+      "js": [
+        "sooqify_brand_ids.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
         "https://admin.sooqifyonline.com/admin/item/*"
       ],
       "js": [
         "config.js",
         "product_types.js",
-        "admin_autofill.js"
+        "admin_autofill.js",
+        "sooqify_railway/extension/store_scanner.js"
       ],
       "css": [
         "admin_autofill.css"

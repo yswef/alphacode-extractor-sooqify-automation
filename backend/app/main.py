@@ -15,7 +15,11 @@ from app.api.routes.sync_routes import sync_bp
 from app.api.routes.reports_routes import reports_bp
 from app.api.routes.upload_routes import upload_bp
 from app.services.product_helpers import configure_application_logging, load_archive, save_archive, SAVE_LOCK
-from app.services.sync_service import bind_archive_runtime
+from app.services.sync_service import (
+    bind_archive_runtime,
+    start_sync_background_worker,
+    sync_interval_label,
+)
 
 
 def create_app():
@@ -112,6 +116,30 @@ if __name__ == "__main__":
     #          console were silently disabled.
     configure_application_logging()
     app = create_app()
+
+    # Arabic: تشغيل خيط المزامنة التلقائية — هذا هو الإصلاح الجذري لشكوى "المزامنة مش شغالة":
+    #         الخيط كان معرَّفاً في مكانين (app.py وproduct_helpers.py) وغير مُشغَّل من أي
+    #         نقطة تشغيل إطلاقاً، فما كان يصير أي سحب تلقائي لمنتجات الطرف الآخر — تظهر فقط
+    #         عند ضغط "مزامنة الآن" يدوياً. يعمل الخيط ما دام الباك اند شغالاً، ولا يحتاج فتح
+    #         لوحة الإضافة: أول دورة بعد ~20 ثانية من الإقلاع ثم دورة كل 30 دقيقة افتراضياً
+    #         (قابلة للتغيير من تبويب المزامنة والمجلد).
+    #         يُستدعى بعد create_app() حتى يكون الأرشيف مربوطاً (bind_archive_runtime)،
+    #         ويُستدعى هنا فقط (لا داخل create_app) بنفس نمط configure_application_logging حتى
+    #         لا تُفتح خيوط أثناء اختبارات pytest التي تستورد create_app().
+    # English: Start the automatic sync thread - the root fix for the "sync isn't working"
+    #          report: the worker existed in two places (app.py and product_helpers.py) but was
+    #          started from nowhere, so nothing ever pulled the other operator's products
+    #          automatically; they appeared only after pressing "sync now" by hand. The thread
+    #          lives as long as the backend does and needs no popup open: a first cycle ~20s
+    #          after startup, then one every 30 minutes by default (changeable from the
+    #          Sync & Folder tab). Started after create_app() so the archive runtime is bound,
+    #          and here only (not inside create_app), mirroring configure_application_logging,
+    #          so pytest imports of create_app() open no threads.
+    if start_sync_background_worker():
+        logging.getLogger("alphacode").info(
+            "Automatic sync is active (every %s).", sync_interval_label()
+        )
+
     chosen_port = find_available_port(5000, 5)
     if chosen_port != 5000:
         # Arabic: لم يعد المستخدم بحاجة لتعديل BackendPort يدوياً - الإضافة تكتشف المنفذ

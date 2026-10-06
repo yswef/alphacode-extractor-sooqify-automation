@@ -74,18 +74,17 @@ function activateTab(tabName) {
         refreshArchiveStats();
     }
 
-    if (tabName === 'sync') {
-        refreshFolderStatus();
-        refreshSyncStatus();
-        refreshRecentProducts();
-    }
-
+    // Arabic: تبويب المزامنة: نحدّث كل شيء، ونشغّل تحديثاً دورياً كل 20 ثانية أثناء فتحه فقط
+    //         حتى تظهر المنتجات القادمة من الطرف الآخر وحالة الإرسال دون تدخل المستخدم.
+    // English: The sync tab: refresh everything, and poll every 20 seconds only while it is
+    //          open so the other operator's arrivals and submission status appear by themselves.
     if (tabName === 'sync') {
         refreshFolderStatus();
         loadSyncSettings();
         refreshSyncStatus();
         refreshRecentProducts();
     }
+    startSyncTabAutoRefresh(tabName === 'sync');
 
     if (tabName === 'reports' && byId('reportDate') && !byId('reportDate').value) {
         byId('reportDate').value = new Date().toISOString().slice(0, 10);
@@ -100,6 +99,20 @@ function activateTab(tabName) {
 // English: Read a UI element without assuming it exists.
 function byId(id) {
     return document.getElementById(id);
+}
+
+// Arabic: مفتاح مقارنة موحّد لأسماء البراندات، بما فيها كتابة المتجر بالعربية.
+// English: Stable comparison key for brand names, including Arabic store spellings.
+function brandNameKey(value) {
+    const raw = String(value || '').trim().toLocaleLowerCase().replace(/\s+/g, ' ');
+    const aliases = {
+        'كارتيه': 'cartier', 'كارتية': 'cartier', 'كارتير': 'cartier', 'كارتيير': 'cartier', 'كارتييه': 'cartier',
+        'فرانك مولر': 'franck muller', 'نيو بالانس': 'new balance', 'نايك': 'nike',
+        'باتك فيليب': 'patek philippe', 'باتيك فيليب': 'patek philippe', 'باتيك فيليبس': 'patek philippe',
+        'أديداس': 'adidas', 'اديداس': 'adidas', 'رولكس': 'rolex',
+        'اير جوردن': 'air jordan', 'اير جوردان': 'air jordan',
+    };
+    return aliases[raw] || raw;
 }
 
 // Arabic: تعبئة عناصر النموذج من الإعدادات.
@@ -131,11 +144,23 @@ function populateForm(config) {
         const element = byId(key);
         if (!element) continue;
 
+        if (key === 'BrandId') continue; // resolve by saved brand name below; IDs may have changed
         if (BOOLEAN_FIELDS.has(key)) {
             element.checked = Boolean(config[key]);
         } else {
             element.value = config[key] ?? '';
         }
+    }
+
+    const brandSelect = byId('BrandId');
+    if (brandSelect) {
+        const savedBrandName = brandNameKey(config.BrandName);
+        const savedBrandOption = [...brandSelect.options].find(option =>
+            option.value && brandNameKey(option.textContent) === savedBrandName,
+        );
+        if (savedBrandOption) brandSelect.value = savedBrandOption.value;
+        else if (!savedBrandName) brandSelect.value = String(config.BrandId || '');
+        else brandSelect.value = '';
     }
 
     if (byId('profileChip')) {
@@ -882,6 +907,22 @@ async function chooseFolder() {
 // English: Two-user sync - load/save settings and render status.
 // =========================================================
 
+// Arabic: مؤقّت التحديث الدوري لتبويب المزامنة - يعمل فقط أثناء فتح التبويب ويُلغى عند مغادرته.
+// English: The sync tab's polling timer - runs only while the tab is open and is cleared on leave.
+let syncTabRefreshTimer = null;
+
+function startSyncTabAutoRefresh(shouldRun) {
+    if (syncTabRefreshTimer) {
+        clearInterval(syncTabRefreshTimer);
+        syncTabRefreshTimer = null;
+    }
+    if (!shouldRun) return;
+    syncTabRefreshTimer = setInterval(() => {
+        refreshSyncStatus();
+        refreshRecentProducts();
+    }, 20000);
+}
+
 // Arabic: قراءة إعدادات المزامنة الحالية وتعبئة الحقول (المفتاح لا يُعاد كاملاً لأسباب أمنية).
 // English: Read current sync settings and populate the fields (the token is never sent back in full).
 async function loadSyncSettings() {
@@ -893,6 +934,7 @@ async function loadSyncSettings() {
         if (byId('SyncEnabled')) byId('SyncEnabled').checked = Boolean(data.Enabled);
         if (byId('SyncServerUrl')) byId('SyncServerUrl').value = data.ServerUrl || '';
         if (byId('AddedByName')) byId('AddedByName').value = data.AddedByName || '';
+        if (byId('SyncAutoMinutes')) byId('SyncAutoMinutes').value = data.AutoSyncMinutes || 30;
         if (byId('SyncToken')) {
             byId('SyncToken').placeholder = data.TokenSet
                 ? `مفتاح محفوظ (${data.TokenPreview}) - اتركه فارغاً للإبقاء عليه`
@@ -912,6 +954,9 @@ async function saveSyncSettings() {
         ServerUrl: String(byId('SyncServerUrl')?.value || '').trim(),
         Token: String(byId('SyncToken')?.value || '').trim(),
         AddedByName: String(byId('AddedByName')?.value || '').trim(),
+        // Arabic: تكرار المزامنة التلقائية بالدقائق - الباك اند يقصّها للحدود المسموحة (5 - 1440).
+        // English: The auto-sync interval in minutes - the backend clamps it to 5-1440.
+        AutoSyncMinutes: Number(byId('SyncAutoMinutes')?.value || 30),
     };
 
     if (payload.Enabled && (!payload.ServerUrl)) {
@@ -951,8 +996,11 @@ function formatSyncTimestamp(value) {
     }
 }
 
-// Arabic: عرض آخر سحب/رفع وعدد العناصر بالطابور.
-// English: Render last pull/push and the pending queue size.
+// Arabic: عرض آخر سحب/رفع وعدد العناصر بالطابور، وحالة المزامنة التلقائية (تعمل؟ كل كم دقيقة؟
+//         الدورة القادمة متى؟) ونتيجة آخر سحب (كم منتج جديد وصل وكم منها من الطرف الآخر).
+// English: Render last pull/push, pending queue, the automatic worker state (running? interval?
+//          next run?) and the last pull outcome (how many new products arrived and how many
+//          came from the other operator).
 async function refreshSyncStatus() {
     try {
         const response = await fetch(`${API_BASE}/api/sync/status`, { cache: 'no-store' });
@@ -962,6 +1010,24 @@ async function refreshSyncStatus() {
         if (byId('syncPendingCount')) byId('syncPendingCount').textContent = data.pending_queue;
         if (byId('syncLastPull')) byId('syncLastPull').textContent = formatSyncTimestamp(data.last_pull_at);
         if (byId('syncLastPush')) byId('syncLastPush').textContent = formatSyncTimestamp(data.last_push_at);
+        if (byId('syncNextRun')) {
+            byId('syncNextRun').textContent = data.auto_worker_running && data.next_auto_cycle_at
+                ? formatSyncTimestamp(data.next_auto_cycle_at)
+                : '—';
+        }
+        if (byId('syncAutoState')) {
+            byId('syncAutoState').textContent = data.auto_worker_running
+                ? `كل ${data.auto_interval_minutes} د`
+                : 'متوقفة';
+        }
+        if (byId('syncNewCount')) {
+            const arrived = Number(data.last_pull_new_count || 0);
+            const samePull = data.last_pull_new_from_others_at && data.last_pull_new_from_others_at === data.last_pull_new_at;
+            const fromOthers = samePull ? Number(data.last_pull_new_from_others || 0) : 0;
+            byId('syncNewCount').textContent = arrived
+                ? (fromOthers ? `${arrived} (${fromOthers} من الطرف الآخر)` : String(arrived))
+                : '0';
+        }
 
         const resultBox = byId('syncStatusResult');
         if (resultBox) {
@@ -973,7 +1039,26 @@ async function refreshSyncStatus() {
                 resultBox.textContent = `آخر خطأ: ${data.last_error}`;
             } else {
                 resultBox.className = 'result-box success';
-                resultBox.textContent = `متصلة بـ ${data.server_url}`;
+                let message = `متصلة بـ ${escapeHtmlForPopup(data.server_url)}`;
+                const arrived = Number(data.last_pull_new_count || 0);
+                if (arrived) {
+                    // Arabic: نعرض "منها X من الطرف الآخر" فقط لو كانت من نفس السحب الذي وصل فيه
+                    //         العدد، حتى لا ننسب منتجات سحب قديم لآخر سحب.
+                    // English: Show "X from the other operator" only when it belongs to the same
+                    //          pull as the count, so an older batch is never attributed to the last one.
+                    const fromOthers = data.last_pull_new_from_others_at && data.last_pull_new_from_others_at === data.last_pull_new_at
+                        ? Number(data.last_pull_new_from_others || 0)
+                        : 0;
+                    message += `<br>آخر سحب وصل <strong>${arrived}</strong> منتج جديد`
+                        + (fromOthers ? ` (منها <strong>${fromOthers}</strong> أضافها الطرف الآخر)` : '')
+                        + ` — ${formatSyncTimestamp(data.last_pull_new_at)}.`;
+                }
+                if (!data.auto_worker_running) {
+                    message += '<br>تنبيه: المزامنة التلقائية متوقفة — تأكد أن الباك اند شغال، أو اضغط "مزامنة الآن".';
+                } else {
+                    message += `<br>المزامنة التلقائية تعمل كل ${data.auto_interval_minutes} دقيقة.`;
+                }
+                resultBox.innerHTML = message;
             }
         }
     } catch (_) {
@@ -981,8 +1066,8 @@ async function refreshSyncStatus() {
     }
 }
 
-// Arabic: تشغيل دورة مزامنة فورية عند الضغط على الزر.
-// English: Run one immediate sync cycle on button press.
+// Arabic: تشغيل دورة مزامنة فورية عند الضغط على الزر، مع إظهار كم منتجاً جديداً وصل فعلاً.
+// English: Run one immediate sync cycle on button press, reporting how many products actually arrived.
 async function triggerSyncNow() {
     const response = await fetch(`${API_BASE}/api/sync/now`, { method: 'POST' });
     const data = await response.json();
@@ -991,15 +1076,46 @@ async function triggerSyncNow() {
         throw new Error(data.error || 'تعذر تشغيل المزامنة.');
     }
 
-    showStatus('تمت المزامنة.', 'success');
+    const arrived = Number(data.new_items || 0);
+    const fromOthers = Number(data.new_from_others || 0);
+    let message = 'تمت المزامنة.';
+    if (arrived) {
+        message = `تمت المزامنة — وصل ${arrived} منتج جديد`
+            + (fromOthers ? ` (منها ${fromOthers} من الطرف الآخر)` : '') + '.';
+    }
+    showStatus(message, 'success');
     await refreshSyncStatus();
     await refreshRecentProducts();
 }
 
-// Arabic: شاشة تشخيص صغيرة تعرض آخر المنتجات ومن أضافها من الطرفين.
-// English: A small diagnostics view showing the latest products and who added them from either side.
+// Arabic: ترجمة حالة المنتج المخزَّنة بالأرشيف إلى نص ولون مفهومين للمستخدم. هذه الحالة يكتبها
+//         admin_autofill.js فعلياً عند الإرسال (submit_started ثم submitted أو submit_failed)،
+//         وكانت تُرسل من الباك اند في /api/archive/recent لكن اللوحة ما كانت تعرضها — فالمستخدم
+//         يسأل "المنتج انضاف ولا لا" ولا يجد جواباً على الشاشة.
+// English: Translate the archive's stored workflow status into a clear label and colour. The
+//          extension's admin_autofill.js writes this status for real (submit_started, then
+//          submitted or submit_failed); the backend already returned it in /api/archive/recent
+//          but the popup never rendered it - so "was this product added?" had no answer on screen.
+const WORKFLOW_STATUS_LABELS = {
+    submitted: { text: '✓ تمت الإضافة', className: 'status-submitted' },
+    submit_started: { text: '⏳ جارٍ الإرسال', className: 'status-progress' },
+    submit_failed: { text: '✗ فشل الإرسال', className: 'status-failed' },
+    prepared: { text: 'مجهّز — لم يُضف', className: 'status-prepared' },
+};
+
+function describeWorkflowStatus(status) {
+    const key = String(status || '').trim().toLowerCase();
+    return WORKFLOW_STATUS_LABELS[key] || { text: 'مجهّز — لم يُضف', className: 'status-prepared' };
+}
+
+// Arabic: شاشة التشخيص الرئيسية: كل منتج مع نتيجته (انضاف للمتجر؟) ومن أضافه ومتى، مع ملخص
+//         لكل الأرشيف وترتيب المتعاونين — تجيب مباشرة عن سؤال "تم إضافة المنتج أو لا".
+// English: The main diagnostics view: each product with its outcome (added to the store?),
+//          who added it and when, plus a whole-archive summary and the operator ranking -
+//          answering "was the product added or not?" directly.
 async function refreshRecentProducts() {
     const box = byId('recentProductsBox');
+    const summaryBox = byId('recentProductsSummary');
     if (!box) return;
     box.textContent = 'جارِ التحميل...';
 
@@ -1011,20 +1127,53 @@ async function refreshRecentProducts() {
             throw new Error(data.error || 'تعذر تحميل القائمة.');
         }
 
+        if (summaryBox) {
+            const summary = data.summary || {};
+            summaryBox.className = 'result-box';
+            let summaryHtml = `<strong>${Number(summary.total || 0)}</strong> منتج بالأرشيف`
+                + ` — ✓ تمت الإضافة: <strong>${Number(summary.submitted || 0)}</strong>`
+                + ` — ⏳ جارٍ الإرسال: <strong>${Number(summary.in_progress || 0)}</strong>`
+                + ` — ✗ فشل: <strong>${Number(summary.failed || 0)}</strong>`
+                + ` — مجهّز فقط: <strong>${Number(summary.prepared || 0)}</strong>`;
+            const operators = (data.operators || []).filter(operator => operator.name && operator.name !== 'غير محدد');
+            if (operators.length) {
+                summaryHtml += `<br>حسب المتعاون: ${operators.map(operator =>
+                    `${escapeHtmlForPopup(operator.name)} <strong>${Number(operator.count || 0)}</strong>`
+                ).join(' — ')}`;
+            }
+            summaryBox.innerHTML = summaryHtml;
+        }
+
         if (!data.products.length) {
             box.textContent = 'لا توجد منتجات بعد.';
             return;
         }
 
-        box.innerHTML = data.products.map(product => `
+        box.innerHTML = data.products.map(product => {
+            const status = describeWorkflowStatus(product.workflow_status);
+            const when = product.workflow_updated_at || product.created_at || product.date || '';
+            const meta = [
+                product.brand_name || '',
+                `أضافه: ${product.added_by || 'غير محدد'}`,
+                when ? formatSyncTimestamp(when) : '',
+            ].filter(Boolean).join(' • ');
+            const failure = product.workflow_status === 'submit_failed' && product.failure_reason
+                ? `<span class="product-failure">${escapeHtmlForPopup(product.failure_reason)}</span>`
+                : '';
+            return `
             <div class="store-card">
                 <div>
                     <strong>#${product.id} — ${escapeHtmlForPopup(product.name_en || '')}</strong>
-                    <span>${escapeHtmlForPopup(product.brand_name || '')} • أضافه: ${escapeHtmlForPopup(product.added_by || 'غير محدد')}</span>
+                    <span>${escapeHtmlForPopup(meta)}</span>
+                    ${failure}
                 </div>
-                <span class="badge">${product.id_source === 'local_fallback' ? 'محلي' : 'مركزي'}</span>
+                <div class="product-badges">
+                    <span class="badge ${status.className}">${status.text}</span>
+                    <span class="badge">${product.id_source === 'local_fallback' ? 'محلي' : 'مركزي'}</span>
+                </div>
             </div>
-        `).join('');
+        `;
+        }).join('');
     } catch (error) {
         box.textContent = error.message;
     }
@@ -1657,11 +1806,17 @@ async function loadBrandsIntoSelect() {
         brands = await loadBrandsCacheFallback();
     }
 
-    // Arabic: نحتفظ بالاختيار الحالي، ولو كان فاضياً نرجع لـBrandId المحفوظ بالإعدادات -
-    //         لأن loadBrandsIntoSelect قد تعمل بعد populateForm فتمسح اختيارها.
-    // English: Keep the current selection; if it is empty fall back to the saved BrandId,
-    //          because loadBrandsIntoSelect can run after populateForm and wipe its choice.
-    const currentVal = select.value || String(currentConfig.BrandId || '');
+    // Arabic: نحتفظ باسم الاختيار لا رقمه؛ رقم البراند قد يتغير بعد مزامنة القائمة من
+    //         المتجر، والاحتفاظ بالرقم القديم قد يختار براندًا مختلفًا بعد إعادة الترتيب.
+    // English: Preserve the selected brand name, not its old ID. IDs can change after a store
+    //          refresh; reusing the old number could silently select another brand.
+    const currentName = brandNameKey(
+        select.selectedOptions[0]?.textContent
+        || byId('BrandName')?.value
+        || currentConfig.BrandName
+        || '',
+    );
+    const previousId = select.value || String(currentConfig.BrandId || '');
     select.innerHTML = '<option value="">— اختر براند —</option>';
     brands.forEach(b => {
         const opt = document.createElement('option');
@@ -1669,7 +1824,11 @@ async function loadBrandsIntoSelect() {
         opt.textContent = b.name;
         select.appendChild(opt);
     });
-    if (currentVal) select.value = currentVal;
+    const byName = [...select.options].find(option =>
+        option.value && brandNameKey(option.textContent) === currentName,
+    );
+    if (byName) select.value = byName.value;
+    else if (!currentName && previousId) select.value = previousId;
 
     select.onchange = syncBrandNameFromSelect;
 
@@ -1690,7 +1849,7 @@ async function addBrandToServer() {
     const id = parseInt(byId('NewBrandId')?.value || '0', 10);
     const resultBox = byId('addBrandResult');
     if (!name || !id) {
-        if (resultBox) { resultBox.style.display = ''; resultBox.className = 'result-box error'; resultBox.textContent = 'أدخل اسم البراند والـ ID.'; }
+        if (resultBox) { resultBox.style.display = ''; resultBox.className = 'result-box error'; resultBox.textContent = 'أدخل اسم البراند والـ ID الفعلي من المتجر.'; }
         return;
     }
     try {
@@ -1702,7 +1861,7 @@ async function addBrandToServer() {
         if (resultBox) {
             resultBox.style.display = '';
             resultBox.className = res.ok && data.success ? 'result-box success' : 'result-box error';
-            resultBox.textContent = res.ok && data.success ? `تمت إضافة "${name}" (${id}) بنجاح.` : (data.error || 'تعذرت الإضافة.');
+            resultBox.textContent = res.ok && data.success ? `تمت إضافة ربط "${name}" بالـID ${id}.` : (data.error || 'تعذرت الإضافة.');
         }
         if (res.ok && data.success) await loadBrandsIntoSelect();
     } catch (err) {

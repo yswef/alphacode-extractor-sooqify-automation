@@ -1,5 +1,51 @@
 # Changelog — AlphaCode Extractor
 
+## v5.10.0 — 2026-10-06
+
+### Added
+
+- **Admin danger zone: a complete backup, then the server data is erased and sync stops for good.**
+  The **المزامنة والمجلد** tab now carries an admin-only card with a fixed, enforced order:
+  1. *تنزيل نسخة احتياطية كاملة الآن* pulls **everything** from the server (no time filter) plus the
+     brand list, adds this machine's whole `archive_db.json`, and writes one JSON file into
+     `<save folder>/backups/` — offered as a download too, and it never contains the sync token.
+  2. After typing `DELETE-SERVER` and confirming a second dialog, `sync.php` runs `action=erase`,
+     which deletes every row of every table (products, members, aliases, brands, ID reservations) in
+     one transaction and writes a `shutdown.lock` file on the host. From then on the endpoint answers
+     `410 Gone` to everything, even from a machine still holding the old token.
+  3. This machine locks itself: server URL and token wiped, retry queue emptied, and **no network
+     request leaves for the sync server again** — `sync_call`, the background worker, the pull/push
+     helpers and the retry flush all short-circuit on the lock.
+  4. *استعادة النسخة إلى السيرفر* re-uploads a backup later to a new server (brands → products →
+     `bump_sequence`) with polled progress, and it is the explicit `ConfirmUnlock` action that
+     releases the lock — a plain settings save is rejected with HTTP 409 while locked.
+- **Admin-only local login while locked, with an optional local guard.** After the shutdown, sign-in
+  accepts only the local `admin` account; set the optional guard password and that login requires it
+  too (salted SHA-256 hash only), so a member cannot revive their own extension copy with
+  `admin/admin`. Members get a clear "sync is permanently stopped" refusal instead of a fake login.
+- **`hostinger/alphacode_storage/sync.php` is now tracked in Git** and gains `action=erase`,
+  `action=bump_sequence` and the `shutdown.lock` gate, alongside the existing actions unchanged.
+  `hostinger/alphacode_storage/README.md` documents the deployment, the safe order and how to revive
+  the endpoint.
+
+### Fixed
+
+- **Losing access without a real erase is now impossible.** The backup is written to disk *before* any
+  delete, and an unreachable server or a `sync.php` without `action=erase` cancels the whole operation
+  and leaves the machine untouched (no lock, no cleared settings).
+- **Restored IDs can no longer collide with new ones.** Erasing empties `id_sequence`, so a restore
+  raises the counter above the highest restored product ID (`bump_sequence`) — otherwise the next new
+  product would reuse an ID the store had already seen.
+- The README's sync setup pointed at a `$SECRET_TOKEN` constant that no longer exists; it now describes
+  the `ALPHACODE_SYNC_TOKEN` environment variable the endpoint actually reads.
+
+### Notes
+
+- Member accounts and passwords are **not** in the backup: `sync.php` has no read action for them and
+  the backup file states that explicitly. Recreate them on the host after a re-upload.
+- `backend/config/sync_lock.json`, `backend/data/restore_state.json`, `backend/backups/` and the host
+  credential files are git-ignored (machine state and secrets, never code).
+
 ## v5.9.0 — 2026-10-02
 
 ### Fixed

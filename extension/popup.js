@@ -83,6 +83,10 @@ function activateTab(tabName) {
         loadSyncSettings();
         refreshSyncStatus();
         refreshRecentProducts();
+        // Arabic: منطقة الخطر: نجلب حالة القفل والنسخ الاحتياطية وتقدّم أي إعادة رفع جارية.
+        // English: The danger zone: pull the lock state, the backups and any running re-upload.
+        refreshEmergencyStatus();
+        updateEmergencyShutdownState();
     }
     startSyncTabAutoRefresh(tabName === 'sync');
 
@@ -941,12 +945,36 @@ async function saveSyncSettings() {
         return;
     }
 
-    const response = await fetch(`${API_BASE}/api/sync/config`, {
+    let response = await fetch(`${API_BASE}/api/sync/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
     });
-    const data = await response.json();
+    let data = await response.json();
+
+    // Arabic: المزامنة مقفولة بعد الإيقاف الطارئ: الباك اند يرفض أي تفعيل صامت (409). المسار
+    //         الوحيد هو تأكيد الأدمن الصريح + رمز الحماية المحلي إن كان مضبوطاً — وهذا ما يمنع
+    //         أي عضو من إحياء المزامنة على جهازه، لأنه لا يعرف الرمز.
+    // English: Sync is locked after the emergency shutdown, and the backend refuses any silent
+    //          re-enable (409). The only path is the admin's explicit confirmation plus the local
+    //          guard password when one is set - which is what stops a member from reviving sync on
+    //          their own machine, since they do not know that password.
+    if (response.status === 409 && data.locked) {
+        const guard = prompt('المزامنة موقوفة نهائياً على هذا الجهاز.\nأدخل رمز الحماية المحلي لإعادة التفعيل (اتركه فارغاً إن لم تضبط رمزاً):');
+        if (guard === null) {
+            if (resultBox) {
+                resultBox.className = 'result-box warning';
+                resultBox.textContent = 'تم إلغاء إعادة التفعيل.';
+            }
+            return;
+        }
+        response = await fetch(`${API_BASE}/api/sync/config`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...payload, ConfirmUnlock: true, LocalGuardPassword: guard }),
+        });
+        data = await response.json();
+    }
 
     if (!response.ok || !data.success) {
         throw new Error(data.error || 'تعذر حفظ إعدادات المزامنة.');
@@ -1047,6 +1075,13 @@ async function triggerSyncNow() {
     const data = await response.json();
 
     if (!response.ok || !data.success) {
+        // Arabic: القفل الطارئ ليس خطأ عابراً - نحدّث لوحة الخطر فوراً ونعرض سبب الإيقاف.
+        // English: The emergency lock is not a transient error - refresh the danger panel at
+        //          once and show why sync is stopped.
+        if (data.locked) {
+            await refreshEmergencyStatus();
+            throw new Error(data.error || 'المزامنة موقوفة نهائياً على هذا الجهاز.');
+        }
         throw new Error(data.error || 'تعذر تشغيل المزامنة.');
     }
 
@@ -1060,6 +1095,300 @@ async function triggerSyncNow() {
     showStatus(message, 'success');
     await refreshSyncStatus();
     await refreshRecentProducts();
+}
+
+// =========================================================
+// Arabic: منطقة خطر الأدمن — نسخة احتياطية كاملة ← مسح بيانات السيرفر ← إيقاف المزامنة نهائياً،
+//         ومعهما إعادة الرفع لاحقاً.
+//
+//         قواعد ثابتة في هذا القسم:
+//           - لا يُفعّل زر المسح إلا بعد نجاح نسخة احتياطية فعلية في هذه الجلسة (والترتيب نفسه
+//             مفروض في الباك اند: النسخة تُكتب على القرص قبل أي حذف).
+//           - العبارتان DELETE-SERVER و RESTORE تُكتبان حرفياً، فلا مسح بضغطة عابرة.
+//           - بعد المسح: رابط السيرفر والمفتاح السري يُمسحان من الجهاز، ويتوقف كل نداء شبكة،
+//             والدخول المحلي يبقى للأدمن فقط (وربما برمز حماية محلي إن ضُبط).
+// English: The admin danger zone - a full backup -> erase the server data -> stop sync for good,
+//          with the later re-upload beside them.
+//          Fixed rules here:
+//            - The erase button only unlocks after a real backup succeeded in this session (the
+//              same order is enforced in the backend: the backup hits the disk before any delete).
+//            - The phrases DELETE-SERVER and RESTORE are typed verbatim, so no erase happens by a
+//              stray click.
+//          After the erase: the server URL and secret token leave this machine, every network
+//          call stops, and the local login stays admin-only (optionally behind a local guard).
+// =========================================================
+let emergencyBackupReady = false;
+let emergencyRestoreTimer = null;
+
+// Arabic: تحديث بانر القفل وقائمة النسخ الاحتياطية وتقدّم إعادة الرفع. English: Refresh the lock banner, the backup list and the re-upload progress.
+async function refreshEmergencyStatus() {
+    const banner = byId('emergencyLockBanner');
+    const listBox = byId('emergencyBackupList');
+    try {
+        const response = await fetch(`${API_BASE}/api/sync/emergency/status`, { cache: 'no-store' });
+        const data = await response.json();
+        if (!response.ok || !data.success) return;
+
+        if (banner) {
+            if (data.locked) {
+                const lock = data.lock || {};
+                banner.style.display = 'block';
+                banner.className = 'result-box error';
+                banner.innerHTML =
+                    '<strong>المزامنة موقوفة نهائياً على هذا الجهاز.</strong><br>'
+                    + `تم المسح: ${escapeHtmlForPopup(formatSyncTimestamp(lock.ServerErasedAt) || '—')}<br>`
+                    + `النسخة الاحتياطية: ${escapeHtmlForPopup(lock.BackupFile || '—')}<br>`
+                    + (data.guard_set
+                        ? 'الدخول المحلي محمي برمز حماية محلي.<br>'
+                        : 'تنبيه: لا يوجد رمز حماية محلي — الدخول المحلي admin/admin مفتوح لأي أحد.<br>')
+                    + 'لإعادة التشغيل لاحقاً استخدم القسم (٣) بالأسفل.';
+            } else {
+                banner.style.display = 'none';
+            }
+        }
+
+        if (byId('emergencyRestoreUrl') && !byId('emergencyRestoreUrl').value) {
+            byId('emergencyRestoreUrl').value = data.lock?.ServerUrl || '';
+        }
+
+        // Arabic: أثناء القفل نُعطّل مفتاح التفعيل وزر الحفظ: الباك اند يرفضهما أصلاً (409)،
+        //         فالأفضل أن تظهر الحالة بوضوح بدل رسالة خطأ عند كل محاولة.
+        // English: While locked the enable switch and the save button are disabled: the backend
+        //          rejects both anyway (409), so the state should read clearly instead of an error
+        //          on every attempt.
+        if (byId('SyncEnabled')) byId('SyncEnabled').disabled = Boolean(data.locked);
+        if (byId('saveSyncBtn')) byId('saveSyncBtn').disabled = Boolean(data.locked);
+
+        if (listBox) {
+            const backups = Array.isArray(data.backups) ? data.backups : [];
+            listBox.innerHTML = backups.length
+                ? '<div class="hint">آخر النسخ على هذا الجهاز:</div>' + backups.slice(0, 4).map(item => `
+                    <div class="store-card">
+                        <div>
+                            <strong>${escapeHtmlForPopup(item.name)}</strong>
+                            <span>جهازي: ${Number(item.local_products || 0)} · السيرفر: ${Number(item.server_products || 0)} منتج · براندات: ${Number(item.server_brands || 0)} · ${escapeHtmlForPopup(formatSyncTimestamp(item.created_at))}</span>
+                        </div>
+                        <div class="product-badges"><span class="badge">${Math.max(1, Math.round(Number(item.size_bytes || 0) / 1024))} KB</span></div>
+                    </div>`).join('')
+                : '<div class="hint">لا توجد نسخ احتياطية بعد.</div>';
+
+            const select = byId('emergencyRestoreFile');
+            if (select) {
+                const previous = select.value;
+                select.innerHTML = backups.map(item =>
+                    `<option value="${escapeHtmlForPopup(item.name)}">${escapeHtmlForPopup(item.name)} — ${Number(item.server_products || 0)} منتج سيرفر</option>`
+                ).join('');
+                if (previous) select.value = previous;
+            }
+        }
+
+        const restore = data.restore || {};
+        if (restore.running) {
+            startEmergencyRestorePolling();
+            renderEmergencyRestoreProgress(restore);
+        } else if (byId('emergencyRestoreStatus')) {
+            renderEmergencyRestoreProgress(restore);
+        }
+    } catch (_) {
+        // Arabic: الخادم المحلي غير متاح — بقية اللوحة تعرض الحالة العامة أصلاً.
+        // English: The local backend is unavailable — the rest of the popup already reports that.
+    }
+}
+
+// Arabic: عرض تقدّم إعادة الرفع (رفع/مكرر/فشل/متخطّى) مع سبب آخر خطأ. English: Render the re-upload progress (pushed/duplicate/failed/skipped) with the last error.
+function renderEmergencyRestoreProgress(restore) {
+    const box = byId('emergencyRestoreStatus');
+    if (!box || !restore || (!restore.started_at && !restore.running)) return;
+    const parts = [
+        `رفع: <strong>${Number(restore.pushed || 0)}</strong>`,
+        `مكرر: ${Number(restore.duplicates || 0)}`,
+        `فشل: ${Number(restore.failed || 0)}`,
+        `متخطّى: ${Number(restore.skipped || 0)}`,
+        `من أصل: ${Number(restore.total || 0)}`,
+        `براندات: ${Number(restore.brands_restored || 0)}`,
+    ];
+    const finished = !restore.running && restore.finished_at;
+    box.className = `result-box ${restore.last_error && restore.failed ? 'warning' : (finished ? 'success' : '')}`;
+    box.innerHTML =
+        (restore.running ? 'إعادة الرفع جارية… ' : 'إعادة الرفع: ') + parts.join(' · ')
+        + (restore.last_error ? `<br>ملاحظة: ${escapeHtmlForPopup(restore.last_error)}` : '');
+}
+
+// Arabic: متابعة تقدّم إعادة الرفع كل 3 ثوانٍ ما دامت تعمل. English: Poll the re-upload progress every 3 seconds while it runs.
+function startEmergencyRestorePolling() {
+    if (emergencyRestoreTimer) return;
+    emergencyRestoreTimer = setInterval(async () => {
+        try {
+            const response = await fetch(`${API_BASE}/api/sync/emergency/restore/status`, { cache: 'no-store' });
+            const data = await response.json();
+            if (data && data.success) renderEmergencyRestoreProgress(data);
+            if (data && !data.running) {
+                clearInterval(emergencyRestoreTimer);
+                emergencyRestoreTimer = null;
+                await refreshSyncStatus();
+                await refreshEmergencyStatus();
+            }
+        } catch (_) {
+            clearInterval(emergencyRestoreTimer);
+            emergencyRestoreTimer = null;
+        }
+    }, 3000);
+}
+
+// Arabic: الخطوة ١ - نسخة احتياطية كاملة الآن (أرشيف الجهاز + كل منتجات السيرفر + البراندات)،
+//         ثم فتح رابط التنزيل ليحفظها المستخدم على جهازه. English: Step 1 - a full backup now (this machine's archive + every server product + brands), then open the download link so the operator keeps a copy on their machine.
+async function createEmergencyBackup() {
+    const button = byId('emergencyBackupBtn');
+    const box = byId('emergencyBackupResult');
+    if (button) { button.disabled = true; button.textContent = 'جارٍ جمع البيانات...'; }
+    if (box) { box.className = 'result-box'; box.textContent = 'جارٍ سحب بيانات السيرفر وكتابة الملف...'; }
+    try {
+        const response = await fetch(`${API_BASE}/api/sync/emergency/backup`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ Actor: byId('AddedByName')?.value || '' }),
+        });
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.error || 'تعذر إنشاء النسخة الاحتياطية.');
+        const backup = data.backup || {};
+        emergencyBackupReady = true;
+        updateEmergencyShutdownState();
+        if (box) {
+            box.className = backup.server_reachable ? 'result-box success' : 'result-box warning';
+            box.innerHTML =
+                `تم إنشاء النسخة الاحتياطية: <strong>${escapeHtmlForPopup(backup.name)}</strong><br>`
+                + `أرشيف هذا الجهاز: ${Number(backup.local_products || 0)} منتج · `
+                + `سيرفر: ${Number(backup.server_products || 0)} منتج و${Number(backup.server_brands || 0)} براند<br>`
+                + `<a href="${API_BASE}${backup.download_url}" target="_blank">تنزيل الملف إلى جهازك</a>`
+                + (backup.server_reachable ? '' :
+                    `<br>تنبيه: لم تُقرأ بيانات السيرفر (${escapeHtmlForPopup(backup.server_error || '')}) — والمسح لن يُنفَّذ بهذه الحالة.`)
+                + (backup.members_note ? `<br>ملاحظة: ${escapeHtmlForPopup(backup.members_note)}` : '');
+        }
+        // Arabic: نفتح رابط التنزيل في تبويب (الباك اند يرسله كمرفق) حتى يحفظ الأدمن الملف خارج الجهاز.
+        // English: Open the download link in a tab (the backend sends it as an attachment) so the
+        //          admin keeps a copy of the file outside this machine.
+        const downloadUrl = `${API_BASE}${backup.download_url}`;
+        try {
+            chrome.tabs.create({ url: downloadUrl });
+        } catch (_) {
+            window.open(downloadUrl, '_blank');
+        }
+        await refreshEmergencyStatus();
+    } catch (error) {
+        if (box) { box.className = 'result-box error'; box.textContent = error.message; }
+    } finally {
+        if (button) { button.disabled = false; button.textContent = 'تنزيل نسخة احتياطية كاملة الآن'; }
+    }
+}
+
+// Arabic: زر المسح لا يُفعَّل إلا بعد نسخة احتياطية ناجحة في هذه الجلسة. English: The erase button unlocks only after a successful backup in this session.
+function updateEmergencyShutdownState() {
+    const button = byId('emergencyShutdownBtn');
+    if (!button) return;
+    if (!emergencyBackupReady) {
+        button.disabled = true;
+        button.textContent = 'خذ نسخة احتياطية كاملة أولاً (الخطوة ١)';
+        return;
+    }
+    button.disabled = false;
+    button.textContent = 'تنفيذ: مسح السيرفر + إيقاف المزامنة';
+}
+
+// Arabic: الخطوة ٢ - التنفيذ النهائي بعد تأكيدين: كتابة العبارة، ثم نافذة تأكيد صريحة. English: Step 2 - the final run behind two confirmations: the typed phrase, then an explicit dialog.
+async function runEmergencyShutdown() {
+    const button = byId('emergencyShutdownBtn');
+    const box = byId('emergencyShutdownResult');
+    const confirmText = String(byId('emergencyConfirmInput')?.value || '').trim();
+    const eraseServer = Boolean(byId('emergencyEraseServer')?.checked);
+    const guardPassword = String(byId('emergencyGuardPassword')?.value || '');
+
+    if (confirmText !== 'DELETE-SERVER') {
+        if (box) { box.className = 'result-box error'; box.textContent = 'اكتب DELETE-SERVER حرفياً للتأكيد.'; }
+        return;
+    }
+    const dialog = eraseServer
+        ? 'سيتم الآن مسح بيانات السيرفر (منتجات وأعضاء وبراندات)، وإيقاف المزامنة نهائياً على هذا الجهاز.\nاكتب موافق للمتابعة.'
+        : 'سيتم إيقاف المزامنة نهائياً على هذا الجهاز بدون مسح بيانات السيرفر.\nاكتب موافق للمتابعة.';
+    if (String(prompt(dialog) || '').trim() !== 'موافق') {
+        if (box) { box.className = 'result-box warning'; box.textContent = 'تم إلغاء العملية.'; }
+        return;
+    }
+
+    if (button) { button.disabled = true; button.textContent = 'جارٍ التنفيذ...'; }
+    if (box) { box.className = 'result-box'; box.textContent = 'جارٍ النسخة الاحتياطية ثم التنفيذ...'; }
+    try {
+        const response = await fetch(`${API_BASE}/api/sync/emergency/shutdown`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                Confirm: confirmText,
+                EraseServer: eraseServer,
+                LocalGuardPassword: guardPassword,
+                Actor: byId('AddedByName')?.value || '',
+            }),
+        });
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.error || 'تعذر تنفيذ العملية.');
+        const deleted = data.server_erase?.deleted || {};
+        const deletedText = Object.entries(deleted).map(([table, count]) => `${table}: ${count}`).join(' · ');
+        if (box) {
+            box.className = 'result-box success';
+            box.innerHTML =
+                '<strong>تم التنفيذ بالترتيب المطلوب.</strong><br>'
+                + `١) نسخة احتياطية: ${escapeHtmlForPopup(data.backup?.name || '—')}<br>`
+                + (data.server_erase
+                    ? `٢) مسح السيرفر: ${Number(data.server_erase.total_deleted || 0)} صف — ${escapeHtmlForPopup(deletedText || 'لا جداول')}<br>`
+                    : '٢) مسح السيرفر: لم يُطلب (تخطّي)<br>')
+                + '٣) المزامنة موقوفة نهائياً على هذا الجهاز، وتم مسح رابط السيرفر والمفتاح السري.';
+        }
+        emergencyBackupReady = false;
+        updateEmergencyShutdownState();
+        if (byId('emergencyConfirmInput')) byId('emergencyConfirmInput').value = '';
+        await refreshSyncStatus();
+        await refreshEmergencyStatus();
+    } catch (error) {
+        if (box) { box.className = 'result-box error'; box.textContent = error.message; }
+        emergencyBackupReady = true;
+        updateEmergencyShutdownState();
+    }
+}
+
+// Arabic: الخطوة ٣ - إعادة الرفع إلى سيرفر جديد (البراندات ثم المنتجات ثم عدّاد المعرّفات). English: Step 3 - the re-upload to a new server (brands, then products, then the ID counter).
+async function startEmergencyRestore() {
+    const button = byId('emergencyRestoreStartBtn');
+    const box = byId('emergencyRestoreStatus');
+    const payload = {
+        BackupFile: byId('emergencyRestoreFile')?.value || '',
+        ServerUrl: String(byId('emergencyRestoreUrl')?.value || '').trim(),
+        Token: String(byId('emergencyRestoreToken')?.value || '').trim(),
+        LocalGuardPassword: String(byId('emergencyRestoreGuard')?.value || ''),
+        Confirm: String(byId('emergencyRestoreConfirm')?.value || '').trim(),
+    };
+    if (!payload.BackupFile) {
+        if (box) { box.className = 'result-box error'; box.textContent = 'اختر ملف نسخة احتياطية أولاً.'; }
+        return;
+    }
+    if (button) { button.disabled = true; button.textContent = 'جارٍ التحقق والبدء...'; }
+    if (box) { box.className = 'result-box'; box.textContent = 'جارٍ فحص الاتصال بالسيرفر الجديد...'; }
+    try {
+        const response = await fetch(`${API_BASE}/api/sync/emergency/restore`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.error || 'تعذر بدء إعادة الرفع.');
+        if (byId('emergencyRestoreToken')) byId('emergencyRestoreToken').value = '';
+        if (byId('emergencyRestoreConfirm')) byId('emergencyRestoreConfirm').value = '';
+        renderEmergencyRestoreProgress(data.restore || {});
+        startEmergencyRestorePolling();
+        await refreshSyncStatus();
+        await refreshEmergencyStatus();
+    } catch (error) {
+        if (box) { box.className = 'result-box error'; box.textContent = error.message; }
+    } finally {
+        if (button) { button.disabled = false; button.textContent = 'استعادة النسخة إلى السيرفر'; }
+    }
 }
 
 // Arabic: ترجمة حالة المنتج المخزَّنة بالأرشيف إلى نص ولون مفهومين للمستخدم. هذه الحالة يكتبها
@@ -1712,6 +2041,11 @@ async function initializePopup() {
         }
     });
     bindClick('refreshRecentBtn', refreshRecentProducts);
+    // Arabic: منطقة خطر الأدمن (نسخة احتياطية ← مسح السيرفر ← قفل المزامنة، ثم إعادة الرفع).
+    // English: The admin danger zone (backup -> erase the server -> lock sync, then the re-upload).
+    bindClick('emergencyBackupBtn', createEmergencyBackup);
+    bindClick('emergencyShutdownBtn', runEmergencyShutdown);
+    bindClick('emergencyRestoreStartBtn', startEmergencyRestore);
     bindClick('generateReportBtn', generateReport);
     bindClick('reportAddDayBtn', addSelectedReportDay);
     byId('reportScope')?.addEventListener('change', refreshReportScopeFields);

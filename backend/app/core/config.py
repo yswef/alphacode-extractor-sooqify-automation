@@ -17,6 +17,24 @@ SYNC_CONFIG_PATH = os.path.join(BACKEND_ROOT, "config", "sync_config.json")
 SYNC_QUEUE_PATH = os.path.join(BACKEND_ROOT, "data", "sync_queue.json")
 SYNC_STATE_PATH = os.path.join(BACKEND_ROOT, "data", "sync_state.json")
 
+# Arabic: قفل الإيقاف الطارئ - يُكتب فقط عند تنفيذ "إيقاف المزامنة ومسح بيانات السيرفر"،
+#         وما دام موجوداً لا يخرج أي طلب شبكة لسيرفر المزامنة إطلاقاً، ولا تُقبل إعادة
+#         التفعيل إلا بأمر أدمن صريح (ConfirmUnlock) من لوحة الإضافة.
+# English: The emergency-shutdown lock - written only when "stop sync and erase the server
+#          data" runs. While it exists, no network request leaves for the sync server at all,
+#          and re-enabling requires an explicit admin action (ConfirmUnlock) from the popup.
+SYNC_LOCK_PATH = os.path.join(BACKEND_ROOT, "config", "sync_lock.json")
+
+# Arabic: حالة عملية إعادة الرفع إلى السيرفر (تجري بخيط خلفي لأن آلاف المنتجات تحتاج دقائق).
+# English: The state of the re-upload job (it runs in a background thread, since thousands of
+#          products take minutes).
+RESTORE_STATE_PATH = os.path.join(BACKEND_ROOT, "data", "restore_state.json")
+
+# Arabic: مجلد النسخ الاحتياطية الافتراضي عند عدم ضبط مجلد حفظ بعد (وإلا فالمجلد داخل مجلد الحفظ).
+# English: Default backup folder when no save folder is configured yet (otherwise the folder
+#          lives inside the configured save folder).
+EMERGENCY_BACKUP_DIR = os.path.join(BACKEND_ROOT, "backups")
+
 
 def load_json_file(path, default):
     """Arabic: قراءة JSON بأمان مع قيمة افتراضية عند التلف. English: Safely read JSON and fall back when the file is invalid."""

@@ -22,9 +22,15 @@ from datetime import datetime, timedelta
 
 import requests
 
-from app.repositories.sync_config_repository import load_sync_config
+from app.repositories.sync_config_repository import load_sync_config, save_sync_config
 from app.repositories.sync_queue_repository import load_sync_queue, save_sync_queue
 from app.repositories.sync_state_repository import load_sync_state, save_sync_state
+# Arabic: قفل الإيقاف الطارئ (نسخة احتياطية ← مسح بيانات السيرفر ← إيقاف المزامنة نهائياً).
+#         هذا القفل يسبق أي نداء شبكة في هذا الملف، فلا يخرج طلب واحد لسيرفر المزامنة بعده.
+# English: The emergency-shutdown lock (backup -> erase the server data -> stop sync for good).
+#          This lock precedes every network call in this file, so not one request leaves for the
+#          sync server once it exists.
+from app.repositories.sync_lock_repository import is_sync_locked
 
 logger = logging.getLogger("alphacode")
 
@@ -177,10 +183,15 @@ def sync_run_cycle(reason="manual"):
              operator arrived".
     """
     config = load_sync_config()
-    if not config["Enabled"]:
+    # Arabic: قفل الإيقاف الطارئ يُعامَل كتعطيل كامل: لا سحب، لا رفع، ولا إعادة إرسال طابور —
+    #         فالدورة ترجع فوراً بخطأ واضح بدل أن تحاول الوصول لسيرفر ممسوح.
+    # English: The emergency-shutdown lock counts as fully disabled: no pull, no push and no queue
+    #          flush - the cycle returns a clear error at once instead of reaching for a wiped server.
+    blocked = is_sync_locked()
+    if not config["Enabled"] or blocked:
         result = {
             "success": False,
-            "error": "sync_disabled",
+            "error": "sync_locked" if blocked else "sync_disabled",
             "reason": reason,
             "new_items": 0,
             "new_from_others": 0,
@@ -277,7 +288,7 @@ def sync_background_worker(stop_event=None):
             elif current >= next_retry_at:
                 next_retry_at = current + SYNC_QUEUE_RETRY_INTERVAL_SECONDS
                 try:
-                    if load_sync_config()["Enabled"] and load_sync_queue():
+                    if load_sync_config()["Enabled"] and not is_sync_locked() and load_sync_queue():
                         sync_flush_queue()
                 except Exception as exc:
                     logger.warning("Automatic sync retry flush failed: %s", exc)
@@ -313,9 +324,31 @@ def start_sync_background_worker(stop_event=None):
 
 
 def sync_call(action, payload=None, method="POST"):
-    """Arabic: نداء موحّد لسكربت sync.php مع مهلة قصيرة وأخطاء واضحة، ودائرة أمان تمنع تكرار الطلبات لفترة بعد حظر 403 من الاستضافة. English: A single call point into sync.php with a short timeout and clear errors, plus a circuit breaker that stops retrying for a while after a host 403 block."""
+    """
+    Arabic: نداء موحّد لسكربت sync.php ببيانات الاعتماد المحفوظة على هذا الجهاز. يرفض الخروج
+            إطلاقاً لو كانت المزامنة معطّلة أو كان قفل الإيقاف الطارئ موجوداً.
+    English: The single call point into sync.php using this machine's saved credentials. It
+             refuses to leave at all when sync is disabled or the emergency-shutdown lock exists.
+    """
     config = load_sync_config()
     if not config["Enabled"] or not config["ServerUrl"] or not config["Token"]:
+        return None, "sync_disabled"
+    if is_sync_locked():
+        return None, "sync_locked"
+    return sync_http_call(config["ServerUrl"], config["Token"], action, payload, method)
+
+
+def sync_http_call(server_url, token, action, payload=None, method="POST"):
+    """
+    Arabic: نداء HTTP خام لسكربت sync.php ببيانات اعتماد صريحة (تُستخدم في مسار الاستعادة الذي
+            يعمل قبل حفظ الإعدادات، وفي الفحص الأولي للسيرفر الجديد). لا يقرأ الإعدادات المحلية
+            ولا قفل الإيقاف — لأن من يستدعيه أدمن أعطى الرابط والكود بنفسه في نفس الطلب.
+    English: A raw HTTP call into sync.php with explicit credentials (used by the restore path,
+             which runs before the settings are saved, and by the first probe of a new server).
+             It reads neither the local settings nor the shutdown lock - the caller is an admin
+             who supplied the URL and token in that very request.
+    """
+    if not server_url or not token:
         return None, "sync_disabled"
 
     # Arabic: لو الاستضافة حظرتنا مؤخراً (403)، لا نعيد المحاولة فوراً حتى لا نطيل مدة الحظر.
@@ -329,8 +362,8 @@ def sync_call(action, payload=None, method="POST"):
         except ValueError:
             pass
 
-    url = f"{config['ServerUrl']}/sync.php"
-    headers = {"X-Sync-Token": config["Token"], "Content-Type": "application/json"}
+    url = f"{str(server_url).rstrip('/')}/sync.php"
+    headers = {"X-Sync-Token": token, "Content-Type": "application/json"}
     try:
         if method == "GET":
             response = requests.get(url, params={"action": action}, headers=headers, timeout=SYNC_HTTP_TIMEOUT)
@@ -362,7 +395,9 @@ def sync_reserve_id():
     """Arabic: حجز ID فريد من الخادم المركزي؛ يرجع None عند التعطيل أو الفشل ليعمل الاحتياط المحلي. English: Reserve a unique ID centrally; returns None when disabled/unreachable so local numbering can take over."""
     data, error = sync_call("reserve_id", {}, method="POST")
     if error or not data or not data.get("success"):
-        if error and error != "sync_disabled":
+        # Arabic: الوضع المقفول/المعطّل سلوك متوقع لا خطأ يستحق تحذيراً في السجل.
+        # English: The locked/disabled state is expected behaviour, not a warning-worthy error.
+        if error and error not in ("sync_disabled", "sync_locked"):
             logger.warning("Remote ID reservation failed, falling back to local numbering: %s", error)
         return None
     return _safe_int(data.get("id"), None) if data.get("id") is not None else None
@@ -377,7 +412,9 @@ def sync_reserve_key(dedup_key, added_by):
     if not dedup_key:
         return True, None, None
     data, error = sync_call("reserve_key", {"key": dedup_key, "added_by": added_by}, method="POST")
-    if error == "sync_disabled":
+    if error in ("sync_disabled", "sync_locked"):
+        # Arabic: بدون سيرفر (معطّل أو موقوف نهائياً) يبقى الفحص المحلي للتكرار هو الحاكم.
+        # English: With no server (disabled or permanently stopped) the local duplicate check rules.
         return True, None, None
     if data and data.get("duplicate"):
         return False, data.get("existing"), None
@@ -392,6 +429,13 @@ def sync_push_product(dedup_key, archive_item):
     if not dedup_key or not load_sync_config()["Enabled"]:
         return
     data, error = sync_call("push", {"key": dedup_key, "product": archive_item}, method="POST")
+    if error == "sync_locked":
+        # Arabic: الوضع المقفول لا يُدخل شيئاً في طابور إعادة المحاولة - الطابور يُفرَّغ عند القفل
+        #         أصلاً، وإضافته إليه تعني محاولة رفع أبدية كل 5 دقائق بلا فائدة.
+        # English: The locked state never queues anything for retry - the queue is emptied when
+        #          the lock is set, and adding to it would mean a pointless retry every 5 minutes.
+        logger.info("Sync push skipped: sync is locked (server data was erased).")
+        return
     is_duplicate = bool(data and data.get("duplicate"))
     if not error or is_duplicate:
         with SYNC_LOCK:
@@ -415,6 +459,10 @@ def sync_flush_queue():
     with SYNC_LOCK:
         queue = load_sync_queue()
     if not queue:
+        return
+    if is_sync_locked():
+        # Arabic: قفل الإيقاف الطارئ يمنع أي محاولة رفع، حتى للعناصر التي كانت بالطابور قبله.
+        # English: The emergency lock blocks every push attempt, even items queued before it.
         return
     remaining = []
     for entry in queue:
@@ -457,7 +505,7 @@ def sync_auto_reconcile_if_due(force=False):
              a button.
     """
     config = load_sync_config()
-    if not config["Enabled"]:
+    if not config["Enabled"] or is_sync_locked():
         return None
 
     state = load_sync_state()
@@ -486,6 +534,11 @@ def sync_pull_updates():
     """Arabic: سحب منتجات الطرف الآخر ودمجها محلياً - يُستخدم في فحص التكرار حتى لا يعيد أحد الطرفين إضافة منتج أضافه الآخر. يرجع نص الخطأ لو فشل النداء، أو None لو نجح/كانت المزامنة معطّلة. English: Pull the other side's products and merge locally - used by duplicate checks so neither side re-adds what the other already added. Returns the error string on failure, or None on success/when sync is disabled."""
     config = load_sync_config()
     if not config["Enabled"]:
+        return None
+    if is_sync_locked():
+        # Arabic: القفل يعني "لا سيرفر بعد اليوم" - لا نُبلّغ الإضافة بخطأ كل 10 دقائق بلا داع.
+        # English: The lock means "no server any more" - no need to report an error to the
+        #          extension every 10 minutes.
         return None
     state = load_sync_state()
     data, error = sync_call("pull", {"since": state.get("last_pull_at", "")}, method="POST")
@@ -549,6 +602,8 @@ def sync_reconcile_full():
     config = load_sync_config()
     if not config["Enabled"]:
         return {"success": False, "error": "sync_disabled"}
+    if is_sync_locked():
+        return {"success": False, "error": "sync_locked"}
 
     # Pull the full remote archive (since="" asks for everything)
     data, error = sync_call("pull", {"since": ""}, method="POST")

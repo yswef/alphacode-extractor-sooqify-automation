@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>AlphaCode Extractor 4</title>
+    <title>AlphaCode Extractor 5.10.0</title>
     <link rel="stylesheet" href="popup.css">
 </head>
 <body>
@@ -34,7 +34,7 @@
 <header class="app-header">
     <div class="brand-row">
         <div>
-            <h1 class="brand-title">AlphaCode Extractor 5.9.0</h1>
+            <h1 class="brand-title">AlphaCode Extractor 5.10.0</h1>
             <div class="brand-subtitle">SZWEGO → Python → Sooqify</div>
         </div>
         <div class="profile-chip" id="profileChip">Sooqify Online</div>
@@ -323,6 +323,48 @@
             <h2>نسخ الأسماء دفعة واحدة (للأدمن)</h2>
             <p class="hint">نسخ أسماء المنتجات، كل اسم بسطر مستقل وبينهم سطر فيه علامة + فقط</p>
             <button class="btn btn-accent btn-block" id="copyBatchNamesBtn" type="button">نسخ أسماء الدفعة (+)</button>
+        </article>
+
+        <!-- Arabic: منطقة خطر للأدمن فقط: نسخة احتياطية كاملة ← مسح بيانات السيرفر ← إيقاف
+             المزامنة نهائياً على هذا الجهاز (ومعها إعادة الرفع لاحقاً). الترتيب إلزامي:
+             لا يُمسح شيء قبل أن تُكتب النسخة الاحتياطية فعلياً على القرص.
+             English: Admin-only danger zone: a full backup -> erase the server data -> stop sync
+             for good on this machine (plus a later re-upload). The order is mandatory: nothing is
+             erased before the backup is really written to disk. -->
+        <article class="card admin-only-element" id="emergencyCard" style="display:none; margin-top:13px; border-color:rgba(201,54,73,.45);">
+            <h2>منطقة خطر — إيقاف المزامنة ومسح بيانات السيرفر (للأدمن)</h2>
+            <p class="hint">
+                الترتيب إلزامي: (١) نسخة احتياطية كاملة تُحفظ على جهازك ← (٢) مسح بيانات السيرفر
+                (المنتجات والأعضاء والبراندات) ← (٣) إيقاف المزامنة نهائياً على هذا الجهاز ومسح
+                رابط السيرفر والمفتاح السري منه. لا يُمسح شيء إن لم تُكتب النسخة الاحتياطية بنجاح.
+            </p>
+            <div class="result-box warning" id="emergencyLockBanner" style="display:none;"></div>
+
+            <h3>١ — نسخة احتياطية كاملة</h3>
+            <p class="hint">تشمل أرشيف هذا الجهاز كاملاً + كل منتجات السيرفر + قائمة البراندات. لا تحتوي كود المزامنة السري.</p>
+            <button class="btn btn-outline btn-block" id="emergencyBackupBtn" type="button">تنزيل نسخة احتياطية كاملة الآن</button>
+            <div class="result-box" id="emergencyBackupResult">لم تُؤخذ نسخة احتياطية في هذه الجلسة بعد.</div>
+            <div id="emergencyBackupList" style="margin-top:8px;"></div>
+
+            <h3>٢ — مسح بيانات السيرفر وإيقاف المزامنة نهائياً</h3>
+            <div class="toggle-row">
+                <div class="toggle-copy"><strong>مسح بيانات السيرفر</strong><small>يحذف المنتجات والأعضاء والبراندات والحجوزات من قاعدة بيانات الاستضافة، ويكتب ملف قفل يمنع كل الطلبات بعدها.</small></div>
+                <label class="switch"><input id="emergencyEraseServer" type="checkbox" checked><span class="slider"></span></label>
+            </div>
+            <div class="field"><label for="emergencyGuardPassword">رمز حماية محلي (اختياري لكن مُوصى به)</label><input id="emergencyGuardPassword" type="password" placeholder="بدونه يبقى الدخول المحلي admin/admin مفتوحاً لأي أحد"></div>
+            <div class="field"><label for="emergencyConfirmInput">اكتب <b dir="ltr">DELETE-SERVER</b> للتأكيد</label><input id="emergencyConfirmInput" dir="ltr" type="text" placeholder="DELETE-SERVER"></div>
+            <button class="btn btn-danger btn-block" id="emergencyShutdownBtn" type="button" disabled>تنفيذ: مسح السيرفر + إيقاف المزامنة</button>
+            <div class="result-box" id="emergencyShutdownResult"></div>
+
+            <h3>٣ — إعادة الرفع إلى سيرفر (لاحقاً)</h3>
+            <p class="hint">ارفع ملف نسخة احتياطية إلى استضافة جديدة فيها sync.php (بنفس العقد البرمجي) مع كود مزامنة جديد، ثم اكتب RESTORE.</p>
+            <div class="field"><label for="emergencyRestoreFile">ملف النسخة الاحتياطية</label><select id="emergencyRestoreFile"></select></div>
+            <div class="field"><label for="emergencyRestoreUrl">رابط مجلد المزامنة الجديد</label><input id="emergencyRestoreUrl" dir="ltr" type="url" placeholder="https://example.com/alphacode_storage"></div>
+            <div class="field"><label for="emergencyRestoreToken">كود المزامنة الجديد</label><input id="emergencyRestoreToken" dir="ltr" type="text" placeholder="كود المزامنة"></div>
+            <div class="field"><label for="emergencyRestoreGuard">رمز الحماية المحلي (إن كان مضبوطاً)</label><input id="emergencyRestoreGuard" type="password"></div>
+            <div class="field"><label for="emergencyRestoreConfirm">اكتب <b dir="ltr">RESTORE</b> للتأكيد</label><input id="emergencyRestoreConfirm" dir="ltr" type="text" placeholder="RESTORE"></div>
+            <button class="btn btn-primary btn-block" id="emergencyRestoreStartBtn" type="button">استعادة النسخة إلى السيرفر</button>
+            <div class="result-box" id="emergencyRestoreStatus"></div>
         </article>
     </section>
 

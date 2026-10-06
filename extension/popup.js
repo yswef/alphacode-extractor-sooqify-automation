@@ -1523,6 +1523,23 @@ async function refreshNeutralizeStatus() {
     }
 }
 
+// Arabic: عرض المنتجات التي فشل توحيدها: مفتاح المنتج واسمه الأصلي وسبب مختصر بالعربية — لأن
+//         عرض نصّ الشبكة الخام وحده لا يقول للأدمن أي منتج تعثّر ولا كيف يكمله في تشغيل ثانٍ.
+// English: Render the products whose unification failed: each key, its original name and a short
+//          readable reason - a raw network dump alone tells the admin neither which product failed
+//          nor what to retry.
+function neutralizeErrorLines(errors) {
+    const list = Array.isArray(errors) ? errors : [];
+    if (!list.length) return '';
+    const shown = list.slice(0, 5).map((entry) => {
+        const label = [entry?.key, entry?.name ? `(${entry.name})` : ''].filter(Boolean).join(' ');
+        const reason = String(entry?.error || '');
+        return '• ' + escapeHtmlForPopup(label ? `${label} — ${reason}` : reason);
+    });
+    const rest = list.length > 5 ? `<br>… و${list.length - 5} خطأ آخر (التفاصيل في state file)` : '';
+    return `<br><span style="opacity:.85;">أول الأخطاء:<br>${shown.join('<br>')}${rest}</span>`;
+}
+
 // Arabic: عرض تقدّم التعطيل: المرحلة، عدد المنتجات الموحّدة، البراندات المحذوفة، العدّاد. English: Render the shutdown progress: phase, unified products, deleted brands, counter.
 function renderNeutralizeProgress(state) {
     const box = byId('neutralizeResult');
@@ -1554,9 +1571,7 @@ function renderNeutralizeProgress(state) {
         + ((state.warnings || []).length
             ? `<br><span style="opacity:.85;">${(state.warnings || []).map(w => '• ' + escapeHtmlForPopup(w)).join('<br>')}</span>`
             : '')
-        + ((state.errors || []).length
-            ? `<br><span style="opacity:.85;">أول الأخطاء: ${escapeHtmlForPopup((state.errors[0] || {}).error || '')}</span>`
-            : '');
+        + neutralizeErrorLines(state.errors);
 }
 
 // Arabic: متابعة تقدّم التعطيل كل 3 ثوانٍ ما دام يعمل. English: Poll the shutdown progress every 3 seconds while it runs.

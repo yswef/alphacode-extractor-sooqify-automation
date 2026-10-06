@@ -568,7 +568,7 @@ def _worker(opts, server_url, token, guard_password):
                 data, error = sync_service.sync_http_call(
                     server_url, token, "push", {"key": key, "product": payload}, method="POST"
                 )
-                if error == "sync_throttled":
+                if error in ("sync_throttled", "sync_blocked_403"):
                     # Arabic: الاستضافة حظرتنا (403) — التوقف الآن أرحم من تكرار يطيل الحظر، والعملية
                     #         قابلة للاستئناف: الصفوف الموحّدة تحمل علامة تُتخطّى في التشغيل التالي.
                     # English: The host blocked us (403) - stopping now beats retrying and extending
@@ -586,7 +586,20 @@ def _worker(opts, server_url, token, guard_password):
                 if error or (data or {}).get("duplicate"):
                     failed += 1
                     if len(errors) < 20:
-                        errors.append({"key": str(key), "error": str(error or "duplicate")})
+                        # Arabic: نُخزّن سبباً عربياً قصيراً + اسم المنتج ومفتاحه، لأن نصّ requests الخام
+                        #         (مثل HTTPSConnectionPool(...)) يملأ اللوحة ولا يقول للأدمن أي منتج
+                        #         فشل ولا كيف يجد الاسم في السجل. النص الخام يبقى في error_raw للمراجعة.
+                        # English: Store a short readable reason plus the product's original name and
+                        #          key: the raw requests text (HTTPSConnectionPool(...)) floods the
+                        #          popup and tells the admin neither which product failed nor what to
+                        #          look for. The raw text stays in error_raw for review.
+                        errors.append({
+                            "key": str(key),
+                            "name": str(item.get("name_en") or item.get("name_ar") or "").strip(),
+                            "error": (emergency_service.friendly_error(error) if error
+                                      else "duplicate (المعرّف محجوز لصف آخر)"),
+                            "error_raw": str(error or "duplicate")[:500],
+                        })
                 else:
                     done += 1
                 if index % PROGRESS_SAVE_EVERY == 0:

@@ -324,6 +324,75 @@ def test_host_block_stops_the_job_and_leaves_it_resumable(monkeypatch):
     assert "في المرة القادمة" not in final["last_error"]
 
 
+def test_a_transient_push_error_names_the_product_and_stays_resumable(monkeypatch):
+    """
+    Arabic: صف واحد تعثّر بسبب مهلة اتصال عارضة (كما حدث فعلاً: 399 موحّداً و1 فشل) لا يجوز أن
+            يُسقط العملية ولا أن يُخفي أي منتج تعثّر: البقية تُكمل، وقائمة الأخطاء تحمل مفتاح الصف
+            واسمه الأصلي وسبباً عربياً قصيراً — ونصّ requests الخام يبقى في error_raw للمراجعة.
+    English: One row hitting a transient connect timeout (exactly what happened in production: 399
+             unified, 1 failed) must neither abort the run nor hide which product failed: the rest
+             completes, and the error list carries the row key, its original name and a short Arabic
+             reason - while the raw requests text stays in error_raw for review.
+    """
+    _enable_sync()
+    state, fake = _server_with(PRODUCTS, BRANDS)
+    raw_timeout = ("HTTPSConnectionPool(host='engyusef.alpha-code.net', port=443): Max retries exceeded with "
+                   "url: /alphacode_storage/sync.php?action=push (Caused by ConnectTimeoutError("
+                   "<HTTPSConnection(host='engyusef.alpha-code.net', port=443)>: "
+                   "'Connection to engyusef.alpha-code.net timed out. (connect timeout=5)'))")
+
+    def flaky(server_url, token, action, payload=None, method="POST"):
+        if action == "push" and (payload or {}).get("key") == "SKU-2":
+            return None, raw_timeout
+        return fake(server_url, token, action, payload, method)
+
+    monkeypatch.setattr(sync_service, "sync_http_call", flaky)
+    final = _run({})
+
+    assert final["phase"] == "done"
+    assert final["products_done"] == 1, "الصف السليم يُكمل ولا تتوقف العملية"      # the healthy row still finishes
+    assert final["products_failed"] == 1
+    assert final["products_reserved"] == 1, "الحجز يبقى بلا لمس"                    # the reservation stays untouched
+    assert state["items"]["SKU-1"]["neutralized_by"] == neutralize_service.NEUTRALIZE_MARKER
+    assert state["items"]["SKU-2"]["name_en"] == "Rolex Sub", "الصف الفاشل لم يُلمس على السيرفر"  # untouched on the server
+
+    entry = final["errors"][0]
+    assert entry["key"] == "SKU-2"
+    assert entry["name"] == "Rolex Sub"
+    assert entry["error"] == "انتهت مهلة الاتصال بالسيرفر."
+    assert "engyusef" in entry["error_raw"]
+    assert "فشل توحيد 1 منتج" in final["last_error"], "الملخص يقول إن هناك ما يكمل في تشغيل ثانٍ"
+
+
+def test_a_403_on_the_first_push_stops_quietly_without_a_fake_failure(monkeypatch):
+    """
+    Arabic: حظر الطلبات يظهر في أول نداء كـsync_blocked_403 (وعندها يُضبط تهدئة في الحالة)، فلا
+            يجوز أن يُحتسب صفاً فاشلاً ثم يُكتشف الحظر في الصف التالي: يُوقف العملية فوراً برسالة
+            «403» وبلا خطأ وهمي في القائمة.
+    English: A host block surfaces on the very first call as sync_blocked_403 (and sets the cooldown
+             in the state), so it must not be counted as one failed row and only then be noticed on
+             the next row: the run stops at once with the "403" warning and no bogus error entry.
+    """
+    _enable_sync()
+    state, fake = _server_with(PRODUCTS, BRANDS)
+
+    def blocked(server_url, token, action, payload=None, method="POST"):
+        if action == "push":
+            return None, "sync_blocked_403"
+        return fake(server_url, token, action, payload, method)
+
+    monkeypatch.setattr(sync_service, "sync_http_call", blocked)
+    final = _run({})
+
+    assert final["phase"] == "done"
+    assert final["products_failed"] == 0
+    assert final["products_done"] == 0
+    assert final["products_skipped"] == 2, "البقية تُسجّل متخطّاة لتُستأنف لاحقاً"
+    assert final["errors"] == []
+    assert any("403" in warning for warning in final["warnings"])
+    assert state["items"]["SKU-1"]["name_en"] == "Air Jordan 1", "لا كتابة بعد الحظر"
+
+
 def test_second_run_skips_rows_that_are_already_unified(monkeypatch):
     """
     Arabic: الاستئناف: تشغيل ثانٍ بعد الأول لا يعيد رفع ما انتهى (العلامة موجودة في الصف)، فينتهي

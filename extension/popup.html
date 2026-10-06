@@ -54,6 +54,10 @@
     <button class="tab-button" data-tab="reports">التقارير</button>
     <button class="tab-button" data-tab="diagnostics">التشخيص</button>
     <button class="tab-button" data-tab="data-repair">إصلاح البيانات</button>
+    <!-- Arabic: تبويب الخطر تبويب مستقل بعنوان «حذف البيانات»، ولا يظهر إلا للأدمن ومدير المشروع.
+         English: The danger zone is its own tab titled "Delete data", shown to the admin and the
+         project manager only. -->
+    <button class="tab-button admin-only-tab" id="dangerTabBtn" data-tab="danger">حذف البيانات</button>
 </nav>
 
 <div id="folderSetupBanner" class="result-box warning" style="display:none; margin:10px 14px 0;">
@@ -325,15 +329,17 @@
             <p class="hint">نسخ أسماء المنتجات، كل اسم بسطر مستقل وبينهم سطر فيه علامة + فقط</p>
             <button class="btn btn-accent btn-block" id="copyBatchNamesBtn" type="button">نسخ أسماء الدفعة (+)</button>
         </article>
+    </section>
 
+    <section class="tab-panel" id="tab-danger">
         <!-- Arabic: منطقة خطر للأدمن فقط: نسخة احتياطية كاملة ← مسح بيانات السيرفر ← إيقاف
              المزامنة نهائياً على هذا الجهاز (ومعها إعادة الرفع لاحقاً). الترتيب إلزامي:
              لا يُمسح شيء قبل أن تُكتب النسخة الاحتياطية فعلياً على القرص.
              English: Admin-only danger zone: a full backup -> erase the server data -> stop sync
              for good on this machine (plus a later re-upload). The order is mandatory: nothing is
              erased before the backup is really written to disk. -->
-        <article class="card admin-only-element" id="emergencyCard" style="display:none; margin-top:13px; border-color:rgba(201,54,73,.45);">
-            <h2>منطقة خطر — إيقاف المزامنة ومسح بيانات السيرفر (للأدمن)</h2>
+        <article class="card admin-only-element" id="emergencyCard" style="display:none; border-color:rgba(201,54,73,.45);">
+            <h2>حذف البيانات — إيقاف المزامنة ومسح بيانات السيرفر (للأدمن)</h2>
             <p class="hint">
                 الترتيب إلزامي: (١) نسخة احتياطية كاملة تُحفظ على جهازك ← (٢) مسح بيانات السيرفر
                 (المنتجات والأعضاء والبراندات) ← (٣) إيقاف المزامنة نهائياً على هذا الجهاز ومسح

@@ -83,15 +83,22 @@ function activateTab(tabName) {
         loadSyncSettings();
         refreshSyncStatus();
         refreshRecentProducts();
-        // Arabic: منطقة الخطر: نجلب حالة القفل والنسخ الاحتياطية وتقدّم أي إعادة رفع جارية.
-        // English: The danger zone: pull the lock state, the backups and any running re-upload.
+    }
+
+    // Arabic: تبويب «حذف البيانات» المستقل: نجلب حالة القفل والنسخ الاحتياطية وتقدّم أي إعادة رفع
+    //         أو تعطيل جارٍ. ولا يُفتح هذا التبويب إلا للأدمن ومدير المشروع (انظر
+    //         applyRoleRestrictions) — العضو لا يرى زرّه إطلاقاً.
+    // English: The standalone "Delete data" tab: pull the lock state, the backups and the progress of
+    //          any running re-upload or neutralizing job. It is reachable by the admin and the project
+    //          manager only (see applyRoleRestrictions) - a member never sees its button at all.
+    if (tabName === 'danger') {
         refreshEmergencyStatus();
         updateEmergencyShutdownState();
         // Arabic: لو كان تعطيل قائم من جلسة سابقة، نعرض تقدّمه فوراً.
         // English: When a shutdown is already running from an earlier session, show its progress at once.
         refreshNeutralizeStatus();
     }
-    startSyncTabAutoRefresh(tabName === 'sync');
+    startSyncTabAutoRefresh(tabName);
 
     if (tabName === 'reports' && byId('reportDate') && !byId('reportDate').value) {
         byId('reportDate').value = new Date().toISOString().slice(0, 10);
@@ -914,19 +921,29 @@ async function chooseFolder() {
 // English: Two-user sync - load/save settings and render status.
 // =========================================================
 
-// Arabic: مؤقّت التحديث الدوري لتبويب المزامنة - يعمل فقط أثناء فتح التبويب ويُلغى عند مغادرته.
-// English: The sync tab's polling timer - runs only while the tab is open and is cleared on leave.
+// Arabic: مؤقّت التحديث الدوري لتبويبي المزامنة و«حذف البيانات» - يعمل فقط أثناء فتح أحدهما
+//         ويُلغى عند مغادرته، فلا نداءات شبكة في الخلفية بلا داع.
+// English: The polling timer for the sync and "Delete data" tabs - it runs only while either tab is
+//          open and is cleared on leave, so no background network calls run needlessly.
 let syncTabRefreshTimer = null;
 
-function startSyncTabAutoRefresh(shouldRun) {
+function startSyncTabAutoRefresh(tabName) {
     if (syncTabRefreshTimer) {
         clearInterval(syncTabRefreshTimer);
         syncTabRefreshTimer = null;
     }
-    if (!shouldRun) return;
+    if (tabName !== 'sync' && tabName !== 'danger') return;
     syncTabRefreshTimer = setInterval(() => {
-        refreshSyncStatus();
-        refreshRecentProducts();
+        if (tabName === 'sync') {
+            refreshSyncStatus();
+            refreshRecentProducts();
+            return;
+        }
+        // Arabic: في تبويب الخطر نحدّث حالة القفل والنسخ وتقدّم التعطيل/إعادة الرفع.
+        // English: On the danger tab refresh the lock state, the backups and the job progress.
+        refreshEmergencyStatus();
+        updateEmergencyShutdownState();
+        refreshNeutralizeStatus();
     }, 20000);
 }
 
@@ -2246,9 +2263,15 @@ function applyRoleRestrictions(role) {
     // role: 'admin' or 'project_manager' => full access
     // regular members => only show 'settings' and 'product-type' tabs
     const memberVisible = ['settings', 'product-type'];
-    if (role === 'admin' || role === 'project_manager') {
+    const isManager = role === 'admin' || role === 'project_manager';
+    if (isManager) {
         document.querySelectorAll('.admin-only-element').forEach(el => { el.style.display = 'block'; });
         document.querySelectorAll('.tab-button').forEach(btn => { btn.style.display = ''; });
+        // Arabic: نرفع أي إخفاء سابق للوحة الخطر (لو دخل عضو ثم سجّل الأدمن بعده في نفس الجلسة).
+        // English: Clear any earlier inline hide of the danger panel (a member signed in first, then
+        //          the admin signed in again in the same popup session).
+        const dangerPanel = byId('tab-danger');
+        if (dangerPanel) dangerPanel.style.display = '';
         return;
     }
 
@@ -2257,6 +2280,17 @@ function applyRoleRestrictions(role) {
     document.querySelectorAll('.tab-button').forEach(btn => {
         btn.style.display = memberVisible.includes(btn.dataset.tab) ? '' : 'none';
     });
+
+    // Arabic: تبويب «حذف البيانات» لا يظهر للعضو إطلاقاً - لا زرّه ولا لوحته - بصرف النظر عن
+    //         قائمة التبويبات المسموحة أعلاه، فلا يكفي إخفاء الزر وحده.
+    // English: The "Delete data" tab is never shown to a member - neither its button nor its panel -
+    //          independently of the allowed-tabs list above, so hiding the button alone is not enough.
+    document.querySelectorAll('.admin-only-tab').forEach(btn => { btn.style.display = 'none'; });
+    const dangerPanel = byId('tab-danger');
+    if (dangerPanel) {
+        dangerPanel.classList.remove('active');
+        dangerPanel.style.display = 'none';
+    }
 
     const activeTab = document.querySelector('.tab-button.active')?.dataset.tab;
     if (!memberVisible.includes(activeTab)) {

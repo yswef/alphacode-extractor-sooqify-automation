@@ -14,6 +14,11 @@
 --     The delete runs in one transaction: if any part fails, every row comes back (InnoDB tables).
 --   • فحص المفاتيح الأجنبية يُعطَّل للحذف فقط ثم يُعاد تفعيله.
 --     Foreign-key checks are disabled only for the delete, then restored.
+--   • قبل التنفيذ: صدّر جدولي members و member_aliases من phpMyAdmin (تصدير ← SQL) إن أردت
+--     إرجاع حسابات الأعضاء لاحقاً — النسخة الاحتياطية في الإضافة لا تشملهما، وبعد الحذف لا رجعة لهما.
+--     Before running: export the members and member_aliases tables from phpMyAdmin if you ever want
+--     those accounts back - the extension's own backup cannot contain them, and after the wipe they
+--     are gone for good.
 --   • آمن للتشغيل أكثر من مرة، ولا يحذف الجداول نفسها ولا قاعدة البيانات.
 --     Safe to run repeatedly; it drops no tables and does not drop the database.
 --

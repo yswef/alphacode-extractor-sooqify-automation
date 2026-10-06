@@ -30,6 +30,13 @@ SYNC_LOCK_PATH = os.path.join(BACKEND_ROOT, "config", "sync_lock.json")
 #          products take minutes).
 RESTORE_STATE_PATH = os.path.join(BACKEND_ROOT, "data", "restore_state.json")
 
+# Arabic: حالة عملية «تعطيل السيرفر» (توحيد بيانات كل المنتجات + استبدال البراندات + رفع العدّاد)
+#         — تجري بخيط خلفي لأن آلاف المنتجات تحتاج دقائق، وتُستأنف من حيث انتهت لو انقطعت.
+# English: The state of the "neutralize the server" job (unify every product's data + replace the
+#          brands + raise the counter) - it runs in a background thread because thousands of products
+#          take minutes, and it resumes where it stopped if it is interrupted.
+NEUTRALIZE_STATE_PATH = os.path.join(BACKEND_ROOT, "data", "neutralize_state.json")
+
 # Arabic: مجلد النسخ الاحتياطية الافتراضي عند عدم ضبط مجلد حفظ بعد (وإلا فالمجلد داخل مجلد الحفظ).
 # English: Default backup folder when no save folder is configured yet (otherwise the folder
 #          lives inside the configured save folder).

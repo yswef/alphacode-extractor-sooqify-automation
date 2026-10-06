@@ -23,6 +23,18 @@
   accepts only the local `admin` account; set the optional guard password and that login requires it
   too (salted SHA-256 hash only), so a member cannot revive their own extension copy with
   `admin/admin`. Members get a clear "sync is permanently stopped" refusal instead of a fake login.
+- **٢‑ج — a server shutdown that works against the deployed old `sync.php` (no host access needed).**
+  Because the old copy has no delete action, the card unifies instead: it replaces the brands table
+  with one placeholder through `brands/sync` (a wholesale table replacement), then rewrites every
+  product **in place** through `push` — same `id`, so the update is accepted instead of being refused
+  as a duplicate, while name/description/style/search codes, price, images, sizes and variants are all
+  wiped and the placeholder brand is attached. A `neutralized_by` marker makes a second run skip what
+  is already done, `reserve_id` can advance the counter, and the machine locks itself like the erase
+  path. The **same mandatory backup runs first** — no backup means no neutralizing, and a refused
+  `brands/sync` aborts before a single product is touched. The plan endpoint shows every warning and a
+  time estimate before anything is written, and the panel states plainly what this cannot do: members
+  stay in the database so a valid account can still log in, and rows are overwritten rather than
+  deleted (the DB-side `wipe_db.sql` remains the complete answer).
 - **`hostinger/alphacode_storage/sync.php` is now tracked in Git** and gains `action=erase`,
   `action=bump_sequence` and the `shutdown.lock` gate, alongside the existing actions unchanged.
   `hostinger/alphacode_storage/README.md` documents the deployment, the safe order and how to revive

@@ -21,6 +21,7 @@ from app.repositories import sync_lock_repository
 # English: The admin feature: full backup -> erase the server data -> lock sync for good (with a
 #          later re-upload).
 from app.services import emergency_service
+from app.services import neutralize_service
 from app.core.utils import normalize_text, safe_bool
 
 logger = logging.getLogger(__name__)
@@ -346,6 +347,10 @@ def get_sync_status():
 def emergency_status():
     """Arabic: حالة الإيقاف الطارئ: مقفول؟ متى؟ أي نسخة احتياطية؟ وهل توجد عملية إعادة رفع جارية؟ English: Emergency state: locked? when? which backup? and is a re-upload running?"""
     status = emergency_service.emergency_status()
+    # Arabic: نُرفق حالة التعطيل أيضاً حتى يرى الأدمن التقدّم فور فتح البطاقة.
+    # English: Attach the neutralize state too so the admin sees its progress as soon as the card opens.
+    status["neutralize"] = neutralize_service.neutralize_status()
+    status["neutralize_phrase"] = neutralize_service.NEUTRALIZE_CONFIRM_PHRASE
     status["success"] = True
     return jsonify(status)
 
@@ -419,6 +424,48 @@ def emergency_wipe_kit():
     kit = emergency_service.wipe_kit()
     kit["success"] = True
     return jsonify(kit)
+
+
+@sync_bp.route("/api/sync/emergency/neutralize/plan", methods=["POST"])
+def emergency_neutralize_plan():
+    """
+    Arabic: معاينة تعطيل السيرفر بلا أي تغيير: كم منتجاً سيُوحَّد، وأي البراندات ستُحذف، وكم
+            خطوة عدّاد ستُقدَّم — مع كل التحذيرات قبل التنفيذ. قراءة فقط (pull + brands).
+    English: Preview the server shutdown with no change at all: how many products get unified, which
+             brands will be deleted and how many counter steps will run - with every warning before
+             the run. Read-only (pull + brands).
+    """
+    data = request.get_json(silent=True) or {}
+    plan = neutralize_service.neutralize_plan(data.get("Options") or data)
+    return jsonify(plan), (200 if plan.get("success") else 500)
+
+
+@sync_bp.route("/api/sync/emergency/neutralize", methods=["POST"])
+def emergency_neutralize_start():
+    """
+    Arabic: بدء تعطيل السيرفر بأوامر النسخة القديمة فقط (بلا action=erase): نسخة احتياطية إلزامية،
+            ثم استبدال جدول البراندات، ثم توحيد بيانات كل منتج، ثم تقديم العدّاد، ثم إيقاف المزامنة
+            على هذا الجهاز. يتطلب كتابة العبارة NEUTRALIZE.
+    English: Start the server shutdown using only the old copy's actions (no action=erase): a
+             mandatory backup, then replacing the brands table, then unifying every product's data,
+             then advancing the counter, then stopping sync on this machine. Requires NEUTRALIZE.
+    """
+    data = request.get_json(silent=True) or {}
+    result = neutralize_service.start_neutralize_job(
+        raw_options=data.get("Options") or data,
+        confirm=data.get("Confirm"),
+        actor=normalize_text(data.get("Actor")),
+        guard_password=str(data.get("LocalGuardPassword") or ""),
+    )
+    return jsonify(result), (200 if result.get("success") else 400)
+
+
+@sync_bp.route("/api/sync/emergency/neutralize/status", methods=["GET"])
+def emergency_neutralize_status():
+    """Arabic: تقدّم التعطيل (المرحلة، المنتجات الموحّدة، البراندات المحذوفة، العدّاد). English: The neutralize progress (phase, unified products, deleted brands, counter)."""
+    state = neutralize_service.neutralize_status()
+    state["success"] = True
+    return jsonify(state)
 
 
 @sync_bp.route("/api/sync/emergency/restore", methods=["POST"])

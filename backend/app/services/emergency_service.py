@@ -197,7 +197,7 @@ def _now():
     return datetime.now().isoformat(timespec="seconds")
 
 
-def _friendly_error(error):
+def friendly_error(error):
     """
     Arabic: تحويل أخطاء الشبكة الطويلة (رسائل requests الخام) إلى رسالة عربية قصيرة تُعرض في
             اللوحة - رسالة requests الكاملة تملأ الشاشة ولا تفيد الأدمن.
@@ -417,7 +417,7 @@ def collect_server_snapshot():
 
     data, error = sync_service.sync_http_call(server_url, token, "pull", {"since": ""}, method="POST")
     if error:
-        snapshot["error"] = f"تعذر سحب المنتجات من السيرفر: {_friendly_error(error)}"
+        snapshot["error"] = f"تعذر سحب المنتجات من السيرفر: {friendly_error(error)}"
         return snapshot
     items = (data or {}).get("items") or {}
     if not isinstance(items, dict):
@@ -430,7 +430,7 @@ def collect_server_snapshot():
         # Arabic: فشل قراءة البراندات لا يُسقط النسخة كلها — المنتجات هي الأهم، والخطأ مسجَّل.
         # English: A brand-read failure must not sink the whole backup - the products matter
         #          most, and the failure is recorded.
-        snapshot["error"] = f"تعذر قراءة البراندات من السيرفر: {_friendly_error(brands_error)}"
+        snapshot["error"] = f"تعذر قراءة البراندات من السيرفر: {friendly_error(brands_error)}"
     else:
         brands = (brands_data or {}).get("brands") or []
         snapshot["brands"] = brands if isinstance(brands, list) else []
@@ -656,7 +656,7 @@ def run_emergency_shutdown(confirm, erase_server=True, actor="", local_guard_pas
                     "السيرفر» إن أردت إيقاف المزامنة على جهازك فقط الآن."
                 )
             else:
-                reason = _friendly_error(raw_reason)
+                reason = friendly_error(raw_reason)
             logger.error("Server erase refused: %s", raw_reason)
             return {
                 "success": False,
@@ -856,7 +856,7 @@ def start_restore_job(backup_file, server_url, token, confirm, guard_password=""
         return {
             "success": False,
             "error": "لم يستجب سيرفر المزامنة الجديد: "
-                     + _friendly_error(error or (data or {}).get("error") or "غير معروف"),
+                     + friendly_error(error or (data or {}).get("error") or "غير معروف"),
         }
 
     config = load_sync_config()
@@ -908,7 +908,7 @@ def unlock_with_credentials(server_url, token, guard_password=""):
         return {
             "success": False,
             "error": "لم يستجب سيرفر المزامنة: "
-                     + _friendly_error(error or (data or {}).get("error") or "غير معروف"),
+                     + friendly_error(error or (data or {}).get("error") or "غير معروف"),
         }
     unlock_local_sync()
     logger.warning("Sync lock released by an explicit admin action (server=%s)", server_url)

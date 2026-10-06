@@ -376,6 +376,53 @@
             <textarea id="emergencyWipeKitMessage" readonly rows="9" dir="rtl" style="display:none;width:100%;margin-top:8px;font-size:11px;"></textarea>
             <button class="btn btn-accent btn-block" id="emergencyWipeKitCopyBtn" type="button" style="display:none;margin-top:6px;">نسخ رسالة الدعم</button>
 
+            <h3>٢‑ج — تعطيل السيرفر بالكامل (يعمل مع النسخة القديمة من sync.php)</h3>
+            <!-- Arabic: لا يحتاج أي تحديث للاستضافة: يستخدم أوامر النسخة القديمة فقط —
+                 push (يُحدّث صف كل منتج ببيانات موحّدة)، وbrands/sync (يستبدل جدول البراندات
+                 كاملاً ببراند وهمي واحد)، وreserve_id (يقدّم العدّاد)، وpull (يقرأ كل شيء).
+                 English: Needs no host update: it uses only the old copy's actions - push (updates
+                 each product's own row with unified data), brands/sync (replaces the whole brands
+                 table with one placeholder brand), reserve_id (advances the counter) and pull. -->
+            <p class="hint">
+                بلا أي تحديث للاستضافة: توحيد بيانات <b>كل</b> منتج مرفوع (بلا اسم ولا كود ولا سعر ولا صور)،
+                وحذف كل البراندات الحقيقية واستبدالها ببراند وهمي واحد (فأي رفع ببراند حقيقي يُرفض 409)،
+                وتقديم عدّاد المعرّفات (اختياري)، ثم إيقاف المزامنة على هذا الجهاز. النسخة الاحتياطية
+                الكاملة تُؤخذ <b>تلقائياً</b> قبل أي كتابة، وبدونها لا يُنفّذ شيء.
+            </p>
+            <p class="hint">
+                <b>حدود يجب أن تعرفها:</b> الأعضاء لا يمكن حذفهم ولا منع دخولهم بأي أمر متاح في النسخة
+                القديمة (لا يوجد أمر على جدولهم) — هذا تعطيل <b>بياناتي</b> كامل، وأي محاولة رفع جديدة
+                تنجح فقط بالبراند الوهمي. أما المنع التام لكل جهاز فطريقه حذف قاعدة البيانات (عدّة الحذف
+                أعلاه) أو ملف shutdown.lock على نسخة sync.php جديدة.
+            </p>
+            <button class="btn btn-outline btn-block" id="neutralizePlanBtn" type="button">معاينة ما سيحدث على السيرفر (بلا أي تغيير)</button>
+            <div class="result-box" id="neutralizePlanResult"></div>
+
+            <div class="toggle-row" style="margin-top:8px;">
+                <div class="toggle-copy"><strong>توحيد بيانات كل المنتجات</strong><small>يطمس الاسم والوصف والأكواد والسعر والصور في كل صف، ويعطّل إعادة إضافتها من أي جهاز.</small></div>
+                <label class="switch"><input id="neutralizeRewrite" type="checkbox" checked><span class="slider"></span></label>
+            </div>
+            <div class="toggle-row">
+                <div class="toggle-copy"><strong>حذف كل البراندات واستبدالها ببراند وهمي</strong><small>يجعل جدول البراندات برانداً واحداً، فيُرفض أي رفع ببراند حقيقي.</small></div>
+                <label class="switch"><input id="neutralizeBrands" type="checkbox" checked><span class="slider"></span></label>
+            </div>
+            <div class="grid-2">
+                <div class="field"><label for="neutralizeBrandName">اسم البراند الوهمي</label><input id="neutralizeBrandName" type="text" value="AlphaCode"></div>
+                <div class="field"><label for="neutralizeBrandId">معرّفه</label><input id="neutralizeBrandId" type="number" min="1" max="500" value="1"></div>
+            </div>
+            <div class="toggle-row">
+                <div class="toggle-copy"><strong>تقديم عدّاد المعرّفات (اختياري)</strong><small>لا يمنع أحداً — يجعل أرقام المنتجات الجديدة تبدأ من بعيد فقط.</small></div>
+                <label class="switch"><input id="neutralizeBumpIds" type="checkbox"><span class="slider"></span></label>
+            </div>
+            <div class="field"><label for="neutralizeIdSteps">عدد خطوات العدّاد (حتى 5000)</label><input id="neutralizeIdSteps" type="number" min="0" max="5000" step="50" value="500"></div>
+            <div class="toggle-row">
+                <div class="toggle-copy"><strong>إيقاف المزامنة على هذا الجهاز بعد التعطيل</strong><small>يمسح رابط السيرفر والكود من هذا الجهاز ويوقف كل نداء شبكة (قابل للفتح لاحقاً من مسار الاستعادة).</small></div>
+                <label class="switch"><input id="neutralizeLock" type="checkbox" checked><span class="slider"></span></label>
+            </div>
+            <div class="field"><label for="neutralizeConfirmInput">اكتب <b dir="ltr">NEUTRALIZE</b> للتأكيد</label><input id="neutralizeConfirmInput" dir="ltr" type="text" placeholder="NEUTRALIZE"></div>
+            <button class="btn btn-danger btn-block" id="neutralizeStartBtn" type="button" disabled>تنفيذ التعطيل</button>
+            <div class="result-box" id="neutralizeResult"></div>
+
             <h3>٣ — إعادة الرفع إلى سيرفر (لاحقاً)</h3>
             <p class="hint">ارفع ملف نسخة احتياطية إلى استضافة جديدة فيها sync.php (بنفس العقد البرمجي) مع كود مزامنة جديد، ثم اكتب RESTORE.</p>
             <div class="field"><label for="emergencyRestoreFile">ملف النسخة الاحتياطية</label><select id="emergencyRestoreFile"></select></div>

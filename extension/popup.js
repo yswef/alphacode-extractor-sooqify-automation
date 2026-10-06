@@ -87,6 +87,9 @@ function activateTab(tabName) {
         // English: The danger zone: pull the lock state, the backups and any running re-upload.
         refreshEmergencyStatus();
         updateEmergencyShutdownState();
+        // Arabic: لو كان تعطيل قائم من جلسة سابقة، نعرض تقدّمه فوراً.
+        // English: When a shutdown is already running from an earlier session, show its progress at once.
+        refreshNeutralizeStatus();
     }
     startSyncTabAutoRefresh(tabName === 'sync');
 
@@ -1429,6 +1432,203 @@ async function copyWipeKitMessage() {
     }
 }
 
+// =========================================================
+// Arabic: تعطيل السيرفر بالكامل — يعمل مع النسخة القديمة من sync.php (بلا تحديث للاستضافة).
+//
+//         الأساس: push يُحدّث صف المنتج نفسه (بنفس المفتاح ونفس المعرّف، ويُرفض فقط عند اختلاف
+//         المعرّف)، وbrands/sync يستبدل جدول البراندات كاملاً بقائمة يقدمها العميل — فهذان
+//         الأمران يحلّان محل الحذف الذي لا تملكه النسخة القديمة.
+//
+//         القواعد المثبّتة في هذا القسم: معاينة إلزامية قبل التنفيذ (قراءة فقط)، ونصّ صريح
+//         NEUTRALIZE، وتحذيرات مكتوبة بلا تجميل (الأعضاء لا يُحذفون)، وتقدّم حيّ حتى النهاية.
+// English: The full server shutdown - works against the old sync.php (no host update).
+//
+//          The basis: push updates the product's own row (same key, same id; refused only when the
+//          id differs), and brands/sync replaces the whole brands table with a client-supplied
+//          list - those two stand in for the deletion the old copy cannot do.
+//
+//          Fixed rules here: a preview before the run (read-only), the explicit NEUTRALIZE phrase,
+//          warnings written without prettifying (members are not deleted), and live progress.
+// =========================================================
+let neutralizeTimer = null;
+
+// Arabic: تجميع خيارات التعطيل من الحقول. English: Collect the neutralize options from the fields.
+function neutralizeOptionsFromForm() {
+    return {
+        RewriteProducts: Boolean(byId('neutralizeRewrite')?.checked),
+        ReplaceBrands: Boolean(byId('neutralizeBrands')?.checked),
+        BumpIds: Boolean(byId('neutralizeBumpIds')?.checked),
+        IdSteps: Number(byId('neutralizeIdSteps')?.value || 0),
+        LockLocal: Boolean(byId('neutralizeLock')?.checked),
+        BrandName: String(byId('neutralizeBrandName')?.value || '').trim() || 'AlphaCode',
+        BrandId: Number(byId('neutralizeBrandId')?.value || 1),
+    };
+}
+
+// Arabic: جلب حالة التعطيل عند فتح التبويب (تقدّم جارٍ، أو نتيجة سابقة، أو لا شيء).
+// English: Fetch the shutdown state when the tab opens (a running job, a previous result, or nothing).
+async function refreshNeutralizeStatus() {
+    try {
+        const response = await fetch(`${API_BASE}/api/sync/emergency/neutralize/status`, { cache: 'no-store' });
+        const data = await response.json();
+        if (!data || !data.success || (!data.phase && !data.running)) return;
+        renderNeutralizeProgress(data);
+        if (data.running) startNeutralizePolling();
+    } catch (_) {
+        // Arabic: الخادم المحلي غير متاح — بقية اللوحة تعرض الحالة العامة أصلاً.
+        // English: The local backend is unavailable - the rest of the popup reports that already.
+    }
+}
+
+// Arabic: عرض تقدّم التعطيل: المرحلة، عدد المنتجات الموحّدة، البراندات المحذوفة، العدّاد. English: Render the shutdown progress: phase, unified products, deleted brands, counter.
+function renderNeutralizeProgress(state) {
+    const box = byId('neutralizeResult');
+    if (!box || !state || (!state.phase && !state.running)) return;
+    const phases = {
+        backup: 'نسخة احتياطية كاملة',
+        brands: 'حذف البراندات واستبدالها',
+        products: 'توحيد بيانات المنتجات',
+        ids: 'تقديم عدّاد المعرّفات',
+        lock: 'إيقاف المزامنة على هذا الجهاز',
+        done: 'انتهى',
+        failed: 'توقف',
+    };
+    const lines = [
+        `المرحلة: <strong>${escapeHtmlForPopup(phases[state.phase] || state.phase || '—')}</strong>`,
+        state.backup_file ? `النسخة: ${escapeHtmlForPopup(state.backup_file)}` : '',
+        state.products_total
+            ? `المنتجات: موحّد <strong>${Number(state.products_done || 0)}</strong> · فشل ${Number(state.products_failed || 0)} · متخطّى ${Number(state.products_skipped || 0)} · سبق توحيده ${Number(state.products_already || 0)} · حجوزات ${Number(state.products_reserved || 0)}`
+            : '',
+        state.brands_replaced
+            ? `البراندات: حُذف <strong>${Number(state.previous_brands?.length || 0)}</strong> وبقي ${Number(state.brands_replaced)} (${escapeHtmlForPopup((state.previous_brands || []).join('، '))})`
+            : '',
+        state.ids_bumped ? `العدّاد: تقدّم ${Number(state.ids_bumped)} خطوة` : '',
+        state.locked ? 'المزامنة موقوفة على هذا الجهاز' : '',
+    ].filter(Boolean);
+    box.className = `result-box ${state.phase === 'failed' ? 'error' : (state.phase === 'done' ? 'success' : '')}`;
+    box.innerHTML = lines.join('<br>')
+        + (state.last_error ? `<br><strong>${escapeHtmlForPopup(state.last_error)}</strong>` : '')
+        + ((state.warnings || []).length
+            ? `<br><span style="opacity:.85;">${(state.warnings || []).map(w => '• ' + escapeHtmlForPopup(w)).join('<br>')}</span>`
+            : '')
+        + ((state.errors || []).length
+            ? `<br><span style="opacity:.85;">أول الأخطاء: ${escapeHtmlForPopup((state.errors[0] || {}).error || '')}</span>`
+            : '');
+}
+
+// Arabic: متابعة تقدّم التعطيل كل 3 ثوانٍ ما دام يعمل. English: Poll the shutdown progress every 3 seconds while it runs.
+function startNeutralizePolling() {
+    if (neutralizeTimer) return;
+    neutralizeTimer = setInterval(async () => {
+        try {
+            const response = await fetch(`${API_BASE}/api/sync/emergency/neutralize/status`, { cache: 'no-store' });
+            const data = await response.json();
+            if (data && data.success) renderNeutralizeProgress(data);
+            if (data && !data.running) {
+                clearInterval(neutralizeTimer);
+                neutralizeTimer = null;
+                await refreshSyncStatus();
+                await refreshEmergencyStatus();
+            }
+        } catch (_) {
+            clearInterval(neutralizeTimer);
+            neutralizeTimer = null;
+        }
+    }, 3000);
+}
+
+// Arabic: المعاينة — قراءة فقط، تعرض ما سيُستبدل بالضبط قبل أي كتابة. English: The preview - read-only, shows exactly what will be replaced before any write.
+async function previewNeutralize() {
+    const button = byId('neutralizePlanBtn');
+    const box = byId('neutralizePlanResult');
+    if (button) { button.disabled = true; button.textContent = 'جارٍ القراءة من السيرفر...'; }
+    if (box) { box.className = 'result-box'; box.textContent = 'جارٍ قراءة المنتجات والبراندات من السيرفر...'; }
+    try {
+        const response = await fetch(`${API_BASE}/api/sync/emergency/neutralize/plan`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ Options: neutralizeOptionsFromForm() }),
+        });
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.error || 'تعذرت المعاينة.');
+        const brands = (data.brands_current || []).join('، ');
+        if (box) {
+            box.className = data.blocked_reason ? 'result-box error' : 'result-box warning';
+            box.innerHTML =
+                `المنتجات على السيرفر: <strong>${Number(data.product_count || 0)}</strong> `
+                + `(سيُوحَّد ${Number(data.products_to_rewrite || 0)} · حجوزات تُترك ${Number(data.reserved_rows || 0)} `
+                + `· سبق توحيده ${Number(data.products_already_neutralized || 0)})<br>`
+                + `البراندات الحالية (${Number(data.brands_count || 0)}): ${escapeHtmlForPopup(brands || 'لا يوجد')}<br>`
+                + `سيُستبدل الجميع بالبراند: <strong>${escapeHtmlForPopup(data.brand_name)}</strong> (#${Number(data.brand_id || 0)})<br>`
+                + `الزمن المتوقع: نحو ${Number(data.estimated_seconds || 0)} ثانية`
+                + (data.blocked_reason ? `<br><strong>${escapeHtmlForPopup(data.blocked_reason)}</strong>` : '')
+                + ((data.warnings || []).length
+                    ? `<br><span style="opacity:.85;">${(data.warnings || []).map(w => '• ' + escapeHtmlForPopup(w)).join('<br>')}</span>`
+                    : '');
+        }
+    } catch (error) {
+        if (box) { box.className = 'result-box error'; box.textContent = error.message; }
+    } finally {
+        if (button) { button.disabled = false; button.textContent = 'معاينة ما سيحدث على السيرفر (بلا أي تغيير)'; }
+    }
+}
+
+// Arabic: التنفيذ بعد تأكيدين: كتابة NEUTRALIZE، ثم نافذة تأكيد صريحة. النسخة الاحتياطية تُؤخذ في
+//         الباك اند داخل العملية نفسها قبل أي كتابة على السيرفر.
+// English: The run behind two confirmations: typing NEUTRALIZE, then an explicit dialog. The backup
+//          is taken inside the job, before any write reaches the server.
+async function startNeutralize() {
+    const button = byId('neutralizeStartBtn');
+    const box = byId('neutralizeResult');
+    const options = neutralizeOptionsFromForm();
+    const confirmText = String(byId('neutralizeConfirmInput')?.value || '').trim();
+
+    if (confirmText !== 'NEUTRALIZE') {
+        if (box) { box.className = 'result-box error'; box.textContent = 'اكتب NEUTRALIZE حرفياً للتأكيد.'; }
+        return;
+    }
+    if (!options.RewriteProducts && !options.ReplaceBrands && !options.BumpIds) {
+        if (box) { box.className = 'result-box error'; box.textContent = 'اختر خطوة واحدة على الأقل.'; }
+        return;
+    }
+    const dialog =
+        'سيتم الآن على السيرفر المركزي:\n'
+        + (options.ReplaceBrands ? `• حذف كل البراندات واستبدالها بـ ${options.BrandName} (#${options.BrandId})\n` : '')
+        + (options.RewriteProducts ? '• توحيد بيانات كل منتج مرفوع (طمس الأسماء والأكواد والأسعار والصور)\n' : '')
+        + (options.BumpIds ? `• تقديم عدّاد المعرّفات ${options.IdSteps} خطوة\n` : '')
+        + (options.LockLocal ? '• إيقاف المزامنة على هذا الجهاز\n' : '')
+        + '\nنسخة احتياطية كاملة تُؤخذ تلقائياً قبل ذلك، ويمكن إعادة الرفع منها لاحقاً.\n'
+        + 'اكتب موافق للمتابعة.';
+    if (String(prompt(dialog) || '').trim() !== 'موافق') {
+        if (box) { box.className = 'result-box warning'; box.textContent = 'تم إلغاء التعطيل.'; }
+        return;
+    }
+
+    if (button) { button.disabled = true; button.textContent = 'جارٍ النسخة الاحتياطية ثم التنفيذ...'; }
+    if (box) { box.className = 'result-box'; box.textContent = 'جارٍ البدء — النسخة الاحتياطية أولاً...'; }
+    try {
+        const response = await fetch(`${API_BASE}/api/sync/emergency/neutralize`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                Options: options,
+                Confirm: confirmText,
+                Actor: byId('AddedByName')?.value || '',
+                LocalGuardPassword: String(byId('emergencyGuardPassword')?.value || ''),
+            }),
+        });
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.error || 'تعذر بدء التعطيل.');
+        renderNeutralizeProgress(data.state || {});
+        startNeutralizePolling();
+        if (byId('neutralizeConfirmInput')) byId('neutralizeConfirmInput').value = '';
+    } catch (error) {
+        if (box) { box.className = 'result-box error'; box.textContent = error.message; }
+    } finally {
+        if (button) { button.disabled = false; button.textContent = 'تنفيذ التعطيل'; }
+    }
+}
+
 // Arabic: الخطوة ٣ - إعادة الرفع إلى سيرفر جديد (البراندات ثم المنتجات ثم عدّاد المعرّفات). English: Step 3 - the re-upload to a new server (brands, then products, then the ID counter).
 async function startEmergencyRestore() {
     const button = byId('emergencyRestoreStartBtn');
@@ -2122,6 +2322,15 @@ async function initializePopup() {
     bindClick('emergencyBackupBtn', createEmergencyBackup);
     bindClick('emergencyShutdownBtn', runEmergencyShutdown);
     bindClick('emergencyRestoreStartBtn', startEmergencyRestore);
+    bindClick('neutralizePlanBtn', previewNeutralize);
+    bindClick('neutralizeStartBtn', startNeutralize);
+    byId('neutralizeConfirmInput')?.addEventListener('input', () => {
+        // Arabic: الزر لا يُفعَّل إلا بكتابة العبارة حرفياً.
+        // English: The button stays disabled until the phrase is typed verbatim.
+        const startButton = byId('neutralizeStartBtn');
+        if (!startButton) return;
+        startButton.disabled = String(byId('neutralizeConfirmInput')?.value || '').trim() !== 'NEUTRALIZE';
+    });
     bindClick('emergencyWipeKitBtn', prepareWipeKit);
     bindClick('emergencyWipeKitCopyBtn', copyWipeKitMessage);
     bindClick('generateReportBtn', generateReport);

@@ -46,6 +46,7 @@ backend/id_counter.json
 #          machine state (the lock holds the local guard hash, the backups hold product data).
 backend/config/sync_lock.json
 backend/data/restore_state.json
+backend/data/neutralize_state.json
 backend/backups/
 
 # ملف تكوين المسارات يحتوي على مسارات الجهاز المحلي

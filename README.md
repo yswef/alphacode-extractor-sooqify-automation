@@ -200,6 +200,45 @@ Everything else in this feature works today without touching the host: the full 
 `brands`), locking this machine and clearing its credentials, and the admin-only local login. Only the
 row deletion itself and the `shutdown.lock` gate need the newer `sync.php`.
 
+#### ٢‑ج — Taking the shared data away with the old copy only (no host access, no DB panel)
+
+Even with no DB panel and no host access, the old copy still has *write* actions, and those are enough
+to make the shared store useless to everyone who follows. **تعطيل بيانات السيرفر** uses nothing else:
+
+1. The phrase `NEUTRALIZE` must be typed in the panel (the same admin-only card, same roles).
+2. A reachability check, then the **same mandatory full backup** as the erase path — the job aborts with
+   no write at all if the backup fails or the server cannot be read.
+3. `brands/sync` with a single placeholder brand. That action replaces the whole table, so every real
+   brand becomes `AlphaCode` (the name and id are editable before the run).
+4. Every product is rewritten **in place**: the payload carries the product's *own* `id` (which is what
+   makes `push` update the row instead of refusing it as a duplicate ID) and replaces everything else
+   with one unified set of values — empty names/descriptions/codes, price `0`, no images, no sizes, no
+   variants, the placeholder brand, plus a `neutralized_by` marker. `product_type` is preserved so the
+   per-type code paths keep working.
+5. Optionally the ID counter is advanced (`reserve_id` N steps, off by default), and the machine locks
+   itself exactly like the erase path (URL and token wiped, no further network calls).
+
+If `brands/sync` is refused (a foreign key on the brands table), nothing is touched at all — no product
+is rewritten. Re-adding one of the unified products later hits the server's key reservation and answers
+`duplicate`; a genuinely new product is forced onto the placeholder brand, because the real brand names
+no longer exist in the shared map. Running the job twice is safe: already-marked products are skipped.
+
+What this honestly cannot do, and the panel writes it out before starting:
+
+- **Members cannot be deleted or blocked.** None of the old actions reads or deletes `members` /
+  `member_aliases`, and login is validated against those rows. Anyone holding a copy of the extension
+  and a still-valid account can sign in — they simply find nothing usable to work with.
+- **Rows are overwritten, not deleted**, and child-table rows may survive if `sync_write_helpers.php`
+  does not purge them per key.
+- **Advancing the counter only changes new IDs.** It blocks nobody. For a total kill of the data
+  itself, the DB-side path above (`wipe_db.sql` / `DROP DATABASE`) or a host-managed
+  `shutdown.lock` on a newer `sync.php` is still the only complete answer.
+
+Verified end to end against a replica of the deployed old endpoint: 3 products → 2 rewritten in place
+(IDs `1` and `2` kept, everything else replaced), 1 untouched reserved placeholder, `brands` went from
+`['Air Jordan', 'Rolex']` to `['AlphaCode']`, 5 ID reservations pushed, and this machine locked with
+every later sync call refused (HTTP 409).
+
 ### Automatic sync (every 30 minutes)
 
 As of v5.9.0 the sync cycle runs **inside the backend process** and needs nothing else — not the popup, not the supplier page, not even the browser:

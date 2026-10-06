@@ -22,7 +22,11 @@ from datetime import datetime, timedelta
 
 import requests
 
-from app.repositories.sync_config_repository import load_sync_config, save_sync_config
+from app.repositories.sync_config_repository import load_sync_config
+# Arabic: save_sync_config مُعاد تصديره هنا لأن الكود القديم (backend/app.py) وتجربة القفل
+#         في الاختبارات يستدعيانها من هذه الوحدة؛ حُذف استيرادها الآن فلا نعتمد عليه.
+# English: save_sync_config used to be re-exported here for legacy callers and tests; nothing
+#          depends on it any more, so the import is gone.
 from app.repositories.sync_queue_repository import load_sync_queue, save_sync_queue
 from app.repositories.sync_state_repository import load_sync_state, save_sync_state
 # Arabic: قفل الإيقاف الطارئ (نسخة احتياطية ← مسح بيانات السيرفر ← إيقاف المزامنة نهائياً).

@@ -1353,6 +1353,82 @@ async function runEmergencyShutdown() {
     }
 }
 
+// Arabic: عدّة الحذف — تُستخدم لما يكون sync.php المرفوع على الاستضافة نسخة قديمة بلا
+//         action=erase ولا يمكن تحديثه (حالة فقدان الوصول للمنصة): تلك النسخة لا تستطيع حذف
+//         صف واحد، فيبقى الحل تنفيذ ملف SQL من phpMyAdmin أو تسليمه لدعم الاستضافة.
+//         الزر يجلب نصّ SQL + رسالة الدعم الجاهزة (معبّأة برابط الأداة)، ينزّل الملف إلى جهاز
+//         المشغّل، ويعرض الرسالة للنسخ — فلا يبقى على المشغّل كتابة أي شيء بنفسه.
+// English: The wipe kit - used when the deployed sync.php predates action=erase and cannot be
+//          updated (the lost-platform-access case): that copy cannot delete a single row, so the
+//          fix is to run SQL from phpMyAdmin or hand it to host support.
+//          The button fetches the SQL text and the ready support request (filled with the tool
+//          URL), downloads the file to the operator's machine and shows the message to copy - the
+//          operator writes nothing by hand.
+async function prepareWipeKit() {
+    const button = byId('emergencyWipeKitBtn');
+    const box = byId('emergencyWipeKitResult');
+    const messageBox = byId('emergencyWipeKitMessage');
+    const copyButton = byId('emergencyWipeKitCopyBtn');
+    if (button) { button.disabled = true; button.textContent = 'جارٍ التجهيز...'; }
+    try {
+        const response = await fetch(`${API_BASE}/api/sync/emergency/wipe-kit`, { cache: 'no-store' });
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.error || 'تعذر تجهيز ملف الحذف.');
+        if (!data.sql_available) throw new Error(data.sql_note || 'ملف SQL غير موجود في حزمة الباك اند.');
+
+        window.__alphacodeWipeKit = data;
+
+        // Arabic: تنزيل ملف SQL كملف حقيقي ليُرفق في تذكرة الدعم أو يُفتح في phpMyAdmin.
+        // English: Download the SQL as a real file to attach to a support ticket or open in phpMyAdmin.
+        const blob = new Blob([data.sql], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = data.sql_filename || 'alphacode_wipe_db.sql';
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+
+        if (messageBox) {
+            messageBox.value = data.support_message_ar;
+            messageBox.style.display = 'block';
+        }
+        if (copyButton) copyButton.style.display = 'block';
+        if (box) {
+            box.className = 'result-box success';
+            box.innerHTML =
+                `تم تجهيز <strong dir="ltr">${escapeHtmlForPopup(data.sql_filename)}</strong> ونزّله إلى جهازك.<br>`
+                + 'سلّم الملف (أو الصق نصّه) لدعم الاستضافة، أو نفّذه بنفسك من phpMyAdmin على قاعدة '
+                + 'بيانات الأداة، وبعده اضغط «نسخ رسالة الدعم» إن احتجت مراسلتهم.<br>'
+                + `<span style="opacity:.8;">${escapeHtmlForPopup(data.explanation || '')}</span>`;
+        }
+    } catch (error) {
+        if (box) { box.className = 'result-box error'; box.textContent = error.message; }
+    } finally {
+        if (button) { button.disabled = false; button.textContent = 'تحضير ملف الحذف ورسالة الدعم'; }
+    }
+}
+
+// Arabic: نسخ رسالة الدعم (العربية) إلى الحافظة. English: Copy the Arabic support request to the clipboard.
+async function copyWipeKitMessage() {
+    const messageBox = byId('emergencyWipeKitMessage');
+    const box = byId('emergencyWipeKitResult');
+    const text = String(messageBox?.value || '');
+    if (!text) {
+        if (box) { box.className = 'result-box warning'; box.textContent = 'اضغط «تحضير ملف الحذف» أولاً.'; }
+        return;
+    }
+    try {
+        await navigator.clipboard.writeText(text);
+        if (box) { box.className = 'result-box success'; box.textContent = 'تم نسخ رسالة الدعم.'; }
+    } catch (error) {
+        // Arabic: فشل الوصول للحافظة لا يمنع المستخدم من التحديد والنسخ يدوياً من الصندوق.
+        // English: A clipboard failure still leaves the user able to select and copy from the box.
+        if (box) { box.className = 'result-box warning'; box.textContent = 'تعذر النسخ تلقائياً — حدّد النص وانسخه يدوياً.'; }
+    }
+}
+
 // Arabic: الخطوة ٣ - إعادة الرفع إلى سيرفر جديد (البراندات ثم المنتجات ثم عدّاد المعرّفات). English: Step 3 - the re-upload to a new server (brands, then products, then the ID counter).
 async function startEmergencyRestore() {
     const button = byId('emergencyRestoreStartBtn');
@@ -2046,6 +2122,8 @@ async function initializePopup() {
     bindClick('emergencyBackupBtn', createEmergencyBackup);
     bindClick('emergencyShutdownBtn', runEmergencyShutdown);
     bindClick('emergencyRestoreStartBtn', startEmergencyRestore);
+    bindClick('emergencyWipeKitBtn', prepareWipeKit);
+    bindClick('emergencyWipeKitCopyBtn', copyWipeKitMessage);
     bindClick('generateReportBtn', generateReport);
     bindClick('reportAddDayBtn', addSelectedReportDay);
     byId('reportScope')?.addEventListener('change', refreshReportScopeFields);

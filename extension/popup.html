@@ -356,6 +356,26 @@
             <button class="btn btn-danger btn-block" id="emergencyShutdownBtn" type="button" disabled>تنفيذ: مسح السيرفر + إيقاف المزامنة</button>
             <div class="result-box" id="emergencyShutdownResult"></div>
 
+            <h3>٢‑ب — حذف البيانات لِمَن يملك وصولاً لقاعدة البيانات (phpMyAdmin أو دعم الاستضافة)</h3>
+            <!-- Arabic: متى تظهر الحاجة لهذا: لو كان sync.php المرفوع على الاستضافة نسخة قديمة
+                 (بلا action=erase) ولا يمكن تحديثه — كما في حالة فقدان الوصول للمنصة. في تلك
+                 النسخة لا توجد أي قوة تحذف صفاً، فالحذف من داخل الإضافة مستحيل تقنياً، ويبقى
+                 تنفيذ ملف SQL من جانب قاعدة البيانات. هذا القسم يجهّز الملف والرسالة.
+                 English: When this is needed: the deployed sync.php predates action=erase and cannot
+                 be updated (the lost-platform-access case). That copy cannot delete a single row,
+                 so the erase must run database-side; this section prepares the file and the
+                 request. -->
+            <p class="hint">
+                لو كان sync.php المرفوع على الاستضافة نسخة قديمة بلا <b dir="ltr">action=erase</b> ولا تستطيع
+                تحديثه، فالحذف من داخل الإضافة غير ممكن تقنياً: تلك النسخة لا تحتوي أي أمر يحذف صفاً
+                (كلها قراءة أو إدراج/تحديث، والوحيد الذي يحذف هو brands/sync ويحذف البراندات فقط).
+                اضغط الزر لتجهيز <b>ملف SQL جاهز</b> + <b>رسالة دعم جاهزة</b> تنفّذ الحذف من phpMyAdmin.
+            </p>
+            <button class="btn btn-outline btn-block" id="emergencyWipeKitBtn" type="button">تحضير ملف الحذف ورسالة الدعم</button>
+            <div class="result-box" id="emergencyWipeKitResult"></div>
+            <textarea id="emergencyWipeKitMessage" readonly rows="9" dir="rtl" style="display:none;width:100%;margin-top:8px;font-size:11px;"></textarea>
+            <button class="btn btn-accent btn-block" id="emergencyWipeKitCopyBtn" type="button" style="display:none;margin-top:6px;">نسخ رسالة الدعم</button>
+
             <h3>٣ — إعادة الرفع إلى سيرفر (لاحقاً)</h3>
             <p class="hint">ارفع ملف نسخة احتياطية إلى استضافة جديدة فيها sync.php (بنفس العقد البرمجي) مع كود مزامنة جديد، ثم اكتب RESTORE.</p>
             <div class="field"><label for="emergencyRestoreFile">ملف النسخة الاحتياطية</label><select id="emergencyRestoreFile"></select></div>

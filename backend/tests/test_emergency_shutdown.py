@@ -29,6 +29,7 @@ import pytest
 
 from app.core.runtime import paths_state
 from app.repositories import sync_lock_repository
+from app.repositories.sync_config_repository import load_sync_config, save_sync_config
 from app.services import emergency_service, sync_service
 
 
@@ -49,10 +50,10 @@ def isolate_emergency_files(tmp_path, monkeypatch):
 
 def _enable_sync(url="https://sync.example/alphacode_storage", token="secret-token"):
     """Arabic: تجهيز إعدادات مزامنة مفعّلة كما على جهاز مستخدم حقيقي. English: Prepare enabled sync settings as on a real user machine."""
-    sync_service.save_sync_config({
+    save_sync_config({
         "Enabled": True, "ServerUrl": url, "Token": token, "AddedByName": "يوسف",
     })
-    return sync_service.load_sync_config()
+    return load_sync_config()
 
 
 def _write_local_archive(tmp_path, products):
@@ -129,7 +130,7 @@ def test_backup_reads_the_server_even_when_the_local_toggle_is_off(tmp_path, mon
              losing hosting access).
     """
     _write_local_archive(tmp_path, {})
-    sync_service.save_sync_config({
+    save_sync_config({
         "Enabled": False, "ServerUrl": "https://sync.example/alphacode_storage",
         "Token": "secret-token", "AddedByName": "يوسف",
     })
@@ -155,7 +156,7 @@ def test_shutdown_requires_the_exact_phrase(tmp_path):
     assert result["success"] is False
     assert emergency_service.EMERGENCY_CONFIRM_PHRASE in result["error"]
     assert sync_lock_repository.is_sync_locked() is False
-    assert sync_service.load_sync_config()["ServerUrl"] == "https://sync.example/alphacode_storage"
+    assert load_sync_config()["ServerUrl"] == "https://sync.example/alphacode_storage"
 
 
 def test_shutdown_aborts_when_the_server_is_unreachable(tmp_path, monkeypatch):
@@ -170,7 +171,7 @@ def test_shutdown_aborts_when_the_server_is_unreachable(tmp_path, monkeypatch):
     # Arabic: لا قفل ولا تفريغ لإعدادات: الجهاز يبقى كما هو حتى تُحل مشكلة الوصول.
     # English: No lock and no cleared settings: the machine stays as it was until access is fixed.
     assert sync_lock_repository.is_sync_locked() is False
-    assert sync_service.load_sync_config()["Token"] == "secret-token"
+    assert load_sync_config()["Token"] == "secret-token"
 
 
 def test_shutdown_aborts_when_the_server_refuses_the_erase(tmp_path, monkeypatch):
@@ -194,7 +195,7 @@ def test_shutdown_aborts_when_the_server_refuses_the_erase(tmp_path, monkeypatch
     assert result["success"] is False
     assert "action=erase" in result["error"]
     assert sync_lock_repository.is_sync_locked() is False
-    assert sync_service.load_sync_config()["ServerUrl"] == "https://sync.example/alphacode_storage"
+    assert load_sync_config()["ServerUrl"] == "https://sync.example/alphacode_storage"
     # Arabic: النسخة الاحتياطية تبقى على القرص كدليل ومصدر استعادة.
     # English: The backup stays on disk as evidence and as the restore source.
     assert os.path.exists(result["backup"]["path"])
@@ -232,7 +233,7 @@ def test_shutdown_erases_then_locks_and_clears_credentials(tmp_path, monkeypatch
     assert calls["erase"] == {"confirm": "ERASE"}
     assert [step["step"] for step in result["steps"]] == ["backup", "server_erase", "local_lock"]
 
-    config = sync_service.load_sync_config()
+    config = load_sync_config()
     assert config["Enabled"] is False
     assert config["ServerUrl"] == ""
     assert config["Token"] == ""
@@ -279,7 +280,7 @@ def test_locked_machine_never_reaches_the_network_even_with_stale_credentials(mo
     emergency_service.lock_local_sync(backup_file="b.json", server_url="https://old.example")
     # Arabic: نحاكي جهازاً قديماً ما زال يحمل الرابط والكود: القفل نفسه يجب أن يمنع الخروج.
     # English: Simulate an old machine still holding the URL and token: the lock itself must stop it.
-    sync_service.save_sync_config({
+    save_sync_config({
         "Enabled": True, "ServerUrl": "https://old.example", "Token": "stale-token", "AddedByName": "A",
     })
 
@@ -373,7 +374,7 @@ def test_unlock_needs_confirmation_and_a_real_connection(monkeypatch):
     })
     assert accepted.status_code == 200
     assert sync_lock_repository.is_sync_locked() is False
-    config = sync_service.load_sync_config()
+    config = load_sync_config()
     assert config["Enabled"] is True
     assert config["ServerUrl"] == "https://new.example"
     assert config["Token"] == "new-token"
@@ -541,7 +542,7 @@ def test_restore_pushes_brands_then_products_then_fixes_the_id_counter(tmp_path,
     # Arabic: القفل يُفتح والإعدادات الجديدة تُحفظ بعد نجاح الفحص فعلاً.
     # English: The lock opens and the new settings are saved only after the check really passes.
     assert sync_lock_repository.is_sync_locked() is False
-    config = sync_service.load_sync_config()
+    config = load_sync_config()
     assert config["Enabled"] is True
     assert config["ServerUrl"] == "https://new.example/alphacode_storage"
     assert config["Token"] == "new-token"
@@ -568,3 +569,119 @@ def test_restore_needs_the_phrase_the_file_and_the_guard(tmp_path, monkeypatch):
     # Arabic: ولا شيء من هذا فتح القفل (الفحص فشل قبل أي حفظ).
     # English: None of that released the lock (every attempt failed before anything was saved).
     assert sync_lock_repository.is_sync_locked() is True
+
+
+# ---------------------------------------------------------------------------
+# Arabic: عدّة الحذف لِمَن يملك وصولاً لقاعدة البيانات (phpMyAdmin أو دعم الاستضافة).
+#         هذه هي الحالة الواقعية للمشغّل: sync.php المرفوع نسخة قديمة بلا action=erase ولا يمكن
+#         تحديثه، فلا قوة في الإضافة تحذف صفاً — فيبقى التنفيذ من جانب قاعدة البيانات.
+# English: The wipe kit for whoever has database access (phpMyAdmin or host support).
+#          This is the operator's real situation: the deployed sync.php predates action=erase and
+#          cannot be updated, so the app cannot delete a row - the delete must run database-side.
+# ---------------------------------------------------------------------------
+
+def test_wipe_sql_repo_copies_are_identical_and_available():
+    """
+    Arabic: مصدر النص واحد: الملف داخل حزمة الباك اند، ونسخة المستودع في مجلد الاستضافة.
+            هذا الاختبار يفشل فوراً لو تغيّر أحدهما وحده، فلا يصل للمشغّل أو للدعم نصّان مختلفان.
+    English: One source of truth: the file inside the backend package and the repository copy in
+             the host folder. This test fails the moment one changes without the other, so the
+             operator and the host never receive two different texts.
+    """
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    packaged = os.path.join(repo_root, "backend", "app", "data", "wipe_db.sql")
+    repository_copy = os.path.join(repo_root, "hostinger", "alphacode_storage", "wipe_db.sql")
+    assert os.path.exists(packaged), "the packaged wipe SQL is missing"
+    assert os.path.exists(repository_copy), "the host-folder copy of the wipe SQL is missing"
+    with open(packaged, encoding="utf-8") as file:
+        packaged_text = file.read()
+    with open(repository_copy, encoding="utf-8") as file:
+        copy_text = file.read()
+    assert packaged_text == copy_text
+    assert emergency_service.wipe_db_sql() == packaged_text.strip() + "\n"
+
+
+def test_wipe_sql_is_safe_to_run_and_proves_the_result():
+    """
+    Arabic: خصائص لا بد منها في نص الحذف: تعطيل فحص المفاتيح الأجنبية ثم إعادته، حذف ديناميكي
+            لكل الجداول (لا جداول مفقودة تُترك ببياناتها)، معاملة واحدة، إرجاع عدّاد المعرّفات
+            للبداية، وتحقق نهائي يُظهر صفر صفوف — وبديل يدوي مكتوب لمن لا يستطيع تنفيذ الجزء
+            الديناميكي.
+    English: Mandatory properties of the wipe text: FK checks off then restored, a dynamic delete
+             covering every table (no table left holding data), one transaction, the ID counter
+             restarted, a final verification showing zero rows - and a written manual alternative
+             for whoever cannot run the dynamic part.
+    """
+    sql = emergency_service.wipe_db_sql()
+    assert sql.strip(), "the wipe SQL must not be empty"
+    assert "SET FOREIGN_KEY_CHECKS = 0;" in sql and "SET FOREIGN_KEY_CHECKS = 1;" in sql
+    assert "START TRANSACTION;" in sql and "COMMIT;" in sql
+    # Arabic: الحذف يجب أن يُبنى من قائمة الجداول الحقيقية لا من أسماء ثابتة قابلة للنقص.
+    # English: The delete must be built from the real table list, not from a fixed name list.
+    assert "information_schema.tables" in sql
+    assert "SELECT GROUP_CONCAT(CONCAT('`', table_name, '`') SEPARATOR ', ')" in sql
+    assert "CONCAT('DELETE FROM ', @alphacode_tables)" in sql
+    assert "ALTER TABLE id_sequence AUTO_INCREMENT = 1" in sql
+    assert "rows_left" in sql, "the script must prove afterwards that every table is empty"
+    # Arabic: الاحتياط اليدوي مذكور صراحةً للجداول الأساسية.
+    # English: The manual fallback names the core tables explicitly.
+    for table in ("DELETE FROM products;", "DELETE FROM brands;", "DELETE FROM members;",
+                  "DELETE FROM member_aliases;", "DELETE FROM id_sequence;"):
+        assert table in sql
+
+
+def test_wipe_kit_route_serves_sql_and_both_support_requests(monkeypatch):
+    from app.main import create_app
+
+    _enable_sync(url="https://engyusef.alpha-code.net/alphacode_storage", token="secret-token")
+    client = create_app().test_client()
+
+    response = client.get("/api/sync/emergency/wipe-kit")
+    assert response.status_code == 200
+    kit = response.get_json()
+    assert kit["success"] is True
+    assert kit["sql_available"] is True
+    assert kit["sql_filename"] == "alphacode_wipe_db.sql"
+    assert "DELETE FROM" in kit["sql"]
+    # Arabic: الرسالتان تُعبَّآن برابط الأداة واسم الحساب حتى لا يرفض الدعم الطلب لنقص إثبات الملكية.
+    # English: Both requests are filled with the tool URL and account hint so the host cannot reject
+    #          them for lack of ownership proof.
+    for message in (kit["support_message_ar"], kit["support_message_en"]):
+        assert "engyusef.alpha-code.net" in message
+        assert "alphacode_storage" in message
+        assert "sync.php" in message and "DROP DATABASE" in message
+    assert "action=erase" in kit["explanation"]
+
+
+def test_erase_refusal_on_an_old_sync_explains_the_real_reason(tmp_path, monkeypatch):
+    """
+    Arabic: أشهر حالة عند المشغّل: sync.php قديم يرد "Unknown action" على المسح. يجب أن تشرح
+            الرسالة سبباً حقيقياً وبديلاً عملياً (عدّة الحذف) بدل كلمتين إنجليزيتين غامضتين.
+    English: The operator's most common case: an old sync.php answers "Unknown action" to the
+             erase. The message must name the real cause and a practical alternative (the wipe kit)
+             instead of two cryptic English words.
+    """
+    _enable_sync()
+    _write_local_archive(tmp_path, {})
+
+    def fake_sync_http(server_url, token, action, payload=None, method="POST"):
+        if action == "pull":
+            return {"items": {}}, None
+        if action == "brands":
+            return {"brands": []}, None
+        if action == "erase":
+            return None, "Unknown action"
+        raise AssertionError(f"unexpected action: {action}")
+
+    monkeypatch.setattr(sync_service, "sync_http_call", fake_sync_http)
+    result = emergency_service.run_emergency_shutdown(
+        confirm=emergency_service.EMERGENCY_CONFIRM_PHRASE, erase_server=True,
+    )
+    assert result["success"] is False
+    assert "action=erase" in result["error"]
+    assert "تحضير ملف الحذف" in result["error"]
+    # Arabic: ومع ذلك: لا قفل ولا مسح لبيانات الاعتماد — الجهاز يبقى صالحاً للاستخدام والمحاولة لاحقاً.
+    # English: And yet: no lock and no cleared credentials - the machine stays usable and the
+    #          operator can retry later.
+    assert sync_lock_repository.is_sync_locked() is False
+    assert load_sync_config()["Token"] == "secret-token"

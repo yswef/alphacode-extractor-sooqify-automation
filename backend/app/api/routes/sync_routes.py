@@ -404,6 +404,23 @@ def emergency_shutdown():
     return jsonify(result), (200 if result.get("success") else 400)
 
 
+@sync_bp.route("/api/sync/emergency/wipe-kit", methods=["GET"])
+def emergency_wipe_kit():
+    """
+    Arabic: تجهيز عدّة الحذف لِمَن يملك وصولاً لقاعدة البيانات: نص SQL جاهز + رسالة دعم جاهزة
+            (عربي/إنجليزي). تُستخدم لما يكون sync.php المرفوع نسخة قديمة بلا action=erase ولا
+            يمكن تحديثه، أو لما يكون الوصول للوحة التحكم مفقوداً — فدعم الاستضافة أو phpMyAdmin
+            يستطيعان التنفيذ، وهذا يجهّز الطلب كاملاً من ضغطة واحدة.
+    English: Prepare the wipe kit for whoever has database access: ready SQL plus a ready support
+             request (Arabic/English). Used when the deployed sync.php predates action=erase and
+             cannot be updated, or when the control panel is out of reach - host support or
+             phpMyAdmin can still run it, and this prepares the whole request in one click.
+    """
+    kit = emergency_service.wipe_kit()
+    kit["success"] = True
+    return jsonify(kit)
+
+
 @sync_bp.route("/api/sync/emergency/restore", methods=["POST"])
 def emergency_restore():
     """Arabic: بدء إعادة رفع نسخة احتياطية إلى سيرفر مزامنة (يتطلب العبارة RESTORE + رابط وكود). English: Start re-uploading a backup to a sync server (requires the RESTORE phrase + URL and token)."""

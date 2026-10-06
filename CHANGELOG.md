@@ -39,6 +39,24 @@
 - The README's sync setup pointed at a `$SECRET_TOKEN` constant that no longer exists; it now describes
   the `ALPHACODE_SYNC_TOKEN` environment variable the endpoint actually reads.
 
+### Added (follow-up: an old `sync.php` that cannot be updated)
+
+- **The wipe kit, for the case where the deployed `sync.php` predates `action=erase` and the hosting
+  panel is out of reach.** That copy cannot delete a single row (all its actions are reads or
+  inserts/updates; the only delete is `brands/sync`, limited to the brands table), so the erase has to
+  run database-side. The danger zone's new section **٢‑ب** prepares, in one click:
+  - `alphacode_wipe_db.sql` - lists the tables, disables FK checks, deletes every row of every table
+    in one transaction using the real `information_schema` table list, restarts the `id_sequence`
+    counter (guarded, since `ALTER TABLE` is an implicit commit in MySQL), prints the remaining row
+    count per table as proof, and documents a manual per-table fallback. Canonical copy:
+    `backend/app/data/wipe_db.sql`, with a mirrored, drift-tested copy in
+    `hostinger/alphacode_storage/wipe_db.sql`.
+  - A ready support request (Arabic/English) filled with the tool URL and account hint: run the SQL
+    (or drop the database), delete the tool's files, confirm with the numbers.
+- **A real explanation instead of `Unknown action`.** When the erase is refused because the deployed
+  script is old, the backend now names the cause, points to the wipe kit, and still cancels everything
+  (no lock, no cleared credentials) so the machine stays usable.
+
 ### Notes
 
 - Member accounts and passwords are **not** in the backup: `sync.php` has no read action for them and

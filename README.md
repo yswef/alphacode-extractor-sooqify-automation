@@ -70,6 +70,7 @@ hostinger/
   alphacode_storage/
     sync.php               Central sync endpoint (tracked in Git; adds action=erase, bump_sequence, shutdown.lock)
     README.md              Deployment notes, the erase/lock behaviour and how to revive the endpoint
+    wipe_db.sql            Ready SQL that wipes every table's rows (phpMyAdmin / host support)
     db.php                 PDO connection helper (MySQL in production, SQLite for local tests)
     db_config.php           Database credentials (fill in on the host, never commit real values)
     sync_write_helpers.php Shared write/lock helpers used by sync.php
@@ -165,6 +166,39 @@ The extension itself hides the whole card behind the `admin` / `project_manager`
 the admin-only sync tab), and re-enabling sync through a plain settings save is rejected with HTTP 409
 while the lock exists. Deleting `backend/config/sync_lock.json` by hand is the deliberate escape hatch
 if the local guard password is ever forgotten.
+
+#### When the deployed `sync.php` is an older copy (no host access)
+
+The erase step needs the updated `sync.php` (`action=erase`). If the copy on the host predates this
+release and cannot be replaced - the case when the hosting panel is out of reach - erasing from the
+extension is technically impossible: that copy has no power to delete a single row. Every action it
+offers is either a read (`whoami`, `pull`, `lookup`, `brands`) or an insert/update (`reserve_id`,
+`reserve_key`, `push`, `brands/add`), and the only delete is `brands/sync`, which clears the brands
+table alone and refuses an empty list anyway. The backend says exactly this when it happens (instead of
+a bare `Unknown action`) and cancels the whole operation - it never locks the machine without a
+successful erase.
+
+For that case the danger zone has **٢‑ب — حذف البيانات لِمَن يملك وصولاً لقاعدة البيانات**, one button
+that prepares:
+
+- **`alphacode_wipe_db.sql`** - a ready script for phpMyAdmin or host support. It lists the tables
+  first, disables foreign-key checks, deletes every row of every table in one transaction (building the
+  `DELETE` from the real `information_schema` table list, so no child table is left holding data),
+  restarts the `id_sequence` counter, then prints the remaining row count per table as proof - and it
+  carries a written manual fallback (`DELETE FROM products; brands; members; member_aliases;
+  id_sequence;`) for whoever cannot run the dynamic part. The canonical copy lives in
+  `backend/app/data/wipe_db.sql`, with an identical file in `hostinger/alphacode_storage/`, and a unit
+  test fails if the two ever drift apart.
+- **A ready support request** (Arabic and English) filled with the tool URL and the account hint,
+  asking the host to run that SQL (or `DROP DATABASE` when the database exists only for this tool),
+  to delete the tool's files (`sync.php`, `db.php`, `db_config.php`, `sync_write_helpers.php`, …) and
+  to confirm with the numbers - stating up front that panel access was lost (an automatic block from
+  the request rate limit, typically IP-based, which often also covers the panel and FTP; trying
+  another network or a mobile hotspot is worth a shot).
+
+Everything else in this feature works today without touching the host: the full backup (`pull` +
+`brands`), locking this machine and clearing its credentials, and the admin-only local login. Only the
+row deletion itself and the `shutdown.lock` gate need the newer `sync.php`.
 
 ### Automatic sync (every 30 minutes)
 

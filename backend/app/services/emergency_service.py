@@ -42,9 +42,17 @@ import secrets
 import threading
 from datetime import datetime
 
-from app.core.config import EMERGENCY_BACKUP_DIR
+from app.core.config import BACKEND_ROOT, EMERGENCY_BACKUP_DIR
 from app.core.runtime import paths_state
 from app.repositories import sync_lock_repository
+# Arabic: نستدعي المستودعات مباشرةً (لا عبر sync_service) لأننا نقرأ ونكتب نفس الملفات الثلاثة
+#         نفسها، فتكون التبعية واضحة ولا نحتاج إعادة تصدير دوال من طبقة الخدمة.
+# English: Use the repositories directly (not through sync_service) since we read and write the
+#          same three files; the dependency stays explicit and no service-layer re-export is
+#          needed.
+from app.repositories.sync_config_repository import load_sync_config, save_sync_config
+from app.repositories.sync_queue_repository import save_sync_queue
+from app.repositories.sync_state_repository import load_sync_state, save_sync_state
 from app.services import sync_service
 
 logger = logging.getLogger("alphacode")
@@ -72,6 +80,116 @@ _BACKUP_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+\.json$")
 
 _restore_thread = None
 _restore_thread_lock = threading.Lock()
+
+# ===========================================================================
+# Arabic: عدة حذف البيانات لِمَن يملك وصولاً لقاعدة البيانات (phpMyAdmin أو دعم الاستضافة).
+#
+#         لماذا هذا موجود أصلاً: hلحذف عبر الإضافة يحتاج sync.php جديداً فيه action=erase. فإن
+#         كان المرفوع على الاستضافة نسخة قديمة (قبل هذا الإصدار) وتعذّر تحديثه — حالة المشغّل
+#         الحقيقية: مُنع من الوصول للاستضافة — فلا توجد في النسخة القديمة أي قوة تحذف صفوفاً:
+#         كل أوامرها إمّا قراءة (whoami/pull/lookup/brands) أو إدراج/تحديث (reserve_id/
+#         reserve_key/push/brands/add)، والوحيد الذي يحذف هو brands/sync وهو يحذف جدول
+#         البراندات وحده — ولا يقبل قائمة فاضية أصلاً (يشترط برانداً واحداً على الأقل).
+#         فحذف المنتجات والأعضاء من داخل الإضافة مستحيل تقنياً على تلك النسخة، والحل الوحيد:
+#         تنفيذ الحذف من جانب قاعدة البيانات — وهذا الملف يجهّز النص الجاهز لذلك.
+#
+# English: The wipe kit for whoever has database access (phpMyAdmin or host support).
+#
+#          Why it exists: erasing through the extension needs the updated sync.php with
+#          action=erase. When the copy deployed on the host predates this release and cannot be
+#          updated - the operator's real situation: blocked from hosting access - the old copy has
+#          no power to delete rows at all: every action is either a read (whoami/pull/lookup/
+#          brands) or an insert/update (reserve_id/reserve_key/push/brands/add), and the only
+#          delete is brands/sync, which clears the brands table alone and refuses an empty list
+#          anyway (it requires at least one brand). So erasing products and members from inside
+#          the extension is technically impossible on that copy, and the only route is to run the
+#          delete database-side - which is what this text is prepared for.
+# ===========================================================================
+WIPE_DB_FILENAME = "alphacode_wipe_db.sql"
+
+WIPE_DB_FILENAME = "alphacode_wipe_db.sql"
+
+
+def wipe_db_sql():
+    """
+    Arabic: نص SQL الجاهز لحذف كل بيانات قاعدة البيانات، يُقرأ من ملف حقيقي لا من نص مكتوب داخل
+            الكود: النص الطويل داخل الكود كان يحتاج تهريب علامات الاقتباس الثلاثية وأصاب الملف
+            فعلياً بفساد (درس حقيقي أثناء تطوير هذه الميزة)، وقراءته من ملف تجعل نسخة المستودع
+            قابلة للمراجعة والتنزيل كما هي.
+
+            المسارات المرشّحة: داخل حزمة الباك اند (app/data)، ثم مجلد الاستضافة في المستودع.
+            ولو غاب الملفان يرجع نص فاضٍ وتشرح اللوحة للمشغّل أين الملف.
+    English: The ready SQL that wipes the database, read from a real file instead of a string
+             embedded in the code: a long string in code needs triple-quote escaping and it really
+             corrupted this file during development, while reading it from a file keeps the
+             repository copy reviewable and downloadable as-is.
+
+             Candidate paths: inside the backend package (app/data), then the host folder in the
+             repository. When both are missing, an empty string is returned and the popup tells the
+             operator where the file lives.
+    """
+    candidates = [
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", WIPE_DB_FILENAME),
+        os.path.join(BACKEND_ROOT, "..", "hostinger", "alphacode_storage", "wipe_db.sql"),
+    ]
+    for candidate in candidates:
+        try:
+            if os.path.exists(candidate):
+                with open(candidate, "r", encoding="utf-8") as file:
+                    text = file.read().strip()
+                if text:
+                    return text + "\n"
+        except OSError as exc:
+            logger.warning("Could not read the wipe SQL file %s: %s", candidate, exc)
+    logger.warning("The wipe SQL file %s was not found in the backend package.", WIPE_DB_FILENAME)
+    return ""
+
+
+_SUPPORT_REQUEST_AR = """\
+طلب حذف بيانات قاعدة بيانات أداة داخلية
+
+مرحباً،
+أنا صاحب الحساب (اسم الحساب/النطاق: {account})، وأرجو حذف بيانات أداة المزامنة الداخلية من حسابي.
+
+1) الرجاء تنفيذ ملف SQL المرفق على قاعدة البيانات الخاصة بالأداة (المستخدم: {db_user})،
+   وهو يحذف كل الصفوف من كل الجداول (منتجات، أعضاء، براندات، حجوزات) ولا يحذف الجداول نفسها.
+   ولو كانت قاعدة البيانات هذه مخصّصة للأداة فقط، فالأفضل عندنا حذف قاعدة البيانات بالكامل
+   (DROP DATABASE) مع مستخدمها — هذا هو المطلوب فعلاً.
+2) الرجاء حذف ملفات الأداة من الاستضافة، وكلها داخل مجلد واحد عادةً اسمه alphacode_storage:
+   sync.php, db.php, db_config.php, sync_write_helpers.php, migrate_json_to_mysql.php,
+   test_connection.php, check_db_health.php, وأي ملف shutdown.lock.
+3) الرجاء تأكيد التنفيذ بالأرقام (عدد الصفوف قبل/بعد) أو بتأكيد أن قاعدة البيانات حُذفت.
+
+سبب الطلب: إيقاف الأداة نهائياً ومسح بيانات المتجر المشتركة، وقد فقدت وصولي إلى لوحة التحكم
+(يبدو أنه حظر تلقائي بسبب حد الطلبات)، ولا أستطيع تنفيذ الحذف بنفسي.
+
+رابط الأداة على الاستضافة: {server_url}
+""".strip()
+
+_SUPPORT_REQUEST_EN = """\
+Request: delete the internal tool's database data
+
+Hello,
+I am the account owner (account/domain: {account}) and I am asking you to delete the internal
+sync tool's data from my account.
+
+1) Please run the attached SQL file against the tool's database (user: {db_user}). It deletes
+   every row from every table (products, members, brands, ID reservations) and drops no tables.
+   If that database exists only for this tool, please delete the whole database (DROP DATABASE)
+   and its user instead - that is what I actually want.
+2) Please delete the tool's files from the host, normally all inside one folder named
+   alphacode_storage: sync.php, db.php, db_config.php, sync_write_helpers.php,
+   migrate_json_to_mysql.php, test_connection.php, check_db_health.php, and any shutdown.lock.
+3) Please confirm with the numbers (rows before/after) or a confirmation that the database was
+   dropped.
+
+Reason: the tool is being shut down permanently and its shared store data must be erased. I lost
+access to my control panel (it looks like an automatic block from the request rate limit), so I
+cannot run the deletion myself.
+
+Tool URL on the host: {server_url}
+""".strip()
+
 
 
 def _now():
@@ -111,7 +229,7 @@ def _configured_credentials():
              erase the server data (the operator's actual request: "I lost hosting access") must
              not be blocked by a switch in the popup.
     """
-    config = sync_service.load_sync_config()
+    config = load_sync_config()
     return str(config.get("ServerUrl") or ""), str(config.get("Token") or "")
 
 
@@ -429,21 +547,21 @@ def verify_local_guard(password):
 
 def lock_local_sync(server_erased_at="", backup_file="", server_url="", note="", guard=None):
     """Arabic: قفل المزامنة ومسح رابط السيرفر والمفتاح السري من الإعدادات. English: Lock sync and clear the server URL and secret token from the settings."""
-    config = sync_service.load_sync_config()
+    config = load_sync_config()
     config["Enabled"] = False
     config["ServerUrl"] = ""
     config["Token"] = ""
     # Arabic: طابور الرفع المعلّق يُفرَّغ: لا معنى لإرساله بعد القفل، ولو بقي لأعاد المحاولة كل 5 دقائق.
     # English: The pending push queue is emptied: pushing is meaningless after the lock, and
     #          leaving it would make the retry flush keep trying every 5 minutes.
-    sync_service.save_sync_config(config)
-    sync_service.save_sync_queue([])
-    state = sync_service.load_sync_state()
+    save_sync_config(config)
+    save_sync_queue([])
+    state = load_sync_state()
     state["last_error"] = ""
     state["last_pull_at"] = ""
     state["last_push_at"] = ""
     state["throttled_until"] = ""
-    sync_service.save_sync_state(state)
+    save_sync_state(state)
 
     lock = sync_lock_repository.load_sync_lock()
     lock.update({
@@ -522,15 +640,28 @@ def run_emergency_shutdown(confirm, erase_server=True, actor="", local_guard_pas
             server_url, token, "erase", {"confirm": ERASE_PAYLOAD_CONFIRM}, method="POST"
         )
         if error or not (data or {}).get("success"):
-            reason = _friendly_error(error or (data or {}).get("error") or "رفض السيرفر أمر المسح")
-            logger.error("Server erase refused: %s", reason)
+            raw_reason = str(error or (data or {}).get("error") or "رفض السيرفر أمر المسح")
+            if "unknown action" in raw_reason.lower():
+                # Arabic: الحالة الأشهر عند المشغّل: sync.php المرفوع نسخة قديمة بلا action=erase،
+                #         ولا يمكن تحديثه (لا وصول للاستضافة). نقول السبب والبديل باسمهما بدل
+                #         "Unknown action" الغامضة.
+                # English: The operator's most common case: the deployed sync.php predates
+                #          action=erase and cannot be updated (no host access). Name the cause and
+                #          the alternative instead of a bare "Unknown action".
+                reason = (
+                    "sync.php المرفوع على الاستضافة نسخة قديمة لا تعرف أمر المسح (action=erase)، "
+                    "وكل أوامرها إمّا قراءة أو إدراج/تحديث — لا قوة عندها لحذف صف واحد. "
+                    "الحذف من داخل الإضافة مستحيل على هذه النسخة: استخدم «تحضير ملف الحذف ورسالة الدعم» "
+                    "بالأسفل ونفّذه من phpMyAdmin أو سلّمه لدعم الاستضافة، أو أزل تحديد «مسح بيانات "
+                    "السيرفر» إن أردت إيقاف المزامنة على جهازك فقط الآن."
+                )
+            else:
+                reason = _friendly_error(raw_reason)
+            logger.error("Server erase refused: %s", raw_reason)
             return {
                 "success": False,
                 "error": (
-                    "رفض سيرفر المزامنة أمر المسح، فأُلغي كل شيء ولم يُقفل الجهاز: " + str(reason) +
-                    " — تأكد أن sync.php المرفوع على الاستضافة يحتوي action=erase (النسخة الجديدة في "
-                    "hostinger/alphacode_storage/sync.php)، أو أزل تحديد «مسح بيانات السيرفر» إن أردت "
-                    "إيقاف المزامنة على هذا الجهاز فقط."
+                    "أُلغي كل شيء ولم يُقفل الجهاز، فلا مسح ولا قفل بلا مسح ناجح: " + str(reason)
                 ),
                 "backup": backup,
                 "steps": steps,
@@ -673,9 +804,9 @@ def _restore_worker(backup_path, server_url, token):
         # Arabic: نتيجة إعادة الرفع تظهر في بطاقة المزامنة العادية أيضاً حتى يراها الأدمن مباشرة.
         # English: The outcome also lands in the normal sync card so the admin sees it at once.
         if last_error:
-            sync_state = sync_service.load_sync_state()
+            sync_state = load_sync_state()
             sync_state["last_error"] = f"إعادة الرفع: {last_error}"
-            sync_service.save_sync_state(sync_state)
+            save_sync_state(sync_state)
         logger.info(
             "Restore finished: pushed=%s duplicates=%s failed=%s skipped=%s brands=%s",
             pushed, duplicates, failed, skipped, (state or {}).get("brands_restored"),
@@ -728,11 +859,11 @@ def start_restore_job(backup_file, server_url, token, confirm, guard_password=""
                      + _friendly_error(error or (data or {}).get("error") or "غير معروف"),
         }
 
-    config = sync_service.load_sync_config()
+    config = load_sync_config()
     config["Enabled"] = True
     config["ServerUrl"] = server_url
     config["Token"] = token
-    sync_service.save_sync_config(config)
+    save_sync_config(config)
     unlock_local_sync()
 
     _restore_progress(
@@ -796,4 +927,75 @@ def emergency_status():
         "restore": sync_lock_repository.load_restore_state(),
         "confirm_phrase": EMERGENCY_CONFIRM_PHRASE,
         "restore_phrase": RESTORE_CONFIRM_PHRASE,
+    }
+
+
+def _account_hint():
+    """
+    Arabic: اسم الحساب/النطاق ليُذكر في رسالة الدعم (يُستخرج من رابط المزامنة المحفوظ، وإلا من
+            اسم المستخدم في النظام). الرسالة بلا هذا السطر قد تُرفض لأن الدعم يطلب إثبات الملكية.
+    English: An account/domain hint to include in the support request (taken from the saved sync
+             URL, otherwise from the OS user name). Without it the host may reject the request for
+             lack of ownership proof.
+    """
+    server_url, _token = _configured_credentials()
+    if server_url:
+        try:
+            from urllib.parse import urlparse
+            host = urlparse(server_url).hostname or ""
+            if host:
+                return host
+        except ValueError:
+            pass
+    return os.getenv("USERNAME") or os.getenv("USER") or "(اكتب اسم حسابك/نطاقك هنا)"
+
+
+def wipe_kit():
+    """
+    Arabic: تجهيز «عدّة الحذف» لِمَن يملك وصولاً لقاعدة البيانات: نص SQL جاهز + رسالة دعم جاهزة
+            (عربي/إنجليزي) معبّأة برابط الأداة واسم الحساب.
+
+            متى تُستخدم: لما يكون sync.php المرفوع على الاستضافة نسخة قديمة بلا action=erase
+            (فلا يستطيع البرنامج حذف أي صف)، أو لما يكون الوصول للوحة التحكم مفقوداً — يبقى دعم
+            الاستضافة أو phpMyAdmin قادراً على التنفيذ، وهذا الملف يجعل الطلب جاهزاً من ضغطة واحدة.
+
+    English: Prepare the "wipe kit" for whoever has database access: ready SQL plus a ready support
+             request (Arabic/English) filled with the tool URL and the account hint.
+
+             When to use it: when the sync.php deployed on the host predates action=erase (so the
+             app cannot delete a single row), or when the control panel is out of reach - host
+             support or phpMyAdmin can still run it, and this kit makes the request one click away.
+    """
+    lock = sync_lock_repository.load_sync_lock()
+    server_url, _token = _configured_credentials()
+    server_url = server_url or str(lock.get("ServerUrl") or "")
+    # Arabic: اسم مستخدم قاعدة البيانات لا نحاول قراءته من db.php/db_config.php (ملفان على
+    #         الاستضافة وليسا على جهاز المشغّل)، فالمكان الصحيح لهما هو نموذج الطلب نفسه.
+    # English: The database user is not read from db.php/db_config.php (both live on the host, not
+    #          on the operator's machine) - the request template itself is the right place for it.
+    fields = {
+        "server_url": server_url or "(الرابط غير محفوظ — اكتبه من سجلّك)",
+        "account": _account_hint(),
+        "db_user": "(اسم مستخدم قاعدة البيانات — تجده في db_config.php على الاستضافة)",
+    }
+    sql_text = wipe_db_sql()
+    return {
+        "sql": sql_text,
+        "sql_available": bool(sql_text),
+        "sql_note": "" if sql_text else (
+            "ملف SQL غير موجود في هذه الحزمة — تجده في المستودع: "
+            "backend/app/data/wipe_db.sql (ونسخة مطابقة في hostinger/alphacode_storage/wipe_db.sql)."
+        ),
+        "sql_filename": WIPE_DB_FILENAME,
+        "support_message_ar": _SUPPORT_REQUEST_AR.format(**fields),
+        "support_message_en": _SUPPORT_REQUEST_EN.format(**fields),
+        "server_url": server_url,
+        "explanation": (
+            "سبب وجود هذه العدّة: الحذف من داخل الإضافة يعتمد على sync.php جديد فيه action=erase. "
+            "فإن كان المرفوع على الاستضافة نسخة قديمة (بلا action=erase) وتعذّر تحديثه، فلا توجد في "
+            "تلك النسخة أي قوة تحذف صفاً واحداً: أوامرها كلها إمّا قراءة (whoami / pull / lookup / "
+            "brands) أو إدراج وتحديث (reserve_id / reserve_key / push / brands/add)، والوحيد الذي "
+            "يحذف هو brands/sync وهو يحذف جدول البراندات وحده، ولا يقبل قائمة فاضية أصلاً. "
+            "فالحل الوحيد المتاح: تنفيذ ملف SQL من phpMyAdmin، أو تسليمه لدعم الاستضافة."
+        ),
     }

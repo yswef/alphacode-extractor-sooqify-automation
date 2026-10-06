@@ -73,6 +73,40 @@
         </article>
       </section>
 
+      <section class="card remote-browser-card" aria-labelledby="remote-browser-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">جلسة آمنة على Railway</p>
+            <h2 id="remote-browser-title">متصفح Sooqify البعيد</h2>
+            <p class="muted">شغّل Chromium على الخادم، سجّل الدخول وحل CAPTCHA يدوياً هنا، ثم نفّذ فحص القائمة من Railway.</p>
+          </div>
+          <span id="remote-browser-state" class="status-pill status-neutral">متوقف</span>
+        </div>
+        <div class="remote-browser-actions">
+          <button id="remote-browser-start" class="button button-primary" type="button">تشغيل المتصفح</button>
+          <button id="remote-browser-open-list" class="button button-outline" type="button" disabled>فتح قائمة المنتجات / التحقق</button>
+          <button id="remote-scan-start" class="button button-primary" type="button" disabled>ابدأ فحص القائمة على Railway</button>
+          <button id="remote-scan-cancel" class="button button-outline" type="button" disabled>إلغاء الفحص</button>
+          <button id="remote-browser-view-toggle" class="button button-outline" type="button" disabled>بدء العرض المباشر</button>
+          <button id="remote-browser-refresh" class="button button-outline" type="button" disabled>تحديث الصورة</button>
+          <button id="remote-browser-close" class="button button-outline" type="button" disabled>إغلاق المتصفح</button>
+        </div>
+        <p id="remote-browser-message" class="remote-browser-message" role="status">المتصفح البعيد غير مفعّل أو لم يبدأ بعد.</p>
+        <div class="remote-screen-frame" id="remote-screen-frame">
+          <img id="remote-screen" alt="عرض بعيد لمتصفح Sooqify على Railway" draggable="false" tabindex="0" hidden>
+          <div id="remote-screen-placeholder" class="remote-screen-placeholder">ابدأ المتصفح لعرض جلسة Sooqify البعيدة.</div>
+        </div>
+        <div class="remote-input-row">
+          <input id="remote-browser-text" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="1000" dir="auto" placeholder="اكتب نصاً لإرساله للحقل المحدد في المتصفح البعيد">
+          <button id="remote-browser-type" class="button button-outline" type="button">إرسال النص</button>
+          <button class="button button-outline remote-key" type="button" data-remote-key="Enter">Enter</button>
+          <button class="button button-outline remote-key" type="button" data-remote-key="Tab">Tab</button>
+          <button class="button button-outline remote-key" type="button" data-remote-key="Backspace">⌫</button>
+          <button class="button button-outline remote-key" type="button" data-remote-key="Escape">Esc</button>
+        </div>
+        <p class="remote-browser-safety">الفحص يطلب صفحات القائمة فقط؛ يمنع التنقل إلى صفحات تفاصيل المنتجات أو تعديلها أو حذفها. لا تُنقل ملفات جلسة جهازك إلى Railway. تُحفظ جلسة الدخول التي تنشئها هنا على الـVolume عند <code>/data</code>. صورة الشاشة والتحكم البعيد يستهلكان بعض الإنترنت من جهازك.</p>
+      </section>
+
       <section class="main-grid">
         <article class="card qr-card">
           <div class="section-heading">

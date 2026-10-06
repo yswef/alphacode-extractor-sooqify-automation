@@ -113,14 +113,14 @@ START_ALPHACODE.bat
 
 ## Sooqify Audit v6 companion
 
-The isolated Railway service and WhatsApp worker live in `extension/sooqify_railway/`; they do not replace or modify the existing local backend or live PHP sync service. The extension checkout references the paginated-list-only collector in `manifest.json` and the secure Railway bridge in `background.js`.
+The isolated Railway service and WhatsApp worker live in `extension/sooqify_railway/`; they do not replace or modify the existing local backend or live PHP sync service. The audit scan now runs in a Railway-hosted Chromium session; the old extension upload API remains for compatibility but is not required for the new server-side scan.
 
-1. Load/reload the `extension` folder in Chrome, sign in to Sooqify normally, and solve any CAPTCHA manually.
-2. Open the paginated `/admin/item/list` page. The floating **تدقيق Railway — قراءة فقط** control appears there.
-3. Enter the HTTPS Railway service origin and the same `AUDIT_API_TOKEN` configured in Railway. The extension stores the token in local Chrome storage.
-4. Start the scan. It reads list pages only, extracts Store IDs from action-link URLs already in each row, and never requests product view/edit/delete pages. Fields not visible in the list remain unavailable. A snapshot is accepted only after every page and unique Store ID are verified.
-5. Deploy the isolated service using `extension/sooqify_railway/README.md`. The service can generate daily details CSV, employee-summary CSV and XLSX files at 21:00 `Asia/Aden`, and send them through the linked-device WhatsApp worker.
-6. WhatsApp archive deletion, if explicitly requested, is limited to one Local ID at a time, requires a preview and confirmation, backs up the record, and only removes local archive copies on updated extension clients. It never deletes products from Sooqify or alters the shared PHP source archive; restore depends on the shared archive still containing the record.
+1. Deploy the isolated service with its included Dockerfile, enable `REMOTE_BROWSER_ENABLED=true`, and mount a persistent Railway Volume at `/data`.
+2. Open `/dashboard` over HTTPS and authenticate with `AUDIT_API_TOKEN`. Start the remote Chromium browser, sign in to Sooqify there, and solve any CAPTCHA manually; no local browser profile is transferred.
+3. Verify/open the `/admin/item/list` page and start the Railway scan. The server requests list pages only, extracts Store IDs from links in visible rows, and blocks product view/edit/delete routes. Incomplete scans never replace the last complete snapshot.
+4. The authenticated remote view uses compressed screenshots and mouse/keyboard controls. Screenshot updates still consume some operator-side internet; the Sooqify list requests and scan uploads originate from Railway.
+5. Test report generation after the scan; the AlphaCode PHP archive remains a read-only source. Afterward, optionally enable daily reports and pair WhatsApp, which receives a queued completion/failure notice for server-side scans.
+6. WhatsApp archive deletion, if explicitly requested, is still limited to one Local ID at a time, requires a preview and confirmation, backs up the record, and only removes local archive copies on updated extension clients. It never deletes products from Sooqify or alters the shared PHP source archive; restore depends on the shared archive still containing the record.
 
 See `extension/sooqify_railway/README.md` for Railway variables, deployment steps, API details and deletion/restore boundaries.
 

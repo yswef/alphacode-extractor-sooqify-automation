@@ -24,6 +24,12 @@
   let lastQrFetchAt = 0;
   let qrExpiresAt = 0;
   let pollBusy = false;
+  let remoteFrameUrl = '';
+  let remoteLiveTimer = 0;
+  let remoteLiveEnabled = false;
+  let remoteScreenshotBusy = false;
+  let remoteInputQueue = Promise.resolve();
+  let lastRemoteMoveAt = 0;
 
   function token() {
     return sessionStorage.getItem(TOKEN_KEY) || '';
@@ -175,6 +181,119 @@
     }
   }
 
+  const remoteBrowserLabels = {
+    disabled: 'غير مفعّل', stopped: 'متوقف', starting: 'جارٍ التشغيل',
+    login_required: 'بانتظار تسجيل الدخول', ready: 'جاهز', scanning: 'جارٍ الفحص', error: 'خطأ',
+  };
+
+  function setRemoteMessage(message, isError = false) {
+    const element = $('remote-browser-message');
+    element.textContent = String(message || '');
+    element.dataset.tone = isError ? 'error' : 'info';
+  }
+
+  function stopRemoteLiveView() {
+    if (remoteLiveTimer) window.clearInterval(remoteLiveTimer);
+    remoteLiveTimer = 0;
+    remoteLiveEnabled = false;
+    const toggle = $('remote-browser-view-toggle');
+    if (toggle) toggle.textContent = 'بدء العرض المباشر';
+  }
+
+  async function captureRemoteFrame() {
+    if (!token() || remoteScreenshotBusy || document.hidden) return;
+    remoteScreenshotBusy = true;
+    try {
+      const response = await fetch('/api/remote-browser/screenshot', {
+        headers: { Authorization: `Bearer ${token()}`, Accept: 'image/jpeg' },
+        cache: 'no-store',
+        credentials: 'omit',
+      });
+      if (!response.ok) {
+        let message = `HTTP ${response.status}`;
+        try { message = (await response.json()).error || message; } catch (_) {}
+        if (response.status !== 409) setRemoteMessage(`تعذر تحديث صورة المتصفح: ${message}`, true);
+        return;
+      }
+      const blob = await response.blob();
+      const nextUrl = URL.createObjectURL(blob);
+      const oldUrl = remoteFrameUrl;
+      remoteFrameUrl = nextUrl;
+      $('remote-screen').src = nextUrl;
+      $('remote-screen').hidden = false;
+      $('remote-screen-placeholder').hidden = true;
+      if (oldUrl) URL.revokeObjectURL(oldUrl);
+    } catch (error) {
+      setRemoteMessage(`تعذر الاتصال بصورة المتصفح: ${error.message}`, true);
+    } finally {
+      remoteScreenshotBusy = false;
+    }
+  }
+
+  function updateRemoteControls(state) {
+    const browserState = String(state.browser_state || (state.enabled ? 'stopped' : 'disabled'));
+    const scanState = String(state.scan_state || 'idle');
+    const active = ['starting', 'login_required', 'ready', 'scanning'].includes(browserState);
+    const scanning = ['queued', 'running', 'cancelling'].includes(scanState);
+    const enabled = Boolean(state.enabled);
+    const pill = $('remote-browser-state');
+    pill.textContent = remoteBrowserLabels[browserState] || browserState;
+    pill.className = `status-pill ${browserState === 'ready' || scanState === 'complete' ? 'status-good' : (browserState === 'error' ? 'status-bad' : 'status-warn')}`;
+    $('remote-browser-start').disabled = !enabled || active;
+    $('remote-browser-open-list').disabled = !enabled || !active || scanning;
+    $('remote-scan-start').disabled = !enabled || !state.authenticated || scanning;
+    $('remote-scan-cancel').disabled = !scanning;
+    $('remote-browser-view-toggle').disabled = !active;
+    $('remote-browser-refresh').disabled = !active;
+    $('remote-browser-close').disabled = !active;
+    $('remote-browser-text').disabled = !active || scanning;
+    $('remote-browser-type').disabled = !active || scanning;
+    document.querySelectorAll('.remote-key').forEach(button => { button.disabled = !active || scanning; });
+
+    if (state.error) setRemoteMessage(state.error, true);
+    else if (!enabled) setRemoteMessage('فعّل REMOTE_BROWSER_ENABLED=true في Railway بعد تركيب Volume على /data ونشر Dockerfile.');
+    else {
+      let message = state.message || 'ابدأ المتصفح البعيد.';
+      if (scanning) {
+        message += ` · ${Number(state.current_page || 0)} صفحة`;
+        if (Number(state.total_pages || 0)) message += ` من ${Number(state.total_pages)}`;
+        message += ` · ${Number(state.product_count || 0)} منتج`;
+      }
+      setRemoteMessage(message);
+    }
+
+    if (active) {
+      if (!remoteFrameUrl && !scanning) captureRemoteFrame();
+    } else {
+      stopRemoteLiveView();
+      $('remote-screen').hidden = true;
+      $('remote-screen-placeholder').hidden = false;
+      if (remoteFrameUrl) URL.revokeObjectURL(remoteFrameUrl);
+      remoteFrameUrl = '';
+    }
+  }
+
+  async function refreshRemoteBrowserState() {
+    if (!token()) return;
+    try {
+      const response = await api('/api/remote-browser/status');
+      updateRemoteControls(response.state || {});
+    } catch (error) {
+      setRemoteMessage(`تعذر قراءة حالة المتصفح: ${error.message}`, true);
+    }
+  }
+
+  function sendRemoteInput(payload) {
+    const operation = remoteInputQueue.then(async () => {
+      await api('/api/remote-browser/input', { method: 'POST', body: payload });
+      if (!(payload.type === 'mouse' && payload.action === 'move')) await captureRemoteFrame();
+    });
+    remoteInputQueue = operation.catch(error => {
+      setRemoteMessage(`لم يُرسل الإدخال إلى المتصفح: ${error.message}`, true);
+    });
+    return remoteInputQueue;
+  }
+
   async function refreshState() {
     if (!token() || pollBusy) return;
     pollBusy = true;
@@ -219,6 +338,7 @@
       renderTombstones(queues.tombstones);
       renderEvents(response.last_archive_events);
       await updateQr(state);
+      await refreshRemoteBrowserState();
     } catch (error) {
       if (error.status === 401 || error.status === 503) {
         sessionStorage.removeItem(TOKEN_KEY);
@@ -275,6 +395,94 @@
     $('gate-error').textContent = 'انتهت الجلسة وأُزيل الرمز من sessionStorage.';
   });
   $('refresh-button').addEventListener('click', () => refreshState());
+
+  async function remotePost(path, button, successFallback) {
+    if (button) button.disabled = true;
+    try {
+      const response = await api(path, { method: 'POST', body: {} });
+      if (response.state) updateRemoteControls(response.state);
+      else await refreshRemoteBrowserState();
+      setRemoteMessage(response.state?.message || successFallback || 'اكتمل الطلب.');
+      await captureRemoteFrame();
+    } catch (error) {
+      setRemoteMessage(error.message, true);
+    } finally {
+      await refreshRemoteBrowserState();
+    }
+  }
+
+  $('remote-browser-start').addEventListener('click', event => {
+    remotePost('/api/remote-browser/start', event.currentTarget, 'بدأ متصفح Railway.');
+  });
+  $('remote-browser-open-list').addEventListener('click', event => {
+    remotePost('/api/remote-browser/open-list', event.currentTarget, 'تم التحقق من صفحة القائمة.');
+  });
+  $('remote-scan-start').addEventListener('click', event => {
+    remotePost('/api/remote-browser/scan/start', event.currentTarget, 'بدأ فحص القائمة على Railway.');
+  });
+  $('remote-scan-cancel').addEventListener('click', event => {
+    remotePost('/api/remote-browser/scan/cancel', event.currentTarget, 'أُرسل طلب إلغاء الفحص.');
+  });
+  $('remote-browser-close').addEventListener('click', event => {
+    remotePost('/api/remote-browser/close', event.currentTarget, 'أُغلق المتصفح مع الاحتفاظ بملف الجلسة على Volume.');
+  });
+  $('remote-browser-refresh').addEventListener('click', () => captureRemoteFrame());
+  $('remote-browser-view-toggle').addEventListener('click', async event => {
+    if (remoteLiveEnabled) {
+      stopRemoteLiveView();
+      return;
+    }
+    remoteLiveEnabled = true;
+    event.currentTarget.textContent = 'إيقاف العرض المباشر';
+    await captureRemoteFrame();
+    remoteLiveTimer = window.setInterval(captureRemoteFrame, 3000);
+  });
+  $('remote-browser-type').addEventListener('click', async event => {
+    const field = $('remote-browser-text');
+    const text = field.value;
+    if (!text) return;
+    field.value = '';
+    await sendRemoteInput({ type: 'text', text });
+  });
+  document.querySelectorAll('.remote-key').forEach(button => {
+    button.addEventListener('click', () => sendRemoteInput({ type: 'key', key: button.dataset.remoteKey }));
+  });
+
+  const remoteScreen = $('remote-screen');
+  function remoteCoordinates(event) {
+    const rect = remoteScreen.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(1024, (event.clientX - rect.left) * 1024 / rect.width)),
+      y: Math.max(0, Math.min(680, (event.clientY - rect.top) * 680 / rect.height)),
+    };
+  }
+  remoteScreen.addEventListener('contextmenu', event => event.preventDefault());
+  remoteScreen.addEventListener('pointerdown', event => {
+    event.preventDefault();
+    try { remoteScreen.setPointerCapture(event.pointerId); } catch (_) {}
+    const point = remoteCoordinates(event);
+    const button = event.button === 2 ? 'right' : (event.button === 1 ? 'middle' : 'left');
+    sendRemoteInput({ type: 'mouse', action: 'down', ...point, button });
+  });
+  remoteScreen.addEventListener('pointermove', event => {
+    const now = Date.now();
+    if (now - lastRemoteMoveAt < 65) return;
+    lastRemoteMoveAt = now;
+    sendRemoteInput({ type: 'mouse', action: 'move', ...remoteCoordinates(event) });
+  });
+  remoteScreen.addEventListener('pointerup', event => {
+    event.preventDefault();
+    const point = remoteCoordinates(event);
+    const button = event.button === 2 ? 'right' : (event.button === 1 ? 'middle' : 'left');
+    sendRemoteInput({ type: 'mouse', action: 'up', ...point, button });
+  });
+  remoteScreen.addEventListener('wheel', event => {
+    event.preventDefault();
+    sendRemoteInput({ type: 'mouse', action: 'wheel', ...remoteCoordinates(event), delta_y: event.deltaY });
+  }, { passive: false });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && remoteLiveEnabled) captureRemoteFrame();
+  });
 
   $('generate-report').addEventListener('click', async event => {
     const button = event.currentTarget;

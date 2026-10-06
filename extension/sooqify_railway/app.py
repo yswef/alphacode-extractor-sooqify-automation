@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import hmac
 import json
 import logging
@@ -15,10 +16,11 @@ from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from flask import Flask, jsonify, request, send_file, send_from_directory
+from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
 
 from archive_client import fetch_archive_snapshot
+from remote_browser import RemoteBrowser, RemoteBrowserError
 from reporting import build_daily_report, write_report_files
 import whatsapp_store
 
@@ -244,6 +246,114 @@ def start_scheduler():
     return True
 
 
+def _remote_scan_start(scan_id, started_at):
+    scan_dir = _scan_path(scan_id)
+    with _write_lock:
+        scan_dir.mkdir(parents=True, exist_ok=False)
+        (scan_dir / "pages").mkdir(parents=True, exist_ok=False)
+        _json_write_atomic(scan_dir / "metadata.json", {
+            "scan_id": scan_id,
+            "started_at": _clip(started_at, 64),
+            "expected_pages": 0,
+            "pages_received": [],
+            "created_at": datetime.now(REPORT_TZ).isoformat(timespec="seconds"),
+            "source": "railway_playwright",
+        })
+
+
+def _remote_scan_page(scan_id, page_number, products):
+    scan_dir = _scan_path(scan_id)
+    metadata = _load_json(scan_dir / "metadata.json")
+    if not isinstance(metadata, dict):
+        raise RuntimeError("تعذر حفظ صفحة الفحص المؤقتة.")
+    try:
+        clean_products = [_sanitize_product(record) for record in products]
+        ids = [item["id"] for item in clean_products]
+        if not clean_products or len(ids) != len(set(ids)):
+            raise ValueError("صفحة القائمة فارغة أو تحتوي معرّفات متجر مكررة.")
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    received = set(metadata.get("pages_received") or [])
+    if page_number != len(received) + 1:
+        raise RuntimeError("تسلسل صفحات الفحص غير متصل؛ لم تُعتمد اللقطة.")
+    with _write_lock:
+        _json_write_atomic(scan_dir / "pages" / f"page_{page_number:05d}.json", clean_products)
+        received.add(page_number)
+        metadata["pages_received"] = sorted(received)
+        metadata["expected_pages"] = page_number
+        _json_write_atomic(scan_dir / "metadata.json", metadata)
+
+
+def _remote_scan_complete(scan_id, expected_pages, captured_at):
+    scan_dir = _scan_path(scan_id)
+    metadata = _load_json(scan_dir / "metadata.json")
+    if not isinstance(metadata, dict):
+        raise RuntimeError("بيانات الفحص المؤقتة غير موجودة؛ لم تُستبدل اللقطة السابقة.")
+    received = set(metadata.get("pages_received") or [])
+    missing = [number for number in range(1, expected_pages + 1) if number not in received]
+    if missing or expected_pages < 1:
+        raise RuntimeError("الفحص غير مكتمل؛ لم تُستبدل اللقطة السابقة.")
+
+    products = []
+    for page_number in range(1, expected_pages + 1):
+        page_data = _load_json(scan_dir / "pages" / f"page_{page_number:05d}.json")
+        if not isinstance(page_data, list):
+            raise RuntimeError("إحدى صفحات الفحص المؤقتة غير متاحة؛ لم تُستبدل اللقطة السابقة.")
+        products.extend(page_data)
+    ids = [item["id"] for item in products]
+    if len(ids) != len(set(ids)):
+        raise RuntimeError("توجد معرّفات متجر مكررة بين الصفحات؛ لم تُستبدل اللقطة السابقة.")
+
+    snapshot = {
+        "format_version": 1,
+        "scan_id": scan_id,
+        "started_at": metadata.get("started_at"),
+        "captured_at": _clip(captured_at, 64) or datetime.now(REPORT_TZ).isoformat(timespec="seconds"),
+        "complete": True,
+        "expected_pages": expected_pages,
+        "pages_scanned": expected_pages,
+        "product_count": len(products),
+        "products": products,
+        "source": "railway_playwright",
+    }
+    with _write_lock:
+        SCANS_DIR.mkdir(parents=True, exist_ok=True)
+        _json_write_atomic(SCANS_DIR / f"{scan_id}.json", {key: value for key, value in snapshot.items() if key != "products"})
+        # Promote the complete snapshot last so any sidecar write failure preserves the prior one.
+        _json_write_atomic(SNAPSHOT_PATH, snapshot)
+    return {"scan_id": scan_id, "pages_scanned": expected_pages, "product_count": len(products)}
+
+
+def _notify_remote_scan(result):
+    if not whatsapp_store.reports_enabled():
+        return
+    if result.get("success"):
+        text = (
+            "اكتمل فحص قائمة Sooqify على Railway. "
+            f"المنتجات: {int(result.get('product_count', 0))}، "
+            f"الصفحات: {int(result.get('pages_scanned', 0))}. "
+            "حُفظت اللقطة المكتملة في أرشيف التدقيق."
+        )
+        kind = "sooqify_remote_scan_completed"
+    else:
+        outcome = "أُلغي الفحص" if result.get("cancelled") else "تعذر إكمال الفحص"
+        text = f"{outcome} على Railway. لم تُستبدل آخر لقطة مكتملة. راجع لوحة التدقيق للتفاصيل الآمنة."
+        kind = "sooqify_remote_scan_failed"
+    whatsapp_store.enqueue_outbox(kind, text, recipient=whatsapp_store.primary_number())
+
+
+REMOTE_BROWSER_ENABLED = os.getenv("REMOTE_BROWSER_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+REMOTE_BROWSER = RemoteBrowser(
+    DATA_DIR,
+    enabled=REMOTE_BROWSER_ENABLED,
+    on_scan_start=_remote_scan_start,
+    on_scan_page=_remote_scan_page,
+    on_scan_complete=_remote_scan_complete,
+    on_scan_end=_notify_remote_scan,
+)
+atexit.register(REMOTE_BROWSER.shutdown)
+
+
 @app.before_request
 def require_api_token():
     if request.path == "/healthz" or request.method == "OPTIONS":
@@ -257,7 +367,7 @@ def require_api_token():
 
 @app.after_request
 def cors_headers(response):
-    # No cookies are used. The browser companion carries a bearer token and uses HTTPS.
+    # Cross-origin extension/API calls use bearer auth; Railway's separate Playwright profile never leaves the service.
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
@@ -275,7 +385,83 @@ def healthz():
         "archive_sync_configured": bool(os.getenv("ALPHACODE_SYNC_URL") and os.getenv("ALPHACODE_SYNC_TOKEN")),
         "api_token_configured": bool(os.getenv("AUDIT_API_TOKEN")),
         "whatsapp_enabled": whatsapp_store.reports_enabled(),
+        "remote_browser_enabled": REMOTE_BROWSER_ENABLED,
     })
+
+
+@app.get("/api/remote-browser/status")
+def remote_browser_status():
+    return jsonify({"success": True, "state": REMOTE_BROWSER.status()})
+
+
+@app.post("/api/remote-browser/start")
+def start_remote_browser():
+    try:
+        state = REMOTE_BROWSER.start()
+    except RemoteBrowserError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 503
+    return jsonify({"success": True, "state": state})
+
+
+@app.post("/api/remote-browser/open-list")
+def open_remote_list():
+    try:
+        state = REMOTE_BROWSER.open_list()
+    except RemoteBrowserError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 409
+    return jsonify({"success": True, "state": state})
+
+
+@app.get("/api/remote-browser/screenshot")
+def remote_browser_screenshot():
+    try:
+        frame = REMOTE_BROWSER.screenshot()
+    except RemoteBrowserError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 409
+    response = Response(frame, mimetype="image/jpeg")
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@app.post("/api/remote-browser/input")
+def remote_browser_input():
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "error": "Input payload must be an object."}), 400
+    try:
+        result = REMOTE_BROWSER.input(data)
+    except RemoteBrowserError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 409
+    return jsonify(result)
+
+
+@app.post("/api/remote-browser/close")
+def close_remote_browser():
+    try:
+        state = REMOTE_BROWSER.close()
+    except RemoteBrowserError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 409
+    return jsonify({"success": True, "state": state})
+
+
+@app.post("/api/remote-browser/scan/start")
+def start_remote_scan():
+    try:
+        state = REMOTE_BROWSER.begin_scan()
+    except RemoteBrowserError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 409
+    return jsonify({"success": True, "state": state}), 202
+
+
+@app.post("/api/remote-browser/scan/cancel")
+def cancel_remote_scan():
+    try:
+        state = REMOTE_BROWSER.cancel_scan()
+    except RemoteBrowserError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 409
+    return jsonify({"success": True, "state": state})
 
 
 @app.post("/api/pricing-baselines")
@@ -431,9 +617,9 @@ def complete_scan(scan_id):
         "products": products,
     }
     with _write_lock:
-        _json_write_atomic(SNAPSHOT_PATH, snapshot)
         SCANS_DIR.mkdir(parents=True, exist_ok=True)
         _json_write_atomic(SCANS_DIR / f"{scan_id}.json", {key: value for key, value in snapshot.items() if key != "products"})
+        _json_write_atomic(SNAPSHOT_PATH, snapshot)
     return jsonify({"success": True, "complete": True, "scan_id": scan_id, "product_count": len(products)})
 
 

@@ -1,5 +1,6 @@
 import csv
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -107,6 +108,64 @@ def test_api_requires_token_and_health_does_not_reveal_secret(client):
     health = client.get("/healthz")
     assert health.status_code == 200
     assert "test-audit-secret" not in health.get_data(as_text=True)
+
+
+def test_remote_browser_status_is_token_protected_and_opt_in(client, monkeypatch):
+    monkeypatch.setattr(server.REMOTE_BROWSER, "enabled", False)
+    monkeypatch.setitem(server.REMOTE_BROWSER._status, "enabled", False)
+    assert client.get("/api/remote-browser/status").status_code == 401
+    status = client.get("/api/remote-browser/status", headers=auth())
+    assert status.status_code == 200
+    assert status.get_json()["state"]["enabled"] is False
+    disabled = client.post("/api/remote-browser/start", headers=auth())
+    assert disabled.status_code == 503
+    assert "REMOTE_BROWSER_ENABLED" in disabled.get_json()["error"]
+
+
+def test_server_scan_promotes_to_existing_snapshot_only_after_all_pages(client):
+    scan_id = "remote_test_scan_01"
+    server._json_write_atomic(server.SNAPSHOT_PATH, {"complete": True, "scan_id": "old_complete"})
+    server._remote_scan_start(scan_id, "2026-10-06T20:00:00+03:00")
+    product = {
+        "id": 8801,
+        "name_en": "Watch",
+        "name_ar": "ساعة",
+        "price": 1000,
+        "brand_name": "Brand",
+        "brand_id": 5,
+        "fields_available": {"name": True, "price": True, "brand": True, "brand_id": True},
+        "local_tags": ["6017"],
+    }
+    server._remote_scan_page(scan_id, 1, [product])
+    with pytest.raises(RuntimeError, match="غير مكتمل"):
+        server._remote_scan_complete(scan_id, 2, "2026-10-06T20:05:00+03:00")
+    assert server._load_json(server.SNAPSHOT_PATH)["scan_id"] == "old_complete"
+
+    result = server._remote_scan_complete(scan_id, 1, "2026-10-06T20:05:00+03:00")
+    snapshot = server._load_json(server.SNAPSHOT_PATH)
+    assert result == {"scan_id": scan_id, "pages_scanned": 1, "product_count": 1}
+    assert snapshot["source"] == "railway_playwright"
+    assert snapshot["products"][0]["id"] == 8801
+
+
+def test_remote_scan_sidecar_failure_preserves_previous_snapshot(client, monkeypatch):
+    scan_id = "remote_test_sidecar_failure"
+    server._json_write_atomic(server.SNAPSHOT_PATH, {"complete": True, "scan_id": "previous_complete"})
+    server._remote_scan_start(scan_id, "2026-10-06T20:00:00+03:00")
+    server._remote_scan_page(scan_id, 1, [{"id": 8802, "fields_available": {}}])
+
+    original_write = server._json_write_atomic
+
+    def fail_sidecar(path, value):
+        if Path(path) == server.SCANS_DIR / f"{scan_id}.json":
+            raise OSError("sidecar unavailable")
+        return original_write(path, value)
+
+    monkeypatch.setattr(server, "_json_write_atomic", fail_sidecar)
+    with pytest.raises(OSError, match="sidecar unavailable"):
+        server._remote_scan_complete(scan_id, 1, "2026-10-06T20:05:00+03:00")
+
+    assert server._load_json(server.SNAPSHOT_PATH)["scan_id"] == "previous_complete"
 
 
 def test_pricing_baseline_preserves_original_cny_and_exact_fee_snapshot(client):

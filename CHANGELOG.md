@@ -4,8 +4,15 @@
 
 ### Added
 
+- **The danger zone lives in its own «حذف البيانات» tab.** *حذف البيانات* is a standalone popup tab
+  (`data-tab="danger"` / `#tab-danger`) holding the five ordered sections — ١ a full backup, ٢ the
+  server erase, ٢‑ب the DB-side wipe kit, ٢‑ج the old-`sync.php` neutralize, ٣ the re-upload. Its
+  button carries the `admin-only-tab` class and is shown to the **admin** and **project_manager** only:
+  the member whitelist hides it, the panel is hidden explicitly as well, and a member left standing on
+  it is moved back to *الإعدادات*. `activateTab('danger')` refreshes the lock banner, the backup list
+  and the job progress, and the 20-second polling now covers whichever of the two tabs is open.
 - **Admin danger zone: a complete backup, then the server data is erased and sync stops for good.**
-  The **المزامنة والمجلد** tab now carries an admin-only card with a fixed, enforced order:
+  The admin-only danger card (now on its own **حذف البيانات** tab) runs a fixed, enforced order:
   1. *تنزيل نسخة احتياطية كاملة الآن* pulls **everything** from the server (no time filter) plus the
      brand list, adds this machine's whole `archive_db.json`, and writes one JSON file into
      `<save folder>/backups/` — offered as a download too, and it never contains the sync token.

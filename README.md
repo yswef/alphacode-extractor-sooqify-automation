@@ -146,9 +146,11 @@ Every action on `sync.php`, including sign-in (`whoami`), requires the same secr
 
 ### Shutting sync down for good (admin only)
 
-The popup's **المزامنة والمجلد** tab carries an admin-only **منطقة خطر** card for the case where the
-team stops working on the shared archive, or the operator loses hosting access and wants the store's
-data gone. It runs in a fixed order and never skips a step:
+The popup has a standalone **حذف البيانات** (Delete data) tab carrying the admin-only **منطقة خطر**
+card, for the case where the team stops working on the shared archive, or the operator loses hosting
+access and wants the store's data gone. The tab button is rendered for the **admin** and the
+**project manager** only; a regular member never sees the button nor the panel (its refresh calls are
+wired to `activateTab('danger')`). The card runs in a fixed order and never skips a step:
 
 1. **Full backup first.** *تنزيل نسخة احتياطية كاملة الآن* pulls **everything** from the server (no
    time filter) plus the brand list, adds this machine's whole `archive_db.json`, and writes one JSON
